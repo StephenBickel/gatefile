@@ -1,0 +1,45 @@
+name: Bug report
+description: Report a reproducible bug in planfile behavior
+title: "bug: "
+labels:
+  - bug
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened, and what did you expect to happen?
+      placeholder: Clear, one-paragraph description of the issue.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Provide minimal steps or a sample plan file to reproduce.
+      placeholder: |
+        1. Run ...
+        2. Create plan ...
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Output / Logs
+      description: Paste relevant command output or stack traces.
+      render: shell
+
+  - type: input
+    id: version
+    attributes:
+      label: planfile version
+      placeholder: e.g. 0.1.0
+
+  - type: input
+    id: node
+    attributes:
+      label: Node.js version
+      placeholder: e.g. 20.19.0
