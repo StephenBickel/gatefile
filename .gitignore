@@ -3,3 +3,4 @@ dist/
 .plan/
 *.log
 .DS_Store
+demo/output/

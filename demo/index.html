@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>planfile Demo Walkthrough</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="hero">
+        <p class="eyebrow">planfile demo</p>
+        <h1>Approval and Tamper Detection Walkthrough</h1>
+        <p class="subhead">
+          A static simulation of the CLI flow: create, verify, approve, tamper, verify, and
+          apply refusal.
+        </p>
+      </header>
+
+      <section class="panel">
+        <h2>Flow Controls</h2>
+        <p class="caption">
+          Execute the same sequence shown in the README demo. The UI mirrors core verification
+          outcomes.
+        </p>
+        <div class="controls">
+          <button data-action="create">1. Create Plan</button>
+          <button data-action="verify-initial">2. Verify (Not Ready)</button>
+          <button data-action="approve">3. Approve</button>
+          <button data-action="verify-ready">4. Verify (Ready)</button>
+          <button data-action="tamper">5. Tamper Plan</button>
+          <button data-action="verify-tampered">6. Verify (Not Ready)</button>
+          <button data-action="apply">7. Apply (Refusal)</button>
+          <button data-action="reset" class="ghost">Reset</button>
+        </div>
+      </section>
+
+      <section class="grid">
+        <article class="panel">
+          <h2>Plan State</h2>
+          <dl class="facts">
+            <div><dt>Summary</dt><dd id="summary">No plan loaded</dd></div>
+            <div><dt>Recorded Hash</dt><dd id="recorded-hash">-</dd></div>
+            <div><dt>Current Hash</dt><dd id="current-hash">-</dd></div>
+            <div><dt>Approved Hash</dt><dd id="approved-hash">-</dd></div>
+            <div><dt>Approval By</dt><dd id="approved-by">-</dd></div>
+          </dl>
+        </article>
+
+        <article class="panel">
+          <h2>Verify Report</h2>
+          <ul class="verify-list">
+            <li>integrityMetadataExists <strong id="v-integrity">-</strong></li>
+            <li>recordedHashMatchesCurrent <strong id="v-recorded">-</strong></li>
+            <li>approvalBoundToCurrentHash <strong id="v-approved">-</strong></li>
+            <li>status <strong id="v-status" class="status">not-ready</strong></li>
+          </ul>
+          <p class="caption" id="verify-note">Run verify actions to update this report.</p>
+        </article>
+      </section>
+
+      <section class="panel">
+        <h2>Command Log</h2>
+        <ol id="log" class="log"></ol>
+      </section>
+    </main>
+
+    <script src="./walkthrough.js"></script>
+  </body>
+</html>

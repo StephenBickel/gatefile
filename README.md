@@ -98,6 +98,23 @@ planfile apply-plan .plan/demo.json --yes
 `planfile` does not claim cryptographic signatures or identity attestation in this MVP.
 It enforces deterministic content hashing and approval/hash binding locally.
 
+## Visual Playwright Demo
+
+A static product-style walkthrough lives in `demo/` and mirrors the core flow:
+create plan -> verify not-ready -> approve -> verify ready -> tamper -> verify not-ready -> apply refusal.
+
+Run locally:
+
+```bash
+# one-time browser setup for Playwright
+npm run demo:playwright:install
+
+# execute the walkthrough recorder (opens demo/index.html via file://)
+npm run demo:playwright
+```
+
+Artifacts are written under `demo/output/` (screenshots plus Playwright video in `demo/output/test-results/`).
+
 ## MVP Scope (This Repo)
 
 Current MVP focuses on:
