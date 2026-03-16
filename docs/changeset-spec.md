@@ -19,6 +19,9 @@ The machine-readable schema for this MVP lives at `schema/planfile.schema.json`.
     "commandPolicy": {
       "mode": "allow",
       "patterns": ["node -e", "npm test"]
+    },
+    "filePolicy": {
+      "allowedRoots": ["./tmp/safe-root"]
     }
   },
   "risk": {
@@ -80,6 +83,10 @@ Optional top-level `execution` supports lightweight command hardening:
   - `mode: "allow"` means command text must include at least one pattern substring
   - `mode: "deny"` means command text must not include any matching pattern substring
   - `patterns`: string list used for substring matching
+- `filePolicy`:
+  - `allowedRoots`: list of allowed roots for file operations (`create`, `update`, `delete`)
+  - if omitted (or empty), allowed roots default to the current working directory (`process.cwd()`) at apply time
+  - each file operation path is resolved locally and denied when outside all allowed roots
 
 ## Preconditions
 
@@ -118,6 +125,7 @@ On approval, add:
 - `summary`
 - `operations`
 - `preconditions`
+- `execution`
 
 MVP note: this is deterministic local hashing, not external signing/attestation.
 

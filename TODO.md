@@ -16,6 +16,7 @@ This project stays intentionally MVP-sized: local CLI, schema-backed plans, hash
 4. Added `apply-plan --dry-run` preview mode that reports planned file/command actions without executing writes, commands, or precondition checks, and includes readiness/verification state even before approval.
 5. Added MVP command hardening for apply: optional allow/deny substring policy and default/per-command timeout behavior with explicit failure reporting.
 6. Expanded apply tests for allowed commands, denied commands, timeout failures, and `allowFailure` continuation behavior.
+7. Added MVP file path hardening for apply: deterministic allowed-root checks (defaulting to workspace cwd), explicit deny reporting for outside-root paths, and dry-run path safety previews.
 
 ## After Launch (Small Backlog)
 

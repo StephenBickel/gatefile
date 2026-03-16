@@ -34,7 +34,8 @@
       "type": "object",
       "properties": {
         "commandTimeoutMs": { "type": "number", "exclusiveMinimum": 0 },
-        "commandPolicy": { "$ref": "#/$defs/commandPolicy" }
+        "commandPolicy": { "$ref": "#/$defs/commandPolicy" },
+        "filePolicy": { "$ref": "#/$defs/filePolicy" }
       }
     },
     "risk": {
@@ -128,6 +129,16 @@
       "properties": {
         "mode": { "type": "string", "enum": ["allow", "deny"] },
         "patterns": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "filePolicy": {
+      "type": "object",
+      "required": ["allowedRoots"],
+      "properties": {
+        "allowedRoots": {
           "type": "array",
           "items": { "type": "string" }
         }

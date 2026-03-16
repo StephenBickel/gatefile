@@ -46,7 +46,12 @@ function makePlanDraft(tempRoot) {
           command: `${process.execPath} -e "require('node:fs').writeFileSync(${JSON.stringify(markerPath)}, 'ran', 'utf8')"`
         }
       ],
-      preconditions: [{ kind: 'git_clean' }]
+      preconditions: [{ kind: 'git_clean' }],
+      execution: {
+        filePolicy: {
+          allowedRoots: [tempRoot]
+        }
+      }
     },
     createPath,
     markerPath
@@ -132,6 +137,7 @@ test('previewPlan shows file and command actions without executing side effects'
     assert.equal(report.preconditionsChecked, false);
     assert.equal(report.results.length, 4);
     assert.match(report.results[0].message, /would create/);
+    assert.match(report.results[0].details, /path safety: allowed/);
     assert.match(report.results[1].message, /would update/);
     assert.match(report.results[2].message, /would delete/);
     assert.match(report.results[3].message, /would run command/);
@@ -213,6 +219,7 @@ test('apply-plan --dry-run works without --yes and performs no writes', (t) => {
     blockers: []
   });
   assert.match(report.results[0].message, /would create/);
+  assert.match(report.results[0].details, /path safety: allowed/);
   assertNoSideEffects(createPath, markerPath);
 });
 
@@ -333,7 +340,12 @@ test('applyPlan reports command timeout failures', (t) => {
         timeoutMs: 25
       }
     ],
-    preconditions: []
+    preconditions: [],
+    execution: {
+      filePolicy: {
+        allowedRoots: [root]
+      }
+    }
   };
 
   const plan = approvePlan(createPlanFromDraft(draft), 'ci-user');
@@ -375,7 +387,12 @@ test('applyPlan respects allowFailure for timed out commands', (t) => {
         after: 'continued\n'
       }
     ],
-    preconditions: []
+    preconditions: [],
+    execution: {
+      filePolicy: {
+        allowedRoots: [root]
+      }
+    }
   };
 
   const plan = approvePlan(createPlanFromDraft(draft), 'ci-user');
@@ -392,4 +409,170 @@ test('applyPlan respects allowFailure for timed out commands', (t) => {
   assert.match(report.results[0].message, /allowFailure=true/);
   assert.equal(report.results[1].success, true);
   assert.equal(fs.readFileSync(createdPath, 'utf8'), 'continued\n');
+});
+
+test('previewPlan marks file operations denied when path is outside default workspace root', () => {
+  const outsideRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'planfile-preview-denied-'));
+  try {
+    const outsidePath = path.join(outsideRoot, 'outside.txt');
+    const draft = {
+      source: 'test-agent',
+      summary: 'Preview denied path test',
+      operations: [
+        {
+          id: 'op_outside_preview',
+          type: 'file',
+          action: 'create',
+          path: outsidePath,
+          after: 'x\n'
+        }
+      ],
+      preconditions: []
+    };
+
+    const plan = approvePlan(createPlanFromDraft(draft), 'ci-user');
+    const report = previewPlan(plan);
+
+    assert.equal(report.success, true);
+    assert.equal(report.results.length, 1);
+    assert.match(report.results[0].message, /\[DENIED by file policy\]/);
+    assert.match(report.results[0].details, /path safety: denied/);
+    assert.match(report.results[0].details, /allowedRoots:/);
+    assert.equal(fs.existsSync(outsidePath), false);
+  } finally {
+    fs.rmSync(outsideRoot, { recursive: true, force: true });
+  }
+});
+
+test('applyPlan allows file writes inside default workspace root', () => {
+  const root = fs.mkdtempSync(path.join(process.cwd(), '.planfile-apply-in-root-'));
+  try {
+    const targetPath = path.join(root, 'allowed.txt');
+    const draft = {
+      source: 'test-agent',
+      summary: 'In-root file write test',
+      operations: [
+        {
+          id: 'op_file_in_root',
+          type: 'file',
+          action: 'create',
+          path: targetPath,
+          after: 'ok\n'
+        }
+      ],
+      preconditions: []
+    };
+
+    const plan = approvePlan(createPlanFromDraft(draft), 'ci-user');
+    const report = applyPlan(plan);
+
+    assert.equal(report.success, true);
+    assert.equal(report.results[0].success, true);
+    assert.equal(fs.readFileSync(targetPath, 'utf8'), 'ok\n');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('applyPlan denies file writes outside default workspace root', () => {
+  const outsideRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'planfile-apply-outside-root-'));
+  try {
+    const outsidePath = path.join(outsideRoot, 'outside.txt');
+    const draft = {
+      source: 'test-agent',
+      summary: 'Outside-root file write denied test',
+      operations: [
+        {
+          id: 'op_file_outside_root',
+          type: 'file',
+          action: 'create',
+          path: outsidePath,
+          after: 'blocked\n'
+        }
+      ],
+      preconditions: []
+    };
+
+    const plan = approvePlan(createPlanFromDraft(draft), 'ci-user');
+    const report = applyPlan(plan);
+
+    assert.equal(report.success, false);
+    assert.equal(report.results[0].success, false);
+    assert.match(report.results[0].message, /file path denied by policy/);
+    assert.equal(fs.existsSync(outsidePath), false);
+  } finally {
+    fs.rmSync(outsideRoot, { recursive: true, force: true });
+  }
+});
+
+test('applyPlan denies traversal-style paths that resolve outside default workspace root', () => {
+  const traversalPath = '../planfile-traversal-denied.txt';
+  const resolvedTraversalPath = path.resolve(process.cwd(), traversalPath);
+  if (fs.existsSync(resolvedTraversalPath)) {
+    fs.rmSync(resolvedTraversalPath, { force: true });
+  }
+
+  try {
+    const draft = {
+      source: 'test-agent',
+      summary: 'Traversal denied test',
+      operations: [
+        {
+          id: 'op_file_traversal',
+          type: 'file',
+          action: 'create',
+          path: traversalPath,
+          after: 'blocked\n'
+        }
+      ],
+      preconditions: []
+    };
+
+    const plan = approvePlan(createPlanFromDraft(draft), 'ci-user');
+    const report = applyPlan(plan);
+
+    assert.equal(report.success, false);
+    assert.equal(report.results[0].success, false);
+    assert.match(report.results[0].message, /file path denied by policy/);
+    assert.equal(fs.existsSync(resolvedTraversalPath), false);
+  } finally {
+    if (fs.existsSync(resolvedTraversalPath)) {
+      fs.rmSync(resolvedTraversalPath, { force: true });
+    }
+  }
+});
+
+test('applyPlan allows explicit filePolicy allowedRoots override', () => {
+  const outsideRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'planfile-apply-override-root-'));
+  try {
+    const outsidePath = path.join(outsideRoot, 'override-allowed.txt');
+    const draft = {
+      source: 'test-agent',
+      summary: 'Allowed roots override test',
+      operations: [
+        {
+          id: 'op_file_override',
+          type: 'file',
+          action: 'create',
+          path: outsidePath,
+          after: 'allowed\n'
+        }
+      ],
+      preconditions: [],
+      execution: {
+        filePolicy: {
+          allowedRoots: [outsideRoot]
+        }
+      }
+    };
+
+    const plan = approvePlan(createPlanFromDraft(draft), 'ci-user');
+    const report = applyPlan(plan);
+
+    assert.equal(report.success, true);
+    assert.equal(report.results[0].success, true);
+    assert.equal(fs.readFileSync(outsidePath, 'utf8'), 'allowed\n');
+  } finally {
+    fs.rmSync(outsideRoot, { recursive: true, force: true });
+  }
 });

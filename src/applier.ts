@@ -1,6 +1,6 @@
 import { execSync } from "node:child_process";
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { mkdirSync } from "node:fs";
 import { ApplyOperationResult, ApplyReport, DryRunOperationPreview, DryRunReport, PlanFile } from "./types";
 import { checkPreconditions } from "./preconditions";
@@ -8,18 +8,81 @@ import { verifyPlan } from "./verify";
 
 const DEFAULT_COMMAND_TIMEOUT_MS = 10_000;
 
-function applyFileOperation(op: Extract<PlanFile["operations"][number], { type: "file" }>): ApplyOperationResult {
+interface FilePathSafetyResult {
+  allowed: boolean;
+  resolvedPath: string;
+  allowedRoots: string[];
+  reason?: string;
+}
+
+function effectiveAllowedRoots(plan: PlanFile): string[] {
+  const rawRoots = plan.execution?.filePolicy?.allowedRoots
+    ?.map((root) => root.trim())
+    .filter((root) => root.length > 0);
+
+  const roots = rawRoots && rawRoots.length > 0 ? rawRoots : [process.cwd()];
+  const deduped = new Set<string>();
+  for (const root of roots) {
+    deduped.add(resolve(root));
+  }
+  return [...deduped];
+}
+
+function isPathWithinRoot(resolvedPath: string, root: string): boolean {
+  const rel = relative(root, resolvedPath);
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+function evaluateFilePathSafety(plan: PlanFile, rawPath: string): FilePathSafetyResult {
+  if (rawPath.trim().length === 0) {
+    const allowedRoots = effectiveAllowedRoots(plan);
+    return {
+      allowed: false,
+      resolvedPath: resolve(rawPath),
+      allowedRoots,
+      reason: "path is empty"
+    };
+  }
+
+  const resolvedPath = resolve(rawPath);
+  const allowedRoots = effectiveAllowedRoots(plan);
+  const allowed = allowedRoots.some((root) => isPathWithinRoot(resolvedPath, root));
+  if (allowed) {
+    return { allowed: true, resolvedPath, allowedRoots };
+  }
+
+  return {
+    allowed: false,
+    resolvedPath,
+    allowedRoots,
+    reason: `resolved path is outside allowed roots [${allowedRoots.join(", ")}]`
+  };
+}
+
+function applyFileOperation(
+  plan: PlanFile,
+  op: Extract<PlanFile["operations"][number], { type: "file" }>
+): ApplyOperationResult {
+  const pathSafety = evaluateFilePathSafety(plan, op.path);
+  if (!pathSafety.allowed) {
+    return {
+      operationId: op.id,
+      success: false,
+      message: `file path denied by policy: ${op.path} -> ${pathSafety.resolvedPath} (${pathSafety.reason})`
+    };
+  }
+
   try {
     if (op.action === "create" || op.action === "update") {
-      mkdirSync(dirname(op.path), { recursive: true });
-      writeFileSync(op.path, op.after ?? "", "utf-8");
+      mkdirSync(dirname(pathSafety.resolvedPath), { recursive: true });
+      writeFileSync(pathSafety.resolvedPath, op.after ?? "", "utf-8");
       return { operationId: op.id, success: true, message: `${op.action} ${op.path}` };
     }
 
     if (op.action === "delete") {
       // Safe-ish MVP: verify file exists before delete for clearer reporting.
-      readFileSync(op.path, "utf-8");
-      rmSync(op.path);
+      readFileSync(pathSafety.resolvedPath, "utf-8");
+      rmSync(pathSafety.resolvedPath);
       return { operationId: op.id, success: true, message: `delete ${op.path}` };
     }
 
@@ -139,13 +202,25 @@ function lineCount(value: string): number {
   return value.split("\n").length;
 }
 
-function describeFilePreview(op: Extract<PlanFile["operations"][number], { type: "file" }>): DryRunOperationPreview {
+function pathSafetyDetails(pathSafety: FilePathSafetyResult): string {
+  const status = pathSafety.allowed ? "allowed" : "denied";
+  const reason = pathSafety.reason ? `, reason: ${pathSafety.reason}` : "";
+  return `path safety: ${status}, resolved: ${pathSafety.resolvedPath}, allowedRoots: [${pathSafety.allowedRoots.join(", ")}]${reason}`;
+}
+
+function describeFilePreview(
+  plan: PlanFile,
+  op: Extract<PlanFile["operations"][number], { type: "file" }>
+): DryRunOperationPreview {
+  const pathSafety = evaluateFilePathSafety(plan, op.path);
+  const deniedSuffix = pathSafety.allowed ? "" : " [DENIED by file policy]";
+
   if (op.action === "create") {
     const after = op.after ?? "";
     return {
       operationId: op.id,
-      message: `would create ${op.path}`,
-      details: `after: ${after.length} chars, ${lineCount(after)} lines`
+      message: `would create ${op.path}${deniedSuffix}`,
+      details: `${pathSafetyDetails(pathSafety)}; after: ${after.length} chars, ${lineCount(after)} lines`
     };
   }
 
@@ -156,16 +231,18 @@ function describeFilePreview(op: Extract<PlanFile["operations"][number], { type:
     const deltaPrefix = delta >= 0 ? "+" : "";
     return {
       operationId: op.id,
-      message: `would update ${op.path}`,
-      details: `before: ${before.length} chars, after: ${after.length} chars, delta: ${deltaPrefix}${delta}, lines: ${lineCount(before)} -> ${lineCount(after)}`
+      message: `would update ${op.path}${deniedSuffix}`,
+      details: `${pathSafetyDetails(pathSafety)}; before: ${before.length} chars, after: ${after.length} chars, delta: ${deltaPrefix}${delta}, lines: ${lineCount(before)} -> ${lineCount(after)}`
     };
   }
 
   const before = op.before;
   return {
     operationId: op.id,
-    message: `would delete ${op.path}`,
-    details: before == null ? "before content: not provided" : `before: ${before.length} chars, ${lineCount(before)} lines`
+    message: `would delete ${op.path}${deniedSuffix}`,
+    details:
+      `${pathSafetyDetails(pathSafety)}; ` +
+      (before == null ? "before content: not provided" : `before: ${before.length} chars, ${lineCount(before)} lines`)
   };
 }
 
@@ -189,7 +266,7 @@ export function previewPlan(plan: PlanFile): DryRunReport {
   const verification = verifyPlan(plan);
 
   const results = plan.operations.map((op) =>
-    op.type === "file" ? describeFilePreview(op) : describeCommandPreview(plan, op)
+    op.type === "file" ? describeFilePreview(plan, op) : describeCommandPreview(plan, op)
   );
 
   return {
@@ -221,7 +298,7 @@ export function applyPlan(plan: PlanFile): ApplyReport {
   const results: ApplyOperationResult[] = [];
 
   for (const op of plan.operations) {
-    const result = op.type === "file" ? applyFileOperation(op) : applyCommandOperation(plan, op);
+    const result = op.type === "file" ? applyFileOperation(plan, op) : applyCommandOperation(plan, op);
     results.push(result);
 
     if (!result.success) {

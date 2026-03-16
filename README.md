@@ -72,7 +72,7 @@ planfile apply-plan .plan/plan.json --yes
 ## Coding-Agent Demo: Verify, Approve, Tamper Detection
 
 Approval is bound to a deterministic hash of the normalized plan content
-(`version`, `source`, `summary`, `operations`, `preconditions`).
+(`version`, `source`, `summary`, `operations`, `preconditions`, `execution`).
 
 This prevents a common failure mode: review one plan, then apply a modified one.
 
@@ -139,16 +139,22 @@ Not yet in MVP:
 - External API transaction adapters
 - Remote signing/attestation services
 
-## Command Safety (MVP)
+## Execution Safety (MVP)
 
-`apply-plan` now enforces an MVP command safety layer:
+`apply-plan` enforces MVP safety layers for commands and file paths:
 - Default command timeout: `10000ms` per command operation
 - Per-command timeout override: `operations[].timeoutMs`
 - Plan-level timeout default override: `execution.commandTimeoutMs`
 - Optional plan-level command policy:
   - `execution.commandPolicy.mode: "allow"` requires each command to match at least one substring pattern
   - `execution.commandPolicy.mode: "deny"` blocks commands matching configured substring patterns
+- Default file policy keeps file operations inside the current working directory (`process.cwd()`) when apply runs
+- Optional file root override: `execution.filePolicy.allowedRoots`
+  - Each root may be relative or absolute
+  - Relative roots are resolved from `process.cwd()` at apply time
+  - File operation paths are resolved locally and denied when outside all allowed roots
 - `allowFailure: true` still allows apply to continue for command failures, including timeout/policy denials, with explicit reporting in the apply result
+- `apply-plan --dry-run` previews file path safety for each file operation, including resolved path, allowed roots, and explicit denied markers
 
 Example command controls in a draft/plan:
 
@@ -159,6 +165,9 @@ Example command controls in a draft/plan:
     "commandPolicy": {
       "mode": "allow",
       "patterns": ["node -e", "npm test"]
+    },
+    "filePolicy": {
+      "allowedRoots": ["./tmp/safe-root"]
     }
   },
   "operations": [

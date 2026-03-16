@@ -29,9 +29,14 @@ export interface CommandPolicy {
   patterns: string[];
 }
 
+export interface FilePolicy {
+  allowedRoots: string[];
+}
+
 export interface ExecutionConfig {
   commandTimeoutMs?: number;
   commandPolicy?: CommandPolicy;
+  filePolicy?: FilePolicy;
 }
 
 export type PreconditionKind = "git_clean" | "branch_is" | "env_present";
