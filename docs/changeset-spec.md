@@ -14,6 +14,13 @@ The machine-readable schema for this MVP lives at `schema/planfile.schema.json`.
   "summary": "Short intent summary",
   "operations": [],
   "preconditions": [],
+  "execution": {
+    "commandTimeoutMs": 10000,
+    "commandPolicy": {
+      "mode": "allow",
+      "patterns": ["node -e", "npm test"]
+    }
+  },
   "risk": {
     "score": 0,
     "level": "low",
@@ -58,9 +65,21 @@ Allowed actions:
   "type": "command",
   "command": "npm test",
   "cwd": ".",
+  "timeoutMs": 5000,
   "allowFailure": false
 }
 ```
+
+`timeoutMs` is optional and must be > 0 when set.
+
+## Execution Controls (MVP)
+
+Optional top-level `execution` supports lightweight command hardening:
+- `commandTimeoutMs`: default timeout for command operations (ms, > 0)
+- `commandPolicy`:
+  - `mode: "allow"` means command text must include at least one pattern substring
+  - `mode: "deny"` means command text must not include any matching pattern substring
+  - `patterns`: string list used for substring matching
 
 ## Preconditions
 

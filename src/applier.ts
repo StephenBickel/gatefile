@@ -6,6 +6,8 @@ import { ApplyOperationResult, ApplyReport, DryRunOperationPreview, DryRunReport
 import { checkPreconditions } from "./preconditions";
 import { verifyPlan } from "./verify";
 
+const DEFAULT_COMMAND_TIMEOUT_MS = 10_000;
+
 function applyFileOperation(op: Extract<PlanFile["operations"][number], { type: "file" }>): ApplyOperationResult {
   try {
     if (op.action === "create" || op.action === "update") {
@@ -31,28 +33,103 @@ function applyFileOperation(op: Extract<PlanFile["operations"][number], { type: 
   }
 }
 
+function commandTimeoutMs(
+  plan: PlanFile,
+  op: Extract<PlanFile["operations"][number], { type: "command" }>
+): number {
+  const rawTimeout = op.timeoutMs ?? plan.execution?.commandTimeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS;
+  if (!Number.isFinite(rawTimeout) || rawTimeout <= 0) {
+    return DEFAULT_COMMAND_TIMEOUT_MS;
+  }
+  return Math.floor(rawTimeout);
+}
+
+function checkCommandPolicy(
+  plan: PlanFile,
+  command: string
+): { allowed: true } | { allowed: false; message: string } {
+  const policy = plan.execution?.commandPolicy;
+  if (!policy) return { allowed: true };
+
+  const patterns = policy.patterns.filter((pattern) => pattern.length > 0);
+  if (patterns.length === 0) return { allowed: true };
+
+  const matches = patterns.filter((pattern) => command.includes(pattern));
+  if (policy.mode === "allow" && matches.length === 0) {
+    return {
+      allowed: false,
+      message: `command denied by policy (allow mode): command must include one of [${patterns.join(", ")}]`
+    };
+  }
+
+  if (policy.mode === "deny" && matches.length > 0) {
+    return {
+      allowed: false,
+      message: `command denied by policy (deny mode): matched [${matches.join(", ")}]`
+    };
+  }
+
+  return { allowed: true };
+}
+
+function formatCommandFailureMessage(error: unknown, timeoutMs: number): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const code = typeof error === "object" && error != null ? (error as { code?: string }).code : undefined;
+
+  if (code === "ETIMEDOUT" || message.includes("ETIMEDOUT")) {
+    return `command timed out after ${timeoutMs}ms: ${message}`;
+  }
+
+  return `command failed: ${message}`;
+}
+
 function applyCommandOperation(
+  plan: PlanFile,
   op: Extract<PlanFile["operations"][number], { type: "command" }>
 ): ApplyOperationResult {
-  try {
-    execSync(op.command, {
-      cwd: op.cwd,
-      stdio: "inherit"
-    });
-    return { operationId: op.id, success: true, message: `command ok: ${op.command}` };
-  } catch (error) {
+  const timeoutMs = commandTimeoutMs(plan, op);
+  const policyResult = checkCommandPolicy(plan, op.command);
+  if (!policyResult.allowed) {
     if (op.allowFailure) {
       return {
         operationId: op.id,
         success: true,
-        message: `command failed but allowed: ${(error as Error).message}`
+        message: `command denied but allowed: ${policyResult.message}`
       };
     }
 
     return {
       operationId: op.id,
       success: false,
-      message: `command failed: ${(error as Error).message}`
+      message: policyResult.message
+    };
+  }
+
+  try {
+    execSync(op.command, {
+      cwd: op.cwd,
+      stdio: "inherit",
+      timeout: timeoutMs
+    });
+    return {
+      operationId: op.id,
+      success: true,
+      message: `command ok: ${op.command} (timeout ${timeoutMs}ms)`
+    };
+  } catch (error) {
+    const failureMessage = formatCommandFailureMessage(error, timeoutMs);
+    if (op.allowFailure) {
+      return {
+        operationId: op.id,
+        success: true,
+        message: `${failureMessage} (allowFailure=true)`
+      };
+    }
+
+    return {
+      operationId: op.id,
+      success: false,
+      message: failureMessage
     };
   }
 }
@@ -93,14 +170,18 @@ function describeFilePreview(op: Extract<PlanFile["operations"][number], { type:
 }
 
 function describeCommandPreview(
+  plan: PlanFile,
   op: Extract<PlanFile["operations"][number], { type: "command" }>
 ): DryRunOperationPreview {
   const cwd = op.cwd ?? process.cwd();
   const allowFailure = op.allowFailure === true ? "yes" : "no";
+  const timeoutMs = commandTimeoutMs(plan, op);
+  const policy = plan.execution?.commandPolicy;
+  const policyDetails = policy ? `, policy: ${policy.mode} [${policy.patterns.join(", ")}]` : "";
   return {
     operationId: op.id,
     message: `would run command: ${op.command}`,
-    details: `cwd: ${cwd}, allowFailure: ${allowFailure}`
+    details: `cwd: ${cwd}, allowFailure: ${allowFailure}, timeoutMs: ${timeoutMs}${policyDetails}`
   };
 }
 
@@ -108,7 +189,7 @@ export function previewPlan(plan: PlanFile): DryRunReport {
   const verification = verifyPlan(plan);
 
   const results = plan.operations.map((op) =>
-    op.type === "file" ? describeFilePreview(op) : describeCommandPreview(op)
+    op.type === "file" ? describeFilePreview(op) : describeCommandPreview(plan, op)
   );
 
   return {
@@ -140,7 +221,7 @@ export function applyPlan(plan: PlanFile): ApplyReport {
   const results: ApplyOperationResult[] = [];
 
   for (const op of plan.operations) {
-    const result = op.type === "file" ? applyFileOperation(op) : applyCommandOperation(op);
+    const result = op.type === "file" ? applyFileOperation(op) : applyCommandOperation(plan, op);
     results.push(result);
 
     if (!result.success) {

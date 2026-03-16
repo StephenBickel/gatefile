@@ -5,7 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
-const { createPlanFromDraft, approvePlan, previewPlan } = require('../dist');
+const { applyPlan, createPlanFromDraft, approvePlan, previewPlan } = require('../dist');
 
 const CLI_PATH = path.join(__dirname, '..', 'dist', 'cli.js');
 
@@ -110,6 +110,16 @@ function assertDryRunVerification(report, expected) {
   for (const blocker of expected.blockers) {
     assert.match(report.verification.blockers.join('\n'), new RegExp(blocker));
   }
+}
+
+function commandWriteFile(filePath, value) {
+  return `${process.execPath} -e 'require("node:fs").writeFileSync(${JSON.stringify(
+    filePath
+  )}, ${JSON.stringify(value)}, "utf8")'`;
+}
+
+function commandSleep(ms) {
+  return `${process.execPath} -e 'setTimeout(() => {}, ${ms})'`;
 }
 
 test('previewPlan shows file and command actions without executing side effects', () => {
@@ -228,4 +238,158 @@ test('apply-plan --dry-run works on unapproved plans and reports not-ready verif
     blockers: ['Plan is not approved']
   });
   assertNoSideEffects(createPath, markerPath);
+});
+
+test('applyPlan runs allowed command operations', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'planfile-apply-command-allow-'));
+  t.after(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  const markerPath = path.join(root, 'allowed.txt');
+  const draft = {
+    source: 'test-agent',
+    summary: 'Allowed command apply test',
+    operations: [
+      {
+        id: 'op_command_allow',
+        type: 'command',
+        command: commandWriteFile(markerPath, 'allowed')
+      }
+    ],
+    preconditions: [],
+    execution: {
+      commandPolicy: {
+        mode: 'allow',
+        patterns: [`${process.execPath} -e`]
+      }
+    }
+  };
+
+  const plan = approvePlan(createPlanFromDraft(draft), 'ci-user');
+  const report = applyPlan(plan);
+  if (!report.success && /EPERM/.test(report.results[0]?.message ?? '')) {
+    t.skip('subprocess execution is blocked in this environment');
+    return;
+  }
+
+  assert.equal(report.success, true);
+  assert.equal(report.results.length, 1);
+  assert.equal(report.results[0].success, true);
+  assert.match(report.results[0].message, /command ok/);
+  assert.equal(fs.readFileSync(markerPath, 'utf8'), 'allowed');
+});
+
+test('applyPlan denies commands that do not match allow policy', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'planfile-apply-command-deny-'));
+  try {
+    const markerPath = path.join(root, 'denied.txt');
+    const draft = {
+      source: 'test-agent',
+      summary: 'Denied command apply test',
+      operations: [
+        {
+          id: 'op_command_deny',
+          type: 'command',
+          command: commandWriteFile(markerPath, 'denied')
+        }
+      ],
+      preconditions: [],
+      execution: {
+        commandPolicy: {
+          mode: 'allow',
+          patterns: ['npm test']
+        }
+      }
+    };
+
+    const plan = approvePlan(createPlanFromDraft(draft), 'ci-user');
+    const report = applyPlan(plan);
+
+    assert.equal(report.success, false);
+    assert.equal(report.results.length, 1);
+    assert.equal(report.results[0].success, false);
+    assert.match(report.results[0].message, /command denied by policy \(allow mode\)/);
+    assert.equal(fs.existsSync(markerPath), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('applyPlan reports command timeout failures', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'planfile-apply-command-timeout-'));
+  t.after(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  const draft = {
+    source: 'test-agent',
+    summary: 'Timeout command apply test',
+    operations: [
+      {
+        id: 'op_command_timeout',
+        type: 'command',
+        command: commandSleep(200),
+        timeoutMs: 25
+      }
+    ],
+    preconditions: []
+  };
+
+  const plan = approvePlan(createPlanFromDraft(draft), 'ci-user');
+  const report = applyPlan(plan);
+  if (!report.success && /EPERM/.test(report.results[0]?.message ?? '')) {
+    t.skip('subprocess execution is blocked in this environment');
+    return;
+  }
+
+  assert.equal(report.success, false);
+  assert.equal(report.results.length, 1);
+  assert.equal(report.results[0].success, false);
+  assert.match(report.results[0].message, /timed out after 25ms/);
+});
+
+test('applyPlan respects allowFailure for timed out commands', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'planfile-apply-command-timeout-allow-'));
+  t.after(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  const createdPath = path.join(root, 'after-timeout.txt');
+  const draft = {
+    source: 'test-agent',
+    summary: 'Timeout allowFailure apply test',
+    operations: [
+      {
+        id: 'op_command_timeout_allowed',
+        type: 'command',
+        command: commandSleep(200),
+        timeoutMs: 25,
+        allowFailure: true
+      },
+      {
+        id: 'op_file_create_after_timeout',
+        type: 'file',
+        action: 'create',
+        path: createdPath,
+        after: 'continued\n'
+      }
+    ],
+    preconditions: []
+  };
+
+  const plan = approvePlan(createPlanFromDraft(draft), 'ci-user');
+  const report = applyPlan(plan);
+  if (!report.success && /EPERM/.test(report.results[0]?.message ?? '')) {
+    t.skip('subprocess execution is blocked in this environment');
+    return;
+  }
+
+  assert.equal(report.success, true);
+  assert.equal(report.results.length, 2);
+  assert.equal(report.results[0].success, true);
+  assert.match(report.results[0].message, /timed out after 25ms/);
+  assert.match(report.results[0].message, /allowFailure=true/);
+  assert.equal(report.results[1].success, true);
+  assert.equal(fs.readFileSync(createdPath, 'utf8'), 'continued\n');
 });

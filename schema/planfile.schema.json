@@ -30,6 +30,13 @@
       "type": "array",
       "items": { "$ref": "#/$defs/precondition" }
     },
+    "execution": {
+      "type": "object",
+      "properties": {
+        "commandTimeoutMs": { "type": "number", "exclusiveMinimum": 0 },
+        "commandPolicy": { "$ref": "#/$defs/commandPolicy" }
+      }
+    },
     "risk": {
       "type": "object",
       "required": ["score", "level", "reasons"],
@@ -109,10 +116,22 @@
             "type": { "type": "string", "const": "command" },
             "command": { "type": "string" },
             "cwd": { "type": "string" },
+            "timeoutMs": { "type": "number", "exclusiveMinimum": 0 },
             "allowFailure": { "type": "boolean" }
           }
         }
       ]
+    },
+    "commandPolicy": {
+      "type": "object",
+      "required": ["mode", "patterns"],
+      "properties": {
+        "mode": { "type": "string", "enum": ["allow", "deny"] },
+        "patterns": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
     },
     "precondition": {
       "type": "object",

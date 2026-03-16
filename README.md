@@ -130,6 +130,7 @@ Artifacts are written under `demo/output/` (screenshots plus Playwright video in
 Current MVP focuses on:
 - File-diff operations (`create`, `update`, `delete`)
 - Shell command operations with explicit risk and preconditions
+- Command safety guardrails (optional allow/deny pattern policy + timeout defaults)
 - Dry-run preview reports for planned file/command operations before apply
 - Local CLI and JSON plan artifacts
 
@@ -137,6 +138,40 @@ Not yet in MVP:
 - Browser automation actions
 - External API transaction adapters
 - Remote signing/attestation services
+
+## Command Safety (MVP)
+
+`apply-plan` now enforces an MVP command safety layer:
+- Default command timeout: `10000ms` per command operation
+- Per-command timeout override: `operations[].timeoutMs`
+- Plan-level timeout default override: `execution.commandTimeoutMs`
+- Optional plan-level command policy:
+  - `execution.commandPolicy.mode: "allow"` requires each command to match at least one substring pattern
+  - `execution.commandPolicy.mode: "deny"` blocks commands matching configured substring patterns
+- `allowFailure: true` still allows apply to continue for command failures, including timeout/policy denials, with explicit reporting in the apply result
+
+Example command controls in a draft/plan:
+
+```json
+{
+  "execution": {
+    "commandTimeoutMs": 5000,
+    "commandPolicy": {
+      "mode": "allow",
+      "patterns": ["node -e", "npm test"]
+    }
+  },
+  "operations": [
+    {
+      "id": "op_cmd_1",
+      "type": "command",
+      "command": "node -e \"console.log('ok')\"",
+      "timeoutMs": 2000,
+      "allowFailure": false
+    }
+  ]
+}
+```
 
 ## Architecture Docs
 

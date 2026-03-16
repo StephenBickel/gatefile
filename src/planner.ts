@@ -17,7 +17,7 @@ export function createPlanFromDraft(draft: PlanDraft): PlanFile {
 
   const risk = scoreRisk(draft.operations);
 
-  return withComputedIntegrity({
+  const planWithoutIntegrity: Omit<PlanFile, "integrity"> = {
     version: draft.version ?? "0.1",
     id: `plan_${randomUUID()}`,
     createdAt: new Date().toISOString(),
@@ -29,7 +29,13 @@ export function createPlanFromDraft(draft: PlanDraft): PlanFile {
     approval: {
       status: "pending"
     }
-  });
+  };
+
+  if (draft.execution) {
+    planWithoutIntegrity.execution = draft.execution;
+  }
+
+  return withComputedIntegrity(planWithoutIntegrity);
 }
 
 export function approvePlan(plan: PlanFile, approvedBy: string): PlanFile {

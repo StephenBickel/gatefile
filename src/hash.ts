@@ -11,6 +11,7 @@ interface NormalizedPlan {
   summary: string;
   operations: PlanFile["operations"];
   preconditions: PlanFile["preconditions"];
+  execution?: PlanFile["execution"];
 }
 
 export function normalizePlanForHash(plan: HashablePlan): NormalizedPlan {
@@ -19,7 +20,8 @@ export function normalizePlanForHash(plan: HashablePlan): NormalizedPlan {
     source: plan.source,
     summary: plan.summary,
     operations: plan.operations,
-    preconditions: plan.preconditions
+    preconditions: plan.preconditions,
+    execution: plan.execution
   };
 }
 

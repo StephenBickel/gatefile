@@ -16,10 +16,23 @@ export interface CommandOperation {
   type: "command";
   command: string;
   cwd?: string;
+  timeoutMs?: number;
   allowFailure?: boolean;
 }
 
 export type Operation = FileOperation | CommandOperation;
+
+export type CommandPolicyMode = "allow" | "deny";
+
+export interface CommandPolicy {
+  mode: CommandPolicyMode;
+  patterns: string[];
+}
+
+export interface ExecutionConfig {
+  commandTimeoutMs?: number;
+  commandPolicy?: CommandPolicy;
+}
 
 export type PreconditionKind = "git_clean" | "branch_is" | "env_present";
 
@@ -56,6 +69,7 @@ export interface PlanFile {
   summary: string;
   operations: Operation[];
   preconditions: Precondition[];
+  execution?: ExecutionConfig;
   risk: RiskProfile;
   integrity: PlanIntegrity;
   approval: Approval;

@@ -29,6 +29,7 @@
 5. Applier (`src/applier.ts`)
 - `previewPlan` returns side-effect-free operation previews and includes verification status/blockers
 - `applyPlan` executes approved operations in order
+- Applies MVP command safety controls (timeout defaults + optional allow/deny policy matching)
 - Returns per-operation result report
 - Hard-stops on unsafe or unmet preconditions
 
