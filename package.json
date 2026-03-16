@@ -1,7 +1,7 @@
 {
   "name": "gatefile",
-  "version": "0.1.0",
-  "description": "Terraform for AI agent side effects \u2014 review exact file and shell changes, approve the hash, then apply safely.",
+  "version": "0.1.1",
+  "description": "Terraform for AI agent side effects — review exact file and shell changes, approve the hash, then apply safely.",
   "license": "MIT",
   "type": "commonjs",
   "main": "dist/index.js",
