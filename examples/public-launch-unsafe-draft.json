@@ -1,0 +1,20 @@
+{
+  "version": "0.1",
+  "source": "public-launch-demo",
+  "summary": "Unsafe denied apply path for public-launch demo",
+  "operations": [
+    {
+      "id": "op_file_denied",
+      "type": "file",
+      "action": "create",
+      "path": "../public-launch-outside.txt",
+      "after": "this should never be written\n"
+    }
+  ],
+  "preconditions": [],
+  "execution": {
+    "filePolicy": {
+      "allowedRoots": [".plan/public-launch-demo/workspace"]
+    }
+  }
+}

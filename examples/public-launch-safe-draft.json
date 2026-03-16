@@ -1,0 +1,30 @@
+{
+  "version": "0.1",
+  "source": "public-launch-demo",
+  "summary": "Safe approved apply path for public-launch demo",
+  "operations": [
+    {
+      "id": "op_file_create",
+      "type": "file",
+      "action": "create",
+      "path": ".plan/public-launch-demo/workspace/approved.txt",
+      "after": "approved apply executed\n"
+    },
+    {
+      "id": "op_cmd_marker",
+      "type": "command",
+      "command": "node -e \"require('node:fs').appendFileSync('.plan/public-launch-demo/workspace/command.log', 'safe command executed\\n', 'utf8')\"",
+      "allowFailure": false
+    }
+  ],
+  "preconditions": [],
+  "execution": {
+    "commandPolicy": {
+      "mode": "allow",
+      "patterns": ["node -e"]
+    },
+    "filePolicy": {
+      "allowedRoots": [".plan/public-launch-demo/workspace"]
+    }
+  }
+}

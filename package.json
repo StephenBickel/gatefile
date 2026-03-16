@@ -18,6 +18,7 @@
     "build": "tsc -p tsconfig.json",
     "clean": "rm -rf dist",
     "cli": "ts-node src/cli.ts",
+    "demo:e2e": "bash demo/public-launch-e2e.sh",
     "demo:playwright": "mkdir -p demo/output && npx playwright test -c demo/playwright.config.cjs",
     "demo:playwright:install": "npx playwright install chromium",
     "test": "npm run build && node --test",

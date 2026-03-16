@@ -9,6 +9,32 @@
 - `approve` for human or policy gating
 - `apply` for controlled execution with preconditions
 
+## Canonical End-to-End Demo (Public Launch MVP)
+
+Run one terminal-first flow that shows:
+1. create plan
+2. inspect
+3. verify not-ready before approval
+4. approve
+5. dry-run with human-readable output
+6. unsafe denied apply path
+7. safe approved apply
+8. reusable PR gate adoption path
+
+```bash
+npm install
+npm run demo:e2e
+```
+
+Demo artifacts used by the script:
+- `demo/public-launch-e2e.sh`
+- `examples/public-launch-safe-draft.json`
+- `examples/public-launch-unsafe-draft.json`
+
+Adoption path after local demo:
+- `docs/github-pr-gate-example.md`
+- `.github/actions/planfile-pr-gate/action.yml`
+
 ## The Problem
 
 Agent tooling is good at *doing* things, but weak at *governance* of side effects.
@@ -76,7 +102,7 @@ planfile apply-plan .plan/plan.json --yes --human
 `apply-plan --dry-run` returns a preview report without running preconditions, writing files, or executing commands. It works for pending/approved/tampered plans and includes verification state so readiness is explicit in the output.
 Use `--human` for a concise text formatter; omit `--human` for machine-readable JSON.
 
-## Coding-Agent Demo: Verify, Approve, Tamper Detection
+## Additional Integrity Demo: Verify, Approve, Tamper Detection
 
 Approval is bound to a deterministic hash of the normalized plan content
 (`version`, `source`, `summary`, `operations`, `preconditions`, `execution`).
@@ -195,6 +221,7 @@ Example command controls in a draft/plan:
 - [Architecture](docs/architecture.md)
 - [Changeset Spec](docs/changeset-spec.md)
 - [JSON Schema](schema/planfile.schema.json)
+- [Public Launch Demo Script](demo/public-launch-e2e.sh)
 - [Coding Agent Demo](docs/coding-agent-demo.md)
 - [Use Cases](docs/use-cases.md)
 - [GitHub PR Gate Example](docs/github-pr-gate-example.md)
