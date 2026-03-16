@@ -1,0 +1,10 @@
+{
+  "hooks": {
+    "beforeApprove": {
+      "command": "node ./scripts/before-approve.js"
+    },
+    "beforeApply": {
+      "command": "node ./scripts/before-apply.js"
+    }
+  }
+}

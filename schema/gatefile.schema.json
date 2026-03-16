@@ -21,6 +21,10 @@
     "createdAt": { "type": "string", "format": "date-time" },
     "source": { "type": "string" },
     "summary": { "type": "string" },
+    "dependsOn": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
     "operations": {
       "type": "array",
       "minItems": 1,

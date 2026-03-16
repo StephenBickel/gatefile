@@ -13,6 +13,7 @@ Your AI agent wants to edit 14 files and run 3 shell commands. Do you trust it?
 npx gatefile inspect-plan .plan/plan.json    # see exactly what the agent wants to do
 npx gatefile approve-plan .plan/plan.json    # approve the hash-locked plan
 npx gatefile apply-plan .plan/plan.json      # execute with safety guardrails
+npx gatefile rollback-apply <receipt-id> --yes
 ```
 
 ## Why
@@ -37,6 +38,7 @@ Agent emits plan → Human reviews → Approve hash → Apply with guardrails
 3. **Verify** — integrity check confirms the plan hasn't been tampered with
 4. **Approve** — human or policy engine approves, binding to the exact plan hash
 5. **Apply** — execute with precondition checks, path sandboxing, command policies, and timeouts
+6. **Rollback (files)** — restore Gatefile-managed file operations from the pre-apply snapshot/receipt
 
 Approval is hash-bound: if anyone modifies the plan after approval, `verify` catches it and `apply` refuses.
 
@@ -84,6 +86,9 @@ gatefile approve-plan .plan/plan.json --by steve
 
 # Execute
 gatefile apply-plan .plan/plan.json --yes
+
+# Roll back file operations from a prior apply receipt
+gatefile rollback-apply <receipt-id> --yes
 ```
 
 ### Agent Adapter (MVP)
@@ -109,8 +114,11 @@ See [docs/agent-adapter.md](docs/agent-adapter.md) for supported input formats a
 | **Command policy** | Allow/deny patterns for shell commands |
 | **Timeouts** | Default 10s per command, configurable per-operation or plan-wide |
 | **Preconditions** | Guard checks (branch, clean tree, env vars) must pass before apply |
+| **Policy hooks** | Optional `beforeApprove`/`beforeApply` hooks from `gatefile.config.json` |
+| **Dependencies** | Plan-level `dependsOn` IDs require prior successful apply receipts |
 | **Dry-run** | Preview everything without executing — works before or after approval |
-| **Recovery hints** | Apply reports include affected paths and manual rollback guidance |
+| **Snapshots + receipts** | Real apply writes pre-apply file snapshots + apply receipts under `.gatefile/state` |
+| **Rollback command** | `rollback-apply` restores file content from snapshot metadata (commands are not auto-reverted) |
 
 ## GitHub PR Gate
 
@@ -124,6 +132,21 @@ Drop a gatefile check into any CI pipeline:
 
 See [docs/github-pr-gate-example.md](docs/github-pr-gate-example.md) for full workflow examples.
 
+## `gatefile.config.json` Hooks (MVP)
+
+Use a repo-local config file to run lightweight policy hooks before approval/apply:
+
+```json
+{
+  "hooks": {
+    "beforeApprove": { "command": "node ./scripts/before-approve.js" },
+    "beforeApply": { "command": "node ./scripts/before-apply.js" }
+  }
+}
+```
+
+Hook commands receive structured JSON on `stdin` and env vars like `GATEFILE_HOOK_EVENT`, `GATEFILE_PLAN_ID`, `GATEFILE_PLAN_HASH`, and `GATEFILE_REPO_ROOT`. Non-zero exit blocks the action.
+
 ## Core Concepts
 
 | Concept | Description |
@@ -134,6 +157,7 @@ See [docs/github-pr-gate-example.md](docs/github-pr-gate-example.md) for full wo
 | **Preconditions** | Guards that must pass before apply |
 | **Approval** | Hash-bound human or policy gate |
 | **Apply Report** | What executed, what failed, and why |
+| **Apply Receipt** | Repo-local record used for rollback and dependency checks |
 
 ## Architecture
 
@@ -155,7 +179,9 @@ See [TODO.md](TODO.md) for near-term plans. Current focus:
 - [x] GitHub PR gate action
 - [x] Recovery guidance in apply reports
 - [x] Agent adapter command (`adapt-agent`) for proposal-to-draft conversion
-- [ ] Policy hook interfaces (`beforeApprove`, `beforeApply`)
+- [x] Policy hook interfaces (`beforeApprove`, `beforeApply`)
+- [x] Rollback / pre-apply snapshots + receipt-backed restore path
+- [x] Plan dependencies (`dependsOn`) enforced via successful apply receipts
 - [ ] Signing/attestation workflows
 - [ ] Agent SDK integrations
 

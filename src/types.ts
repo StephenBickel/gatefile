@@ -72,6 +72,7 @@ export interface PlanFile {
   createdAt: string;
   source: string;
   summary: string;
+  dependsOn?: string[];
   operations: Operation[];
   preconditions: Precondition[];
   execution?: ExecutionConfig;
@@ -107,12 +108,33 @@ export interface RecoveryGuidance {
   notes: string[];
 }
 
+export interface DependencyStatus {
+  requiredPlanIds: string[];
+  missingPlanIds: string[];
+  allSatisfied: boolean;
+}
+
+export interface SnapshotInfo {
+  id: string;
+  path: string;
+  fileCount: number;
+}
+
+export interface ApplyReceiptInfo {
+  id: string;
+  path: string;
+}
+
 export interface ApplyReport {
   planId: string;
   appliedAt: string;
   success: boolean;
   results: ApplyOperationResult[];
   recovery: RecoveryGuidance;
+  dependencies: DependencyStatus;
+  snapshot: SnapshotInfo;
+  receipt: ApplyReceiptInfo;
+  rollbackCommand: string;
 }
 
 export interface DryRunOperationPreview {
@@ -134,8 +156,77 @@ export interface DryRunReport {
   success: boolean;
   preconditionsChecked: false;
   verification: DryRunVerificationSummary;
+  dependencies: DependencyStatus;
   results: DryRunOperationPreview[];
   recovery: RecoveryGuidance;
+}
+
+export interface HookCommandConfig {
+  command: string;
+  cwd?: string;
+}
+
+export interface GatefileConfig {
+  hooks?: {
+    beforeApprove?: HookCommandConfig;
+    beforeApply?: HookCommandConfig;
+  };
+}
+
+export interface HookContext {
+  event: "beforeApprove" | "beforeApply";
+  planId: string;
+  planHash: string;
+  summary: string;
+  source: string;
+  approvalStatus: Approval["status"];
+  dependsOn: string[];
+  timestamp: string;
+  repoRoot: string;
+  planPath?: string;
+}
+
+export interface SnapshotFileEntry {
+  operationId: string;
+  path: string;
+  resolvedPath: string;
+  existedBefore: boolean;
+  contentBefore?: string;
+}
+
+export interface SnapshotFile {
+  id: string;
+  planId: string;
+  createdAt: string;
+  repoRoot: string;
+  files: SnapshotFileEntry[];
+}
+
+export interface ApplyReceipt {
+  id: string;
+  planId: string;
+  planHash: string;
+  appliedAt: string;
+  success: boolean;
+  snapshotId: string;
+  operationResults: ApplyOperationResult[];
+  dependencies: DependencyStatus;
+}
+
+export interface RollbackFileResult {
+  path: string;
+  restored: boolean;
+  action: "rewritten" | "deleted" | "unchanged";
+  message: string;
+}
+
+export interface RollbackReport {
+  receiptId: string;
+  snapshotId: string;
+  rolledBackAt: string;
+  success: boolean;
+  fileResults: RollbackFileResult[];
+  notes: string[];
 }
 
 export interface VerifyPlanReport {

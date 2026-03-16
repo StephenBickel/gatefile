@@ -23,6 +23,7 @@ export function createPlanFromDraft(draft: PlanDraft): PlanFile {
     createdAt: new Date().toISOString(),
     source: draft.source,
     summary: draft.summary,
+    ...(draft.dependsOn ? { dependsOn: draft.dependsOn } : {}),
     operations: draft.operations,
     preconditions: draft.preconditions ?? [],
     risk,

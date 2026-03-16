@@ -19,8 +19,10 @@ This project stays intentionally MVP-sized: local CLI, schema-backed plans, hash
 9. Added MVP recovery guidance in dry-run/apply reports (affected paths, per-operation manual recovery hints, and partial-apply context) without claiming transactional rollback.
 10. Added reusable GitHub PR gate composite action and copy-paste workflow examples for fast adoption.
 11. Updated CI and workflow examples to current GitHub Action majors (`checkout/setup-node/upload-artifact` v5) and Node 22.
+12. Added repo-local `.gatefile/state` apply receipts and pre-apply file snapshots, plus `rollback-apply` restore support for Gatefile-managed file operations.
+13. Added `gatefile.config.json` policy hooks for `beforeApprove` and `beforeApply`, including structured stdin/env context and clear block errors.
+14. Added plan dependency sequencing via `dependsOn` with apply-time enforcement against successful prior receipts, surfaced in inspect/dry-run/apply output.
 
 ## After Launch (Small Backlog)
 
-1. Introduce policy hook interfaces (`beforeApprove`, `beforeApply`).
-2. Add extension points for signing/attestation workflows.
+1. Add extension points for signing/attestation workflows.

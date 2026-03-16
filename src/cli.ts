@@ -1,14 +1,17 @@
 #!/usr/bin/env node
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { applyPlan, previewPlan } from "./applier";
-import { formatApplySummary, formatDryRunSummary } from "./apply-format";
+import { applyPlan, previewPlan, rollbackApply } from "./applier";
+import { formatApplySummary, formatDryRunSummary, formatRollbackSummary } from "./apply-format";
 import { adaptAgentInputToDraft, AgentAdapterInput } from "./adapter";
 import { approvePlan, createPlanFromDraft, PlanDraft } from "./planner";
 import { DryRunReport, PlanFile, VerifyPlanReport } from "./types";
 import { buildInspectReport, formatInspectSummary, InspectReport } from "./inspect";
 import { verifyPlan } from "./verify";
 import { renderPRReviewComment } from "./pr-review";
+import { loadGatefileConfig } from "./config";
+import { runPolicyHook } from "./hooks";
+import { getRepoRoot } from "./state";
 
 function readJson<T>(path: string): T {
   const full = resolve(path);
@@ -53,11 +56,12 @@ function usage(): void {
   verify-plan <plan.json>
   approve-plan <plan.json> --by <name>
   apply-plan <plan.json> [--yes] [--dry-run] [--human]
+  rollback-apply <receipt-id> [--yes] [--human]
   render-pr-comment <plan.json> [--inspect <inspect.json>] [--verify <verify.json>] [--dry-run <dry-run.json>] [--out <comment.md>]`);
 }
 
 function inspect(plan: PlanFile, jsonMode: boolean): void {
-  const report = buildInspectReport(plan);
+  const report = buildInspectReport(plan, { repoRoot: getRepoRoot() });
   if (jsonMode) {
     console.log(JSON.stringify(report, null, 2));
     return;
@@ -115,6 +119,11 @@ async function main(): Promise<void> {
     if (!planPath) throw new Error("approve-plan requires a plan path");
 
     const plan = readJson<PlanFile>(planPath);
+    const config = loadGatefileConfig(getRepoRoot());
+    runPolicyHook(config, "beforeApprove", plan, {
+      repoRoot: getRepoRoot(),
+      planPath: resolve(planPath)
+    });
     const next = approvePlan(plan, by);
     writeJson(planPath, next);
     console.log(`Plan approved by ${by}: ${planPath}`);
@@ -139,16 +148,31 @@ async function main(): Promise<void> {
     if (!planPath) throw new Error("apply-plan requires a plan path");
 
     const plan = readJson<PlanFile>(planPath);
+    const repoRoot = getRepoRoot();
+    const config = loadGatefileConfig(repoRoot);
     if (dryRun) {
-      const preview = previewPlan(plan);
+      const preview = previewPlan(plan, { repoRoot, planPath: resolve(planPath), config });
       console.log(human ? formatDryRunSummary(preview) : JSON.stringify(preview, null, 2));
       return;
     }
 
     if (!yes) throw new Error("Refusing to apply without --yes");
 
-    const report = applyPlan(plan);
+    const report = applyPlan(plan, { repoRoot, planPath: resolve(planPath), config });
     console.log(human ? formatApplySummary(report) : JSON.stringify(report, null, 2));
+    return;
+  }
+
+  if (cmd === "rollback-apply") {
+    const args = process.argv.slice(3);
+    const receiptId = positionalPath(args);
+    const yes = hasFlag(args, "--yes");
+    const human = hasFlag(args, "--human");
+    if (!receiptId) throw new Error("rollback-apply requires a receipt id");
+    if (!yes) throw new Error("Refusing to rollback without --yes");
+
+    const report = rollbackApply(receiptId, { repoRoot: getRepoRoot() });
+    console.log(human ? formatRollbackSummary(report) : JSON.stringify(report, null, 2));
     return;
   }
 
