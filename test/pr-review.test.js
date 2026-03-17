@@ -57,10 +57,27 @@ test('renderPRReviewComment includes required plan review signals', () => {
   assert.match(markdown, /\| Summary \|/);
   assert.match(markdown, /\| Risk \| low \(score: 2\) \|/);
   assert.match(markdown, /\| Approval \| pending \(unsigned\) \|/);
+  assert.match(markdown, /\| Signer trust \| not-configured \|/);
   assert.match(markdown, /\| Integrity \| match \|/);
   assert.match(markdown, /\| Apply ready \| no \|/);
   assert.match(markdown, /### Blockers/);
   assert.match(markdown, /Plan is not approved/);
+});
+
+test('renderPRReviewComment shows signer trust details when policy is configured', () => {
+  const pending = createPlanFromDraft(makeDraft());
+  const plan = approvePlan(pending, 'ci-user');
+  const markdown = renderPRReviewComment({
+    plan,
+    config: {
+      signers: {
+        trustedKeyIds: ['trusted-signer-1']
+      }
+    }
+  });
+
+  assert.match(markdown, /\| Signer trust \| unsigned \|/);
+  assert.match(markdown, /Signer trust policy is configured/);
 });
 
 test('renderPRReviewComment includes dry-run highlights when provided', () => {

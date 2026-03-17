@@ -513,7 +513,7 @@ function applyCore(plan: PlanFile, options: PlanRuntimeOptions): ApplyReport {
 }
 
 export function previewPlan(plan: PlanFile, options: PlanRuntimeOptions = {}): DryRunReport {
-  const verification = verifyPlan(plan);
+  const verification = verifyPlan(plan, { config: options.config });
   const dependencies = dependencyStatus(plan, options.repoRoot);
 
   const results = plan.operations.map((op) =>
@@ -528,6 +528,7 @@ export function previewPlan(plan: PlanFile, options: PlanRuntimeOptions = {}): D
     verification: {
       status: verification.status,
       approvalStatus: verification.approvalStatus,
+      signerTrustStatus: verification.signerTrust.status,
       readyToApplyFromIntegrityApproval: verification.readyToApplyFromIntegrityApproval,
       blockers: verification.blockers
     },
@@ -538,7 +539,7 @@ export function previewPlan(plan: PlanFile, options: PlanRuntimeOptions = {}): D
 }
 
 export function applyPlan(plan: PlanFile, options: PlanRuntimeOptions = {}): ApplyReport {
-  const verification = verifyPlan(plan);
+  const verification = verifyPlan(plan, { config: options.config });
   if (!verification.readyToApplyFromIntegrityApproval) {
     throw new Error(`Plan failed verification: ${verification.blockers.join("; ")}`);
   }

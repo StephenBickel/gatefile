@@ -10,6 +10,7 @@ export function formatDryRunSummary(report: DryRunReport): string {
     `Plan: ${report.planId}`,
     `Mode: dry-run preview`,
     `Verification: ${report.verification.status} (approval=${report.verification.approvalStatus})`,
+    `Signer Trust: ${report.verification.signerTrustStatus}`,
     `Ready To Apply: ${report.verification.readyToApplyFromIntegrityApproval ? "yes" : "no"}`
   ];
 

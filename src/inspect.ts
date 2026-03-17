@@ -1,10 +1,11 @@
 import { computePlanHash } from "./hash";
-import { PlanFile } from "./types";
+import { GatefileConfig, PlanFile } from "./types";
 import { verifyPlan } from "./verify";
 import { dependencyStatus } from "./state";
 
 interface InspectOptions {
   repoRoot?: string;
+  config?: GatefileConfig;
 }
 
 export interface InspectReport {
@@ -59,8 +60,15 @@ export function buildInspectReport(plan: PlanFile, options: InspectOptions = {})
   };
 }
 
-export function formatInspectSummary(plan: PlanFile, report: InspectReport): string {
-  const verify = verifyPlan(plan);
+export function formatInspectSummary(
+  plan: PlanFile,
+  report: InspectReport,
+  options: { config?: GatefileConfig } = {}
+): string {
+  const verify = verifyPlan(plan, { config: options.config });
+  const trustSuffix = verify.signerTrust.policyConfigured
+    ? `, trust: ${verify.signerTrust.status}`
+    : "";
   const lines = [
     `Plan: ${report.id}`,
     `Summary: ${report.summary}`,
@@ -68,7 +76,7 @@ export function formatInspectSummary(plan: PlanFile, report: InspectReport): str
     `Operations: ${report.operationCount}`,
     `Risk: ${report.risk.level} (score: ${report.risk.score})`,
     `Integrity: ${report.integrity.integrityMatches ? "match" : "mismatch"}`,
-    `Approval: ${report.approval.status}${report.approval.status === "approved" ? ` (bound: ${report.approval.boundToCurrentPlan ? "yes" : "no"}, identity: ${verify.approvalIdentity})` : ""}`,
+    `Approval: ${report.approval.status}${report.approval.status === "approved" ? ` (bound: ${report.approval.boundToCurrentPlan ? "yes" : "no"}, identity: ${verify.approvalIdentity}${trustSuffix})` : ""}`,
     `Ready To Apply: ${verify.status === "ready" ? "yes" : "no"}`
   ];
   if (report.dependencies.requiredPlanIds.length > 0) {

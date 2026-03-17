@@ -1,0 +1,114 @@
+name: Gatefile Fork-Safe Signed Approval (Artifact Handoff)
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: Workflow run ID from the PR artifact workflow
+        required: true
+        type: string
+      source_artifact_name:
+        description: Artifact name from the PR run (gatefile-plan-pr-<pr>-<sha>)
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: write
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  sign-artifact:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout default branch
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install and build
+        run: |
+          npm ci
+          npm run build
+
+      - name: Download PR plan artifact
+        uses: actions/download-artifact@v5
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.source_run_id }}
+          name: ${{ inputs.source_artifact_name }}
+          path: .gatefile-artifacts/input
+
+      - name: Validate artifact metadata
+        id: context
+        run: |
+          node -e 'const fs=require("node:fs");const p=".gatefile-artifacts/input/context.json";const c=JSON.parse(fs.readFileSync(p,"utf8"));if(c.baseRepo!==process.env.GITHUB_REPOSITORY){throw new Error(`Artifact baseRepo mismatch: ${c.baseRepo} vs ${process.env.GITHUB_REPOSITORY}`);}if(!Number.isInteger(c.prNumber)||c.prNumber<1){throw new Error("Artifact context missing valid prNumber");}if(typeof c.headSha!=="string"||c.headSha.length<7){throw new Error("Artifact context missing headSha");}fs.appendFileSync(process.env.GITHUB_OUTPUT,`pr_number=${c.prNumber}\nhead_sha=${c.headSha}\n`);'
+
+      - name: Write signing key securely
+        env:
+          GATEFILE_SIGNING_KEY_PEM: ${{ secrets.GATEFILE_SIGNING_KEY_PEM }}
+        run: |
+          if [ -z "${GATEFILE_SIGNING_KEY_PEM}" ]; then
+            echo "Missing required secret: GATEFILE_SIGNING_KEY_PEM" >&2
+            exit 1
+          fi
+          umask 077
+          printf '%s\n' "${GATEFILE_SIGNING_KEY_PEM}" > "${RUNNER_TEMP}/gatefile-approver.pem"
+
+      - name: Sign plan approval (artifact copy)
+        run: |
+          cp .gatefile-artifacts/input/plan.json .gatefile-artifacts/input/plan.signed.json
+          node dist/cli.js approve-plan .gatefile-artifacts/input/plan.signed.json \
+            --by "github:${{ github.actor }}" \
+            --signing-key "${RUNNER_TEMP}/gatefile-approver.pem"
+
+      - name: Verify trust + readiness
+        run: |
+          node dist/cli.js verify-plan .gatefile-artifacts/input/plan.signed.json > .gatefile-artifacts/input/verify-signed-report.json
+          node -e 'const fs=require("node:fs");const r=JSON.parse(fs.readFileSync(".gatefile-artifacts/input/verify-signed-report.json","utf8"));if(r.status!=="ready"||r.signerTrust.status!=="trusted"){console.error("Gatefile signed artifact check failed:",r.blockers.join("; "),"trust="+r.signerTrust.status);process.exit(1);}console.log("Signed artifact trusted:",r.planId,r.signerTrust.keyId||"no-key-id");'
+
+      - name: Upload signed plan artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: gatefile-signed-plan-pr-${{ steps.context.outputs.pr_number }}-${{ steps.context.outputs.head_sha }}
+          path: |
+            .gatefile-artifacts/input/plan.signed.json
+            .gatefile-artifacts/input/verify-signed-report.json
+            .gatefile-artifacts/input/context.json
+          if-no-files-found: error
+
+      - name: Comment PR with signed artifact details
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const prNumber = Number('${{ steps.context.outputs.pr_number }}');
+            const artifactName = `gatefile-signed-plan-pr-${{ steps.context.outputs.pr_number }}-${{ steps.context.outputs.head_sha }}`;
+            const body = [
+              'Gatefile signed approval artifact is ready.',
+              '',
+              `- Artifact: ${artifactName}`,
+              `- Signing run: ${context.runId}`,
+              '',
+              'This flow is fork-safe: the signing workflow did not push to the PR branch.',
+              'Use the signed artifact in a follow-up gate or apply workflow.'
+            ].join('\n');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body
+            });
+
+      - name: Cleanup signing key
+        if: always()
+        run: rm -f "${RUNNER_TEMP}/gatefile-approver.pem"

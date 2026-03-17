@@ -9,7 +9,7 @@ import { DryRunReport, PlanFile, VerifyPlanReport } from "./types";
 import { buildInspectReport, formatInspectSummary, InspectReport } from "./inspect";
 import { verifyPlan } from "./verify";
 import { renderPRReviewComment } from "./pr-review";
-import { loadGatefileConfig } from "./config";
+import { configPath, loadGatefileConfig } from "./config";
 import { runPolicyHook } from "./hooks";
 import { getRepoRoot } from "./state";
 import { generateApprovalAttestationKeyPair } from "./attestation";
@@ -54,6 +54,7 @@ function usage(): void {
   adapt-agent --from <agent-input.json> --out <draft.json>
   create-plan --from <draft.json> --out <plan.json>
   inspect-plan <plan.json> [--json]
+  lint-config [--config <path>]
   verify-plan <plan.json>
   approve-plan <plan.json> --by <name> [--signing-key <private.pem>] [--key-id <key-id>]
   generate-attestation-key --out-private <private.pem> [--out-public <public.pem>] [--force]
@@ -62,14 +63,14 @@ function usage(): void {
   render-pr-comment <plan.json> [--inspect <inspect.json>] [--verify <verify.json>] [--dry-run <dry-run.json>] [--out <comment.md>]`);
 }
 
-function inspect(plan: PlanFile, jsonMode: boolean): void {
+function inspect(plan: PlanFile, jsonMode: boolean, config = loadGatefileConfig(getRepoRoot())): void {
   const report = buildInspectReport(plan, { repoRoot: getRepoRoot() });
   if (jsonMode) {
     console.log(JSON.stringify(report, null, 2));
     return;
   }
 
-  console.log(formatInspectSummary(plan, report));
+  console.log(formatInspectSummary(plan, report, { config }));
 }
 
 async function main(): Promise<void> {
@@ -110,7 +111,23 @@ async function main(): Promise<void> {
     const planPath = positionalPath(args);
     if (!planPath) throw new Error("inspect-plan requires a plan path");
     const plan = readJson<PlanFile>(planPath);
-    inspect(plan, hasFlag(args, "--json"));
+    inspect(plan, hasFlag(args, "--json"), loadGatefileConfig(getRepoRoot()));
+    return;
+  }
+
+  if (cmd === "lint-config") {
+    const args = process.argv.slice(3);
+    const explicitPath = arg(args, "--config");
+    const repoRoot = getRepoRoot();
+    const path = configPath(repoRoot, explicitPath);
+    const config = loadGatefileConfig(repoRoot, explicitPath);
+    const trustedKeyIds = config.signers?.trustedKeyIds?.length ?? 0;
+    const trustedPublicKeys = config.signers?.trustedPublicKeys?.length ?? 0;
+    const trustSummary =
+      trustedKeyIds > 0 || trustedPublicKeys > 0
+        ? `trust policy configured (${trustedKeyIds} keyIds, ${trustedPublicKeys} publicKeys)`
+        : "no signer trust policy configured";
+    console.log(`Gatefile config valid: ${path} (${trustSummary})`);
     return;
   }
 
@@ -166,7 +183,8 @@ async function main(): Promise<void> {
     const planPath = positionalPath(args);
     if (!planPath) throw new Error("verify-plan requires a plan path");
     const plan = readJson<PlanFile>(planPath);
-    console.log(JSON.stringify(verifyPlan(plan), null, 2));
+    const config = loadGatefileConfig(getRepoRoot());
+    console.log(JSON.stringify(verifyPlan(plan, { config }), null, 2));
     return;
   }
 
@@ -222,7 +240,8 @@ async function main(): Promise<void> {
       plan,
       inspectReport: inspectPath ? readJson<InspectReport>(inspectPath) : undefined,
       verifyReport: verifyPath ? readJson<VerifyPlanReport>(verifyPath) : undefined,
-      dryRunReport: dryRunPath ? readJson<DryRunReport>(dryRunPath) : undefined
+      dryRunReport: dryRunPath ? readJson<DryRunReport>(dryRunPath) : undefined,
+      config: loadGatefileConfig(getRepoRoot())
     });
 
     if (outPath) {

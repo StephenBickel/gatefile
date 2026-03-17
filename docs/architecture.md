@@ -42,6 +42,7 @@
 
 7. Policy Hooks (`src/hooks.ts` + `src/config.ts`)
 - Loads `gatefile.config.json` from repo root
+- Provides optional signer trust policy (`signers.trustedKeyIds` / `signers.trustedPublicKeys`) to verifier paths
 - Runs `beforeApprove` and `beforeApply` commands with JSON stdin + env context
 - Blocks approval/apply on non-zero hook exits
 

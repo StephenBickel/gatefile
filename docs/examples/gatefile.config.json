@@ -1,4 +1,10 @@
 {
+  "signers": {
+    "trustedKeyIds": ["security-team-prod-1"],
+    "trustedPublicKeys": [
+      "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA3BpXovQEPSywMnUz4IdaCBTGcIH+6gRV9kt1SMjg7bE=\n-----END PUBLIC KEY-----"
+    ]
+  },
   "hooks": {
     "beforeApprove": {
       "command": "node ./scripts/before-approve.js"

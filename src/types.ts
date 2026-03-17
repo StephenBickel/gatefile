@@ -163,6 +163,7 @@ export interface DryRunOperationPreview {
 export interface DryRunVerificationSummary {
   status: VerifyPlanReport["status"];
   approvalStatus: VerifyPlanReport["approvalStatus"];
+  signerTrustStatus: VerifyPlanReport["signerTrust"]["status"];
   readyToApplyFromIntegrityApproval: VerifyPlanReport["readyToApplyFromIntegrityApproval"];
   blockers: string[];
 }
@@ -184,6 +185,10 @@ export interface HookCommandConfig {
 }
 
 export interface GatefileConfig {
+  signers?: {
+    trustedKeyIds?: string[];
+    trustedPublicKeys?: string[];
+  };
   hooks?: {
     beforeApprove?: HookCommandConfig;
     beforeApply?: HookCommandConfig;
@@ -251,6 +256,12 @@ export interface VerifyPlanReport {
   summary: string;
   approvalStatus: Approval["status"];
   approvalIdentity: "unsigned" | "signed" | "invalid-attestation";
+  signerTrust: {
+    policyConfigured: boolean;
+    status: "not-configured" | "trusted" | "untrusted" | "unsigned" | "invalid-attestation";
+    keyId: string | null;
+    matchedBy: "keyId" | "publicKey" | null;
+  };
   status: "ready" | "not-ready";
   hashes: {
     recordedPlanHash: string | null;
@@ -265,6 +276,9 @@ export interface VerifyPlanReport {
     approvalAttestationValid: boolean | null;
     approvalAttestationKeyIdMatches: boolean | null;
     approvalAttestationPayloadMatchesApproval: boolean | null;
+    signerTrustPolicyConfigured: boolean;
+    signerTrusted: boolean | null;
+    signerTrustedBy: "keyId" | "publicKey" | null;
   };
   readyToApplyFromIntegrityApproval: boolean;
   blockers: string[];

@@ -53,7 +53,7 @@ runs:
     - name: Verify plan ready state
       shell: bash
       run: |
-        node -e 'const fs=require("fs");const {execFileSync}=require("node:child_process");const planPath=process.env.PLAN_PATH;const reportPath=process.env.REPORT_PATH;const out=execFileSync(process.execPath,["dist/cli.js","verify-plan",planPath],{encoding:"utf8"});const r=JSON.parse(out);fs.writeFileSync(reportPath,JSON.stringify(r,null,2)+"\n","utf8");if(r.status!=="ready"){console.error("Planfile gate failed:",r.blockers.join("; "));process.exit(1);}console.log("Planfile gate passed:",r.planId);'
+        node -e 'const fs=require("fs");const {execFileSync}=require("node:child_process");const planPath=process.env.PLAN_PATH;const reportPath=process.env.REPORT_PATH;const out=execFileSync(process.execPath,["dist/cli.js","verify-plan",planPath],{encoding:"utf8"});const r=JSON.parse(out);fs.writeFileSync(reportPath,JSON.stringify(r,null,2)+"\n","utf8");if(r.status!=="ready"){console.error("Planfile gate failed:",r.blockers.join("; "),"signerTrust="+(r.signerTrust?.status||"unknown"));process.exit(1);}console.log("Planfile gate passed:",r.planId,"signerTrust="+(r.signerTrust?.status||"not-configured"));'
       env:
         PLAN_PATH: ${{ inputs.plan-path }}
         REPORT_PATH: ${{ inputs.verify-report-path }}

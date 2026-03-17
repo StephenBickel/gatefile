@@ -42,7 +42,7 @@ Agent emits plan → Human reviews → Approve hash → Apply with guardrails
 5. **Apply** — execute with precondition checks, path sandboxing, command policies, and timeouts
 6. **Rollback (files)** — restore Gatefile-managed file operations from the pre-apply snapshot/receipt
 
-Approval is hash-bound: if anyone modifies the plan after approval, `verify` catches it and `apply` refuses. Signed attestation is optional in phase 1 and adds cryptographic proof of approval identity.
+Approval is hash-bound: if anyone modifies the plan after approval, `verify` catches it and `apply` refuses. Signed attestation adds cryptographic proof of approval identity, and optional signer trust policy enforces trusted signer identities.
 
 ## Quick Start
 
@@ -88,6 +88,7 @@ gatefile approve-plan .plan/plan.json --by steve
 
 # Optional: generate local Ed25519 key and sign approval attestation
 gatefile generate-attestation-key --out-private .gatefile/approval-key.pem --out-public .gatefile/approval-key.pub.pem
+gatefile lint-config
 gatefile approve-plan .plan/plan.json --by steve --signing-key .gatefile/approval-key.pem
 
 # Execute
@@ -116,6 +117,7 @@ See [docs/agent-adapter.md](docs/agent-adapter.md) for supported input formats a
 | Layer | What it does |
 |-------|-------------|
 | **Hash binding** | Approval locks to exact plan content — tampering detected |
+| **Signer trust policy** | Optional trusted signer allowlist (`gatefile.config.json`) for signed approvals |
 | **File sandboxing** | Writes restricted to workspace root (configurable via `filePolicy.allowedRoots`) |
 | **Command policy** | Allow/deny patterns for shell commands |
 | **Timeouts** | Default 10s per command, configurable per-operation or plan-wide |
@@ -138,6 +140,13 @@ Drop a gatefile check into any CI pipeline:
 
 See [docs/github-pr-gate-example.md](docs/github-pr-gate-example.md) for full workflow examples.
 
+For CI-native signed approvals on PR branches, use:
+- [docs/examples/github-native-signed-approval.yml](docs/examples/github-native-signed-approval.yml)
+
+For fork-safe signing without pushing to fork branches, use:
+- [docs/examples/github-native-signed-approval-fork-request.yml](docs/examples/github-native-signed-approval-fork-request.yml)
+- [docs/examples/github-native-signed-approval-fork-sign.yml](docs/examples/github-native-signed-approval-fork-sign.yml)
+
 ## `gatefile.config.json` Hooks (MVP)
 
 Use a repo-local config file to run lightweight policy hooks before approval/apply:
@@ -152,6 +161,25 @@ Use a repo-local config file to run lightweight policy hooks before approval/app
 ```
 
 Hook commands receive structured JSON on `stdin` and env vars like `GATEFILE_HOOK_EVENT`, `GATEFILE_PLAN_ID`, `GATEFILE_PLAN_HASH`, and `GATEFILE_REPO_ROOT`. Non-zero exit blocks the action.
+
+You can also define signer trust policy:
+
+```json
+{
+  "signers": {
+    "trustedKeyIds": ["security-team-prod-1"],
+    "trustedPublicKeys": [
+      "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA3BpXovQEPSywMnUz4IdaCBTGcIH+6gRV9kt1SMjg7bE=\n-----END PUBLIC KEY-----"
+    ]
+  }
+}
+```
+
+Validate config anytime with:
+
+```bash
+gatefile lint-config
+```
 
 ## Core Concepts
 
@@ -190,7 +218,7 @@ See [Product Roadmap](docs/product-roadmap.md) for the full product path and [TO
 - [x] Policy hook interfaces (`beforeApprove`, `beforeApply`)
 - [x] Rollback / pre-apply snapshots + receipt-backed restore path
 - [x] Plan dependencies (`dependsOn`) enforced via successful apply receipts
-- [ ] Signing/attestation workflows
+- [x] Signing/attestation workflows + signer trust policy
 - [ ] Agent SDK integrations
 
 ## Contributing

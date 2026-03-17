@@ -17,9 +17,11 @@ Gatefile is being developed as a full product for governed agent execution, not 
 Rationale: trust bottleneck is approval identity, and GitHub PR is the dominant review venue.
 
 - Signed approvals/attestations (Ed25519) with local key generation and verifier integration
+- Signer trust policy (`gatefile.config.json`) for trusted key IDs/public keys
 - Preserve existing hash-bound semantics while upgrading identity proof when signature is present
 - Expand PR review output to surface approval identity state (`unsigned`, `signed`, `invalid-attestation`)
-- Publish operator guidance for storing private keys and rotating signer key IDs
+- Expand PR output and gate signals to include signer trust state (`trusted`, `untrusted`, `unsigned`)
+- Publish operator guidance for key generation/distribution, trust config, and GitHub signing flow
 
 ## Phase 2: GitHub-Native Review/Approval UX
 
@@ -29,6 +31,7 @@ Rationale: reduce friction between plan review and repo review.
 - Structured PR comment renderer with re-run safe updates and blocker classification
 - Optional required-status policy templates for branch protection
 - Approval UX that can sign from CI-safe contexts without exposing raw secret material in logs
+- First-party GitHub workflow example for CI-native signed approvals on PR branches
 
 ## Phase 3: Official Agent Adapters + SDKs
 

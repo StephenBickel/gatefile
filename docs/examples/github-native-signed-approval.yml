@@ -1,0 +1,98 @@
+name: Gatefile Signed Approval (PR Branch)
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Pull request number to sign
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  sign-approval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Resolve PR branch
+        id: pr
+        uses: actions/github-script@v8
+        with:
+          result-encoding: string
+          script: |
+            const prNumber = Number("${{ inputs.pr_number }}");
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber
+            });
+            core.setOutput("head_ref", pr.head.ref);
+            core.setOutput("head_repo", pr.head.repo.full_name);
+            if (pr.head.repo.full_name !== `${context.repo.owner}/${context.repo.repo}`) {
+              core.setFailed("Refusing to push signed plan to fork PR branch.");
+            }
+
+      - name: Checkout PR branch
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ steps.pr.outputs.head_ref }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install and build
+        run: |
+          npm ci
+          npm run build
+
+      - name: Verify plan artifact exists
+        run: test -f .plan/plan.json
+
+      - name: Write signing key securely
+        shell: bash
+        env:
+          GATEFILE_SIGNING_KEY_PEM: ${{ secrets.GATEFILE_SIGNING_KEY_PEM }}
+        run: |
+          if [ -z "${GATEFILE_SIGNING_KEY_PEM}" ]; then
+            echo "Missing required secret: GATEFILE_SIGNING_KEY_PEM" >&2
+            exit 1
+          fi
+          umask 077
+          printf '%s\n' "${GATEFILE_SIGNING_KEY_PEM}" > "${RUNNER_TEMP}/gatefile-approver.pem"
+
+      - name: Sign plan approval
+        shell: bash
+        run: |
+          node dist/cli.js approve-plan .plan/plan.json \
+            --by "github:${{ github.actor }}" \
+            --signing-key "${RUNNER_TEMP}/gatefile-approver.pem"
+
+      - name: Verify trust + readiness
+        shell: bash
+        run: |
+          node dist/cli.js verify-plan .plan/plan.json > verify-report.json
+          node -e 'const fs=require("node:fs");const r=JSON.parse(fs.readFileSync("verify-report.json","utf8"));if(r.status!=="ready"||r.signerTrust.status!=="trusted"){console.error("Gatefile signed approval check failed:",r.blockers.join("; "),"trust="+r.signerTrust.status);process.exit(1);}console.log("Signed approval trusted:",r.planId,r.signerTrust.keyId||"no-key-id");'
+
+      - name: Commit signed plan to PR branch
+        shell: bash
+        run: |
+          if git diff --quiet -- .plan/plan.json; then
+            echo "No plan changes to commit."
+            exit 0
+          fi
+          git config user.name "gatefile-bot"
+          git config user.email "gatefile-bot@users.noreply.github.com"
+          git add .plan/plan.json
+          git commit -m "gatefile: signed approval attestation"
+          git push origin "HEAD:${{ steps.pr.outputs.head_ref }}"
+
+      - name: Cleanup signing key
+        if: always()
+        run: rm -f "${RUNNER_TEMP}/gatefile-approver.pem"
