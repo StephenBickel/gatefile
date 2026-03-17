@@ -1,0 +1,32 @@
+{
+  "agent": {
+    "name": "generic-coding-agent"
+  },
+  "proposal": {
+    "summary": "Add a status endpoint and run targeted tests",
+    "fileChanges": [
+      {
+        "action": "update",
+        "path": "src/server.ts",
+        "before": "app.listen(port);\n",
+        "after": "app.get('/status', (_req, res) => res.json({ ok: true }));\napp.listen(port);\n"
+      },
+      {
+        "action": "create",
+        "path": "test/status.test.ts",
+        "after": "import { test } from 'node:test';\n"
+      }
+    ],
+    "commands": [
+      {
+        "command": "npm test -- --testNamePattern=status"
+      }
+    ],
+    "preconditions": [
+      {
+        "kind": "git_clean",
+        "description": "Avoid mixed apply with unrelated edits"
+      }
+    ]
+  }
+}

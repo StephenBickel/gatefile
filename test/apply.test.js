@@ -157,7 +157,51 @@ test('previewPlan shows file and command actions without executing side effects'
       readyToApplyFromIntegrityApproval: true,
       blockers: []
     });
+    assert.equal(report.verification.signerTrustStatus, 'not-configured');
     assertNoSideEffects(createPath, markerPath);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('previewPlan reports untrusted signer when trust policy is configured', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gatefile-preview-trust-'));
+  try {
+    const { draft } = makePlanDraft(root);
+    const plan = approvePlan(createPlanFromDraft(draft), 'ci-user');
+    const report = previewPlan(plan, {
+      config: {
+        signers: {
+          trustedKeyIds: ['trusted-signer-1']
+        }
+      }
+    });
+
+    assert.equal(report.verification.status, 'not-ready');
+    assert.equal(report.verification.signerTrustStatus, 'unsigned');
+    assert.match(report.verification.blockers.join('\n'), /approval is unsigned/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('applyPlan refuses unsigned approvals when signer trust policy is configured', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gatefile-apply-trust-'));
+  try {
+    const { draft } = makePlanDraft(root);
+    const plan = approvePlan(createPlanFromDraft(draft), 'ci-user');
+
+    assert.throws(
+      () =>
+        applyPlan(plan, {
+          config: {
+            signers: {
+              trustedKeyIds: ['trusted-signer-1']
+            }
+          }
+        }),
+      /Signer trust policy is configured/
+    );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

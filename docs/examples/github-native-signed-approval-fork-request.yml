@@ -1,0 +1,63 @@
+name: Gatefile Fork-Safe Plan Artifact (PR)
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  prepare-plan-artifact:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install and build
+        run: |
+          npm ci
+          npm run build
+
+      - name: Verify plan artifact exists
+        run: test -f .plan/plan.json
+
+      - name: Generate inspect + verify reports
+        run: |
+          mkdir -p .gatefile-artifacts/plan
+          cp .plan/plan.json .gatefile-artifacts/plan/plan.json
+          node dist/cli.js inspect-plan .plan/plan.json --json > .gatefile-artifacts/plan/inspect-report.json
+          node dist/cli.js verify-plan .plan/plan.json > .gatefile-artifacts/plan/verify-report.json
+
+      - name: Write PR context metadata
+        run: |
+          cat > .gatefile-artifacts/plan/context.json <<JSON
+          {
+            "prNumber": ${{ github.event.pull_request.number }},
+            "headSha": "${{ github.event.pull_request.head.sha }}",
+            "headRef": "${{ github.event.pull_request.head.ref }}",
+            "headRepo": "${{ github.event.pull_request.head.repo.full_name }}",
+            "baseRepo": "${{ github.repository }}"
+          }
+          JSON
+
+      - name: Upload unsigned plan artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: gatefile-plan-pr-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+          path: .gatefile-artifacts/plan
+          if-no-files-found: error

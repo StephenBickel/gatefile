@@ -1,0 +1,16 @@
+{
+  "source": "agent-v1",
+  "summary": "Run after baseline migration plan has been applied",
+  "dependsOn": ["plan_replace-with-required-plan-id"],
+  "operations": [
+    {
+      "id": "op_file_followup",
+      "type": "file",
+      "action": "update",
+      "path": "tmp/followup.txt",
+      "before": "pending\n",
+      "after": "done\n"
+    }
+  ],
+  "preconditions": []
+}

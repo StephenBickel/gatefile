@@ -34,7 +34,7 @@ jobs:
       - name: Verify plan ready state
         shell: bash
         run: |
-          node -e 'const fs=require("fs");const {execFileSync}=require("node:child_process");const out=execFileSync(process.execPath,["dist/cli.js","verify-plan",".plan/plan.json"],{encoding:"utf8"});const r=JSON.parse(out);fs.writeFileSync("verify-report.json",JSON.stringify(r,null,2)+"\n","utf8");if(r.status!=="ready"){console.error("Planfile gate failed:",r.blockers.join("; "));process.exit(1);}console.log("Planfile gate passed:",r.planId);'
+          node -e 'const fs=require("fs");const {execFileSync}=require("node:child_process");const out=execFileSync(process.execPath,["dist/cli.js","verify-plan",".plan/plan.json"],{encoding:"utf8"});const r=JSON.parse(out);fs.writeFileSync("verify-report.json",JSON.stringify(r,null,2)+"\n","utf8");if(r.status!=="ready"){console.error("Planfile gate failed:",r.blockers.join("; "),"signerTrust="+(r.signerTrust?.status||"unknown"));process.exit(1);}console.log("Planfile gate passed:",r.planId,"signerTrust="+(r.signerTrust?.status||"not-configured"));'
 
       - name: Upload plan and verify artifacts
         uses: actions/upload-artifact@v5

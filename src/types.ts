@@ -58,6 +58,23 @@ export interface Approval {
   approvedBy?: string;
   approvedAt?: string;
   approvedPlanHash?: string;
+  attestation?: ApprovalAttestation;
+}
+
+export interface ApprovalAttestationPayload {
+  type: "gatefile-approval-v1";
+  planId: string;
+  approvedBy: string;
+  approvedAt: string;
+  approvedPlanHash: string;
+}
+
+export interface ApprovalAttestation {
+  scheme: "ed25519-sha256";
+  keyId: string;
+  publicKeyPem: string;
+  payload: ApprovalAttestationPayload;
+  signature: string;
 }
 
 export interface PlanIntegrity {
@@ -72,6 +89,7 @@ export interface PlanFile {
   createdAt: string;
   source: string;
   summary: string;
+  dependsOn?: string[];
   operations: Operation[];
   preconditions: Precondition[];
   execution?: ExecutionConfig;
@@ -107,12 +125,33 @@ export interface RecoveryGuidance {
   notes: string[];
 }
 
+export interface DependencyStatus {
+  requiredPlanIds: string[];
+  missingPlanIds: string[];
+  allSatisfied: boolean;
+}
+
+export interface SnapshotInfo {
+  id: string;
+  path: string;
+  fileCount: number;
+}
+
+export interface ApplyReceiptInfo {
+  id: string;
+  path: string;
+}
+
 export interface ApplyReport {
   planId: string;
   appliedAt: string;
   success: boolean;
   results: ApplyOperationResult[];
   recovery: RecoveryGuidance;
+  dependencies: DependencyStatus;
+  snapshot: SnapshotInfo;
+  receipt: ApplyReceiptInfo;
+  rollbackCommand: string;
 }
 
 export interface DryRunOperationPreview {
@@ -124,6 +163,7 @@ export interface DryRunOperationPreview {
 export interface DryRunVerificationSummary {
   status: VerifyPlanReport["status"];
   approvalStatus: VerifyPlanReport["approvalStatus"];
+  signerTrustStatus: VerifyPlanReport["signerTrust"]["status"];
   readyToApplyFromIntegrityApproval: VerifyPlanReport["readyToApplyFromIntegrityApproval"];
   blockers: string[];
 }
@@ -134,14 +174,94 @@ export interface DryRunReport {
   success: boolean;
   preconditionsChecked: false;
   verification: DryRunVerificationSummary;
+  dependencies: DependencyStatus;
   results: DryRunOperationPreview[];
   recovery: RecoveryGuidance;
+}
+
+export interface HookCommandConfig {
+  command: string;
+  cwd?: string;
+}
+
+export interface GatefileConfig {
+  signers?: {
+    trustedKeyIds?: string[];
+    trustedPublicKeys?: string[];
+  };
+  hooks?: {
+    beforeApprove?: HookCommandConfig;
+    beforeApply?: HookCommandConfig;
+  };
+}
+
+export interface HookContext {
+  event: "beforeApprove" | "beforeApply";
+  planId: string;
+  planHash: string;
+  summary: string;
+  source: string;
+  approvalStatus: Approval["status"];
+  dependsOn: string[];
+  timestamp: string;
+  repoRoot: string;
+  planPath?: string;
+}
+
+export interface SnapshotFileEntry {
+  operationId: string;
+  path: string;
+  resolvedPath: string;
+  existedBefore: boolean;
+  contentBefore?: string;
+}
+
+export interface SnapshotFile {
+  id: string;
+  planId: string;
+  createdAt: string;
+  repoRoot: string;
+  files: SnapshotFileEntry[];
+}
+
+export interface ApplyReceipt {
+  id: string;
+  planId: string;
+  planHash: string;
+  appliedAt: string;
+  success: boolean;
+  snapshotId: string;
+  operationResults: ApplyOperationResult[];
+  dependencies: DependencyStatus;
+}
+
+export interface RollbackFileResult {
+  path: string;
+  restored: boolean;
+  action: "rewritten" | "deleted" | "unchanged";
+  message: string;
+}
+
+export interface RollbackReport {
+  receiptId: string;
+  snapshotId: string;
+  rolledBackAt: string;
+  success: boolean;
+  fileResults: RollbackFileResult[];
+  notes: string[];
 }
 
 export interface VerifyPlanReport {
   planId: string;
   summary: string;
   approvalStatus: Approval["status"];
+  approvalIdentity: "unsigned" | "signed" | "invalid-attestation";
+  signerTrust: {
+    policyConfigured: boolean;
+    status: "not-configured" | "trusted" | "untrusted" | "unsigned" | "invalid-attestation";
+    keyId: string | null;
+    matchedBy: "keyId" | "publicKey" | null;
+  };
   status: "ready" | "not-ready";
   hashes: {
     recordedPlanHash: string | null;
@@ -152,6 +272,13 @@ export interface VerifyPlanReport {
     integrityMetadataExists: boolean;
     recordedHashMatchesCurrent: boolean;
     approvalBoundToCurrentHash: boolean;
+    approvalAttestationPresent: boolean;
+    approvalAttestationValid: boolean | null;
+    approvalAttestationKeyIdMatches: boolean | null;
+    approvalAttestationPayloadMatchesApproval: boolean | null;
+    signerTrustPolicyConfigured: boolean;
+    signerTrusted: boolean | null;
+    signerTrustedBy: "keyId" | "publicKey" | null;
   };
   readyToApplyFromIntegrityApproval: boolean;
   blockers: string[];

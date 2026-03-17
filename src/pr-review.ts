@@ -1,5 +1,5 @@
 import { buildInspectReport, InspectReport } from "./inspect";
-import { DryRunReport, PlanFile, VerifyPlanReport } from "./types";
+import { DryRunReport, GatefileConfig, PlanFile, VerifyPlanReport } from "./types";
 import { verifyPlan } from "./verify";
 
 export interface PRReviewCommentInputs {
@@ -7,6 +7,7 @@ export interface PRReviewCommentInputs {
   inspectReport?: InspectReport;
   verifyReport?: VerifyPlanReport;
   dryRunReport?: DryRunReport;
+  config?: GatefileConfig;
 }
 
 function trunc(value: string, max: number): string {
@@ -20,8 +21,15 @@ function integrityStatus(report: InspectReport): string {
 }
 
 function approvalStatus(verify: VerifyPlanReport): string {
-  if (verify.approvalStatus !== "approved") return verify.approvalStatus;
-  return verify.checks.approvalBoundToCurrentHash ? "approved (bound)" : "approved (not bound)";
+  if (verify.approvalStatus !== "approved") return `${verify.approvalStatus} (${verify.approvalIdentity})`;
+  if (!verify.checks.approvalBoundToCurrentHash) return `approved (not bound, ${verify.approvalIdentity})`;
+  return `approved (bound, ${verify.approvalIdentity})`;
+}
+
+function signerTrustStatus(verify: VerifyPlanReport): string {
+  const by = verify.signerTrust.matchedBy ? ` via ${verify.signerTrust.matchedBy}` : "";
+  const key = verify.signerTrust.keyId ? ` (keyId=${verify.signerTrust.keyId})` : "";
+  return `${verify.signerTrust.status}${by}${key}`;
 }
 
 function renderDryRunHighlights(dryRun: DryRunReport): string[] {
@@ -61,7 +69,7 @@ function renderDryRunHighlights(dryRun: DryRunReport): string[] {
 
 export function renderPRReviewComment(inputs: PRReviewCommentInputs): string {
   const inspect = inputs.inspectReport ?? buildInspectReport(inputs.plan);
-  const verify = inputs.verifyReport ?? verifyPlan(inputs.plan);
+  const verify = inputs.verifyReport ?? verifyPlan(inputs.plan, { config: inputs.config });
   const dryRun = inputs.dryRunReport;
 
   const lines = [
@@ -74,6 +82,7 @@ export function renderPRReviewComment(inputs: PRReviewCommentInputs): string {
     `| Summary | ${trunc(inspect.summary, 240)} |`,
     `| Risk | ${inspect.risk.level} (score: ${inspect.risk.score}) |`,
     `| Approval | ${approvalStatus(verify)} |`,
+    `| Signer trust | ${signerTrustStatus(verify)} |`,
     `| Integrity | ${integrityStatus(inspect)} |`,
     `| Verify status | ${verify.status} |`,
     `| Apply ready | ${verify.readyToApplyFromIntegrityApproval ? "yes" : "no"} |`,

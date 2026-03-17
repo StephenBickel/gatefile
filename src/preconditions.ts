@@ -12,7 +12,9 @@ function getCurrentBranch(): string {
 }
 
 function isGitClean(): boolean {
-  const out = execSync("git status --porcelain", { encoding: "utf-8" }).trim();
+  const out = execSync("git status --porcelain -- . ':(exclude).gatefile/state'", {
+    encoding: "utf-8"
+  }).trim();
   return out.length === 0;
 }
 

@@ -19,10 +19,16 @@ This project stays intentionally MVP-sized: local CLI, schema-backed plans, hash
 9. Added MVP recovery guidance in dry-run/apply reports (affected paths, per-operation manual recovery hints, and partial-apply context) without claiming transactional rollback.
 10. Added reusable GitHub PR gate composite action and copy-paste workflow examples for fast adoption.
 11. Updated CI and workflow examples to current GitHub Action majors (`checkout/setup-node/upload-artifact` v5) and Node 22.
+12. Added repo-local `.gatefile/state` apply receipts and pre-apply file snapshots, plus `rollback-apply` restore support for Gatefile-managed file operations.
+13. Added `gatefile.config.json` policy hooks for `beforeApprove` and `beforeApply`, including structured stdin/env context and clear block errors.
+14. Added plan dependency sequencing via `dependsOn` with apply-time enforcement against successful prior receipts, surfaced in inspect/dry-run/apply output.
+15. Added signer trust policy in `gatefile.config.json` (`trustedKeyIds` / `trustedPublicKeys`) with verify/apply enforcement and trust-state reporting.
+16. Added GitHub-native signed approval workflow example with secrets-safe key handling for PR branches.
+17. Added `gatefile lint-config` plus strict signer trust config validation (malformed PEM, empty trust policy, invalid shapes) and canonical PEM matching for trust checks.
+18. Added fork-safe GitHub signed-approval artifact handoff workflow examples (no push to fork PR branches from signing workflow).
 
 12. Added MCP server (`gatefile-mcp`) exposing all 4 core operations (inspect, verify, approve, apply) as MCP tools for Claude Desktop, Claude Code, and other MCP hosts.
 
 ## After Launch (Small Backlog)
 
-1. Introduce policy hook interfaces (`beforeApprove`, `beforeApply`).
-2. Add extension points for signing/attestation workflows.
+1. Add optional branch-protection wiring examples for artifact-based signed approval checks.

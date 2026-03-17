@@ -30,7 +30,9 @@
 - `previewPlan` returns side-effect-free operation previews and includes verification status/blockers
 - `applyPlan` executes approved operations in order
 - Applies MVP command safety controls (timeout defaults + optional allow/deny policy matching)
-- Returns per-operation result report
+- Writes repo-local pre-apply file snapshots + apply receipts under `.gatefile/state`
+- Enforces minimal plan dependency sequencing (`dependsOn`) via successful prior receipts
+- Returns per-operation result report with rollback receipt/snapshot metadata
 - Hard-stops on unsafe or unmet preconditions
 
 6. Review TUI (`src/review.ts`)
@@ -52,7 +54,8 @@
 6. Optional `apply-plan --dry-run` previews plan operations at any stage (pending/approved/tampered)
 7. `verify-plan` confirms ready status
 8. `apply-plan` re-checks verification, validates preconditions, and applies operations
-9. Report emitted for audit/logging
+9. Apply report includes receipt/snapshot IDs and rollback command guidance
+10. Optional `rollback-apply` restores file state from receipt snapshot
 
 ## Design Principles
 
@@ -67,4 +70,5 @@
 - Fully sandboxed runtime
 - Distributed execution framework
 - Rich policy DSL
+- Automatic rollback for arbitrary command side effects
 - Browser/API side-effect executors

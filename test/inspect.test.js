@@ -5,7 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
-const { createPlanFromDraft, buildInspectReport, formatInspectSummary } = require('../dist');
+const { createPlanFromDraft, approvePlan, buildInspectReport, formatInspectSummary } = require('../dist');
 const CLI_PATH = path.join(__dirname, '..', 'dist', 'cli.js');
 
 function makeDraft() {
@@ -117,4 +117,18 @@ test('tampered operation path causes inspect integrity mismatch', () => {
 
   const report = buildInspectReport(tampered);
   assert.equal(report.integrity.integrityMatches, false);
+});
+
+test('formatInspectSummary includes signer trust state when policy is configured', () => {
+  const plan = approvePlan(createPlanFromDraft(makeDraft()), 'ci-user');
+  const report = buildInspectReport(plan);
+  const summary = formatInspectSummary(plan, report, {
+    config: {
+      signers: {
+        trustedKeyIds: ['trusted-signer-1']
+      }
+    }
+  });
+
+  assert.match(summary, /trust: unsigned/);
 });

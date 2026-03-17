@@ -1,10 +1,30 @@
 import { execSync } from "node:child_process";
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
-import { mkdirSync } from "node:fs";
-import { ApplyOperationResult, ApplyReport, DryRunOperationPreview, DryRunReport, PlanFile } from "./types";
+import {
+  ApplyOperationResult,
+  ApplyReceipt,
+  ApplyReport,
+  DryRunOperationPreview,
+  DryRunReport,
+  GatefileConfig,
+  PlanFile,
+  RollbackReport,
+  SnapshotFile
+} from "./types";
 import { checkPreconditions } from "./preconditions";
 import { verifyPlan } from "./verify";
+import {
+  dependencyStatus,
+  getRepoRoot,
+  makeReceiptId,
+  rollbackByReceipt,
+  snapshotPath,
+  writeReceipt,
+  writeSnapshot,
+  receiptPath
+} from "./state";
+import { runPolicyHook } from "./hooks";
 
 const DEFAULT_COMMAND_TIMEOUT_MS = 10_000;
 
@@ -13,6 +33,12 @@ interface FilePathSafetyResult {
   resolvedPath: string;
   allowedRoots: string[];
   reason?: string;
+}
+
+export interface PlanRuntimeOptions {
+  repoRoot?: string;
+  planPath?: string;
+  config?: GatefileConfig;
 }
 
 function effectiveAllowedRoots(plan: PlanFile): string[] {
@@ -80,13 +106,12 @@ function applyFileOperation(
     }
 
     if (op.action === "delete") {
-      // Safe-ish MVP: verify file exists before delete for clearer reporting.
       readFileSync(pathSafety.resolvedPath, "utf-8");
       rmSync(pathSafety.resolvedPath);
       return { operationId: op.id, success: true, message: `delete ${op.path}` };
     }
 
-    return { operationId: op.id, success: false, message: `Unsupported file action` };
+    return { operationId: op.id, success: false, message: "Unsupported file action" };
   } catch (error) {
     return {
       operationId: op.id,
@@ -304,6 +329,7 @@ function buildDryRunRecovery(plan: PlanFile): DryRunReport["recovery"] {
     })),
     notes: [
       "Dry-run executes nothing; use this preview to prepare manual rollback before real apply.",
+      "Real apply creates a pre-apply file snapshot under .gatefile/state.",
       "gatefile does not provide transactional rollback."
     ]
   };
@@ -347,13 +373,148 @@ function buildApplyRecovery(plan: PlanFile, results: ApplyOperationResult[]): Ap
       failedOperationId
         ? `Apply stopped at operation ${failedOperationId}; later operations were not run.`
         : "Apply completed all operations in order.",
+      "Rollback restores Gatefile-managed file operations from .gatefile/state snapshots.",
+      "Command side effects are not automatically rollbackable in this MVP.",
       "gatefile does not provide transactional rollback."
     ]
   };
 }
 
-export function previewPlan(plan: PlanFile): DryRunReport {
-  const verification = verifyPlan(plan);
+function createPreApplySnapshot(plan: PlanFile, repoRoot: string, snapshotId: string): SnapshotFile {
+  const seen = new Set<string>();
+  const files: SnapshotFile["files"] = [];
+
+  for (const op of plan.operations) {
+    if (op.type !== "file") continue;
+
+    const pathSafety = evaluateFilePathSafety(plan, op.path);
+    if (!pathSafety.allowed) {
+      continue;
+    }
+
+    if (seen.has(pathSafety.resolvedPath)) {
+      continue;
+    }
+
+    seen.add(pathSafety.resolvedPath);
+    const existedBefore = existsSync(pathSafety.resolvedPath);
+    const contentBefore = existedBefore ? readFileSync(pathSafety.resolvedPath, "utf8") : undefined;
+    files.push({
+      operationId: op.id,
+      path: op.path,
+      resolvedPath: pathSafety.resolvedPath,
+      existedBefore,
+      contentBefore
+    });
+  }
+
+  return {
+    id: snapshotId,
+    planId: plan.id,
+    createdAt: new Date().toISOString(),
+    repoRoot,
+    files
+  };
+}
+
+function applyCore(plan: PlanFile, options: PlanRuntimeOptions): ApplyReport {
+  const repoRoot = getRepoRoot(options.repoRoot);
+  const dependencies = dependencyStatus(plan, repoRoot);
+  if (!dependencies.allSatisfied) {
+    throw new Error(
+      `Plan dependencies are not satisfied: missing successful apply for [${dependencies.missingPlanIds.join(", ")}]`
+    );
+  }
+
+  if (options.config) {
+    runPolicyHook(options.config, "beforeApply", plan, {
+      repoRoot,
+      planPath: options.planPath
+    });
+  }
+
+  const appliedAt = new Date().toISOString();
+  const receiptId = makeReceiptId(plan.id, appliedAt);
+  const snapshot = createPreApplySnapshot(plan, repoRoot, receiptId);
+  const snapshotFilePath = writeSnapshot(repoRoot, snapshot);
+  const results: ApplyOperationResult[] = [];
+
+  for (const op of plan.operations) {
+    const result = op.type === "file" ? applyFileOperation(plan, op) : applyCommandOperation(plan, op);
+    results.push(result);
+
+    if (!result.success) {
+      const report: ApplyReport = {
+        planId: plan.id,
+        appliedAt,
+        success: false,
+        results,
+        recovery: buildApplyRecovery(plan, results),
+        dependencies,
+        snapshot: {
+          id: snapshot.id,
+          path: snapshotFilePath,
+          fileCount: snapshot.files.length
+        },
+        receipt: {
+          id: receiptId,
+          path: receiptPath(repoRoot, receiptId)
+        },
+        rollbackCommand: `gatefile rollback-apply ${receiptId} --yes`
+      };
+
+      const receipt: ApplyReceipt = {
+        id: receiptId,
+        planId: plan.id,
+        planHash: plan.integrity.planHash,
+        appliedAt,
+        success: false,
+        snapshotId: snapshot.id,
+        operationResults: results,
+        dependencies
+      };
+      writeReceipt(repoRoot, receipt);
+      return report;
+    }
+  }
+
+  const report: ApplyReport = {
+    planId: plan.id,
+    appliedAt,
+    success: true,
+    results,
+    recovery: buildApplyRecovery(plan, results),
+    dependencies,
+    snapshot: {
+      id: snapshot.id,
+      path: snapshotFilePath,
+      fileCount: snapshot.files.length
+    },
+    receipt: {
+      id: receiptId,
+      path: receiptPath(repoRoot, receiptId)
+    },
+    rollbackCommand: `gatefile rollback-apply ${receiptId} --yes`
+  };
+
+  const receipt: ApplyReceipt = {
+    id: receiptId,
+    planId: plan.id,
+    planHash: plan.integrity.planHash,
+    appliedAt,
+    success: true,
+    snapshotId: snapshot.id,
+    operationResults: results,
+    dependencies
+  };
+  writeReceipt(repoRoot, receipt);
+
+  return report;
+}
+
+export function previewPlan(plan: PlanFile, options: PlanRuntimeOptions = {}): DryRunReport {
+  const verification = verifyPlan(plan, { config: options.config });
+  const dependencies = dependencyStatus(plan, options.repoRoot);
 
   const results = plan.operations.map((op) =>
     op.type === "file" ? describeFilePreview(plan, op) : describeCommandPreview(plan, op)
@@ -367,16 +528,18 @@ export function previewPlan(plan: PlanFile): DryRunReport {
     verification: {
       status: verification.status,
       approvalStatus: verification.approvalStatus,
+      signerTrustStatus: verification.signerTrust.status,
       readyToApplyFromIntegrityApproval: verification.readyToApplyFromIntegrityApproval,
       blockers: verification.blockers
     },
+    dependencies,
     results,
     recovery: buildDryRunRecovery(plan)
   };
 }
 
-export function applyPlan(plan: PlanFile): ApplyReport {
-  const verification = verifyPlan(plan);
+export function applyPlan(plan: PlanFile, options: PlanRuntimeOptions = {}): ApplyReport {
+  const verification = verifyPlan(plan, { config: options.config });
   if (!verification.readyToApplyFromIntegrityApproval) {
     throw new Error(`Plan failed verification: ${verification.blockers.join("; ")}`);
   }
@@ -386,28 +549,13 @@ export function applyPlan(plan: PlanFile): ApplyReport {
     throw new Error(`Preconditions failed: ${preflight.message}`);
   }
 
-  const results: ApplyOperationResult[] = [];
+  return applyCore(plan, options);
+}
 
-  for (const op of plan.operations) {
-    const result = op.type === "file" ? applyFileOperation(plan, op) : applyCommandOperation(plan, op);
-    results.push(result);
+export function rollbackApply(receiptId: string, options: PlanRuntimeOptions = {}): RollbackReport {
+  return rollbackByReceipt(options.repoRoot, receiptId);
+}
 
-    if (!result.success) {
-      return {
-        planId: plan.id,
-        appliedAt: new Date().toISOString(),
-        success: false,
-        results,
-        recovery: buildApplyRecovery(plan, results)
-      };
-    }
-  }
-
-  return {
-    planId: plan.id,
-    appliedAt: new Date().toISOString(),
-    success: true,
-    results,
-    recovery: buildApplyRecovery(plan, results)
-  };
+export function snapshotFilePathForReceipt(receiptId: string, options: PlanRuntimeOptions = {}): string {
+  return snapshotPath(options.repoRoot, receiptId);
 }
