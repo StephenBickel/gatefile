@@ -33,7 +33,12 @@
 - Returns per-operation result report
 - Hard-stops on unsafe or unmet preconditions
 
-6. Risk Engine (`src/risk.ts`)
+6. Review TUI (`src/review.ts`)
+- Interactive terminal UI for reviewing plans
+- Colored diff preview, keyboard navigation, approve/reject
+- Falls back to inspect output if stdin is not a TTY
+
+7. Risk Engine (`src/risk.ts`)
 - Heuristic risk scoring for operations
 - Produces rationale to support reviewer decisions
 
@@ -41,7 +46,7 @@
 
 1. Agent/tool emits draft changeset JSON
 2. `create-plan` normalizes + scores risk
-3. Reviewer runs `inspect-plan`
+3. Reviewer runs `review` (interactive TUI) or `inspect-plan` (non-interactive)
 4. Reviewer/CI runs `verify-plan`
 5. Reviewer or policy system runs `approve-plan`
 6. Optional `apply-plan --dry-run` previews plan operations at any stage (pending/approved/tampered)

@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/gatefile.config.schema.json",
+  "title": "gatefile configuration",
+  "type": "object",
+  "properties": {
+    "hooks": {
+      "type": "object",
+      "description": "Webhook and shell hooks fired on lifecycle events.",
+      "properties": {
+        "onPlanCreated": { "$ref": "#/$defs/hookAction" },
+        "onApprovalNeeded": { "$ref": "#/$defs/hookAction" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "hookAction": {
+      "type": "object",
+      "description": "One or both of webhook URL and shell command to execute.",
+      "properties": {
+        "webhook": {
+          "type": "string",
+          "format": "uri",
+          "description": "URL to POST the plan summary JSON to."
+        },
+        "shell": {
+          "type": "string",
+          "description": "Shell command to execute."
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

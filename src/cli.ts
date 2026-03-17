@@ -8,6 +8,10 @@ import { DryRunReport, PlanFile, VerifyPlanReport } from "./types";
 import { buildInspectReport, formatInspectSummary, InspectReport } from "./inspect";
 import { verifyPlan } from "./verify";
 import { renderPRReviewComment } from "./pr-review";
+import { reviewPlan } from "./review";
+import { runPipeline, formatPipelineSummary } from "./pipeline";
+import { audit, formatAuditTable } from "./audit";
+import { fireOnPlanCreated, fireOnApprovalNeeded } from "./hooks";
 
 function readJson<T>(path: string): T {
   const full = resolve(path);
@@ -50,7 +54,10 @@ function usage(): void {
   inspect-plan <plan.json> [--json]
   verify-plan <plan.json>
   approve-plan <plan.json> --by <name>
+  review <plan.json>
   apply-plan <plan.json> [--yes] [--dry-run] [--human]
+  audit [--since <duration>] [--plan <planId>] [--json]
+  run-pipeline <dir> [--dry-run] [--continue-on-error] [--json]
   render-pr-comment <plan.json> [--inspect <inspect.json>] [--verify <verify.json>] [--dry-run <dry-run.json>] [--out <comment.md>]`);
 }
 
@@ -81,6 +88,15 @@ async function main(): Promise<void> {
     const plan = createPlanFromDraft(draft);
     writeJson(out, plan);
     console.log(`Plan created: ${out}`);
+    await fireOnPlanCreated(plan);
+    return;
+  }
+
+  if (cmd === "review") {
+    const args = process.argv.slice(3);
+    const planPath = positionalPath(args);
+    if (!planPath) throw new Error("review requires a plan path");
+    await reviewPlan(planPath);
     return;
   }
 
@@ -103,6 +119,7 @@ async function main(): Promise<void> {
     const next = approvePlan(plan, by);
     writeJson(planPath, next);
     console.log(`Plan approved by ${by}: ${planPath}`);
+    await fireOnApprovalNeeded(next);
     return;
   }
 
@@ -163,6 +180,41 @@ async function main(): Promise<void> {
 
     console.log(markdown);
     return;
+  }
+
+  if (cmd === "audit") {
+    const args = process.argv.slice(3);
+    const since = arg(args, "--since");
+    const planId = arg(args, "--plan");
+    const jsonMode = hasFlag(args, "--json");
+
+    const result = audit({ since: since ?? undefined, planId: planId ?? undefined });
+
+    if (jsonMode) {
+      console.log(JSON.stringify(result, null, 2));
+    } else {
+      console.log(formatAuditTable(result));
+    }
+    return;
+  }
+
+  if (cmd === "run-pipeline") {
+    const args = process.argv.slice(3);
+    const dir = positionalPath(args);
+    if (!dir) throw new Error("run-pipeline requires a directory path");
+
+    const result = runPipeline(dir, {
+      dryRun: hasFlag(args, "--dry-run"),
+      continueOnError: hasFlag(args, "--continue-on-error")
+    });
+
+    if (hasFlag(args, "--json")) {
+      console.log(JSON.stringify(result, null, 2));
+    } else {
+      console.log(formatPipelineSummary(result));
+    }
+
+    process.exit(result.success ? 0 : 1);
   }
 
   usage();

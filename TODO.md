@@ -20,6 +20,8 @@ This project stays intentionally MVP-sized: local CLI, schema-backed plans, hash
 10. Added reusable GitHub PR gate composite action and copy-paste workflow examples for fast adoption.
 11. Updated CI and workflow examples to current GitHub Action majors (`checkout/setup-node/upload-artifact` v5) and Node 22.
 
+12. Added MCP server (`gatefile-mcp`) exposing all 4 core operations (inspect, verify, approve, apply) as MCP tools for Claude Desktop, Claude Code, and other MCP hosts.
+
 ## After Launch (Small Backlog)
 
 1. Introduce policy hook interfaces (`beforeApprove`, `beforeApply`).
