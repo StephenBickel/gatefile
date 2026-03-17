@@ -12,7 +12,10 @@ import { renderPRReviewComment } from "./pr-review";
 import { reviewPlan } from "./review";
 import { runPipeline, formatPipelineSummary } from "./pipeline";
 import { audit, formatAuditTable } from "./audit";
-import { fireOnPlanCreated, fireOnApprovalNeeded } from "./hooks";
+import { fireOnPlanCreated, fireOnApprovalNeeded, runPolicyHook } from "./hooks";
+import { configPath, loadGatefileConfig } from "./config";
+import { getRepoRoot } from "./state";
+import { generateApprovalAttestationKeyPair } from "./attestation";
 
 function readJson<T>(path: string): T {
   const full = resolve(path);

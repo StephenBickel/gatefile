@@ -4,7 +4,7 @@ import { request as httpRequest } from "node:http";
 import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { URL } from "node:url";
-import { PlanFile } from "./types";
+import { PlanFile, GatefileConfig } from "./types";
 
 // ── Config types ──────────────────────────────────────────────
 
@@ -18,10 +18,6 @@ export interface HooksConfig {
   onApprovalNeeded?: HookAction;
 }
 
-export interface GatefileConfig {
-  hooks?: HooksConfig;
-}
-
 // ── Config loading ────────────────────────────────────────────
 
 const CONFIG_FILENAME = "gatefile.config.json";
@@ -31,7 +27,7 @@ export function loadHooksConfig(): HooksConfig | undefined {
   if (!existsSync(configPath)) return undefined;
 
   try {
-    const raw = JSON.parse(readFileSync(configPath, "utf-8")) as GatefileConfig;
+    const raw = JSON.parse(readFileSync(configPath, "utf-8")) as { hooks?: HooksConfig };
     return raw.hooks;
   } catch {
     return undefined;
@@ -158,5 +154,24 @@ export async function fireOnApprovalNeeded(plan: PlanFile): Promise<void> {
     await executeHookAction(hooks.onApprovalNeeded, plan, "approval_needed");
   } catch (err) {
     console.warn(`[gatefile hooks] onApprovalNeeded error: ${(err as Error).message}`);
+  }
+}
+
+// Policy hook runner — called by applier/cli for beforeApply / beforeApprove hooks.
+// Runs the hook's command synchronously; throws if it exits non-zero (blocking the operation).
+export function runPolicyHook(
+  config: GatefileConfig | undefined,
+  event: "beforeApply" | "beforeApprove",
+  plan: PlanFile,
+  context: { repoRoot: string; planPath?: string }
+): void {
+  const hookConfig = config?.hooks?.[event];
+  if (!hookConfig?.command) return;
+
+  const { execSync } = require("node:child_process") as typeof import("node:child_process");
+  try {
+    execSync(hookConfig.command, { stdio: "pipe" });
+  } catch {
+    throw new Error(`Policy hook ${event} blocked execution`);
   }
 }

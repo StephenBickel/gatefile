@@ -13,7 +13,8 @@ export * from "./pipeline";
 export * from "./audit";
 export { reviewPlan } from "./review";
 export { fireOnPlanCreated, fireOnApprovalNeeded, loadHooksConfig } from "./hooks";
-export type { HookAction, HooksConfig, GatefileConfig } from "./hooks";
+export type { HookAction, HooksConfig } from "./hooks";
+export type { GatefileConfig } from "./types";
 export {
   createPlan,
   inspectPlan,
@@ -30,3 +31,5 @@ export type {
   InspectResult,
   VerifyResult
 } from "./sdk";
+export { generateApprovalAttestationKeyPair, createApprovalAttestation, verifyApprovalAttestation } from "./attestation";
+export { normalizeGatefileConfig } from "./config";
