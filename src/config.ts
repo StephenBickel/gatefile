@@ -11,6 +11,9 @@ import { getPinnedRepoRoot, getRepoRoot } from "./state";
 
 export const DEFAULT_CONFIG_FILE = "gatefile.config.json";
 
+const ED25519_SPKI_PUBLIC_PEM =
+  /^-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=\n-----END PUBLIC KEY-----$/;
+
 interface ConfigValidationIssue {
   path: string;
   message: string;
@@ -38,8 +41,19 @@ export function configPath(repoRoot?: string, explicitPath?: string): string {
 }
 
 export function canonicalizePublicKeyPem(value: string): string {
-  const key = createPublicKey({ format: "pem", key: value });
-  return key.export({ format: "pem", type: "spki" }).toString().trim();
+  const normalized = value.trim().replace(/\r\n/g, "\n");
+  if (!ED25519_SPKI_PUBLIC_PEM.test(normalized)) {
+    throw new Error("must contain one Ed25519 SPKI public PEM block");
+  }
+  const key = createPublicKey({ format: "pem", key: normalized });
+  if (key.asymmetricKeyType !== "ed25519") {
+    throw new Error("must contain an Ed25519 public key");
+  }
+  const canonical = key.export({ format: "pem", type: "spki" }).toString().trim();
+  if (canonical !== normalized) {
+    throw new Error("must use canonical SPKI public PEM encoding");
+  }
+  return canonical;
 }
 
 function normalizeStringArray(
@@ -158,15 +172,18 @@ function normalizeNotificationAction(
           message: "must not contain leading or trailing whitespace"
         });
       }
-      try {
-        const parsed = new URL(candidate);
-        if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-          issues.push({ path: `${path}.webhook`, message: "must use http or https" });
-        } else {
+      if (!candidate.startsWith("http://") && !candidate.startsWith("https://")) {
+        issues.push({
+          path: `${path}.webhook`,
+          message: "must use a lowercase http or https scheme"
+        });
+      } else {
+        try {
+          const parsed = new URL(candidate);
           webhook = parsed.toString();
+        } catch {
+          issues.push({ path: `${path}.webhook`, message: "must be a valid HTTP(S) URL" });
         }
-      } catch {
-        issues.push({ path: `${path}.webhook`, message: "must be a valid HTTP(S) URL" });
       }
     }
   }
@@ -188,10 +205,9 @@ function normalizeNotificationAction(
     issues.push({ path, message: "must configure at least one of webhook or shell" });
   }
   if (issues.length !== startIssueCount) return undefined;
-  return {
-    ...(webhook === undefined ? {} : { webhook }),
-    ...(shell === undefined ? {} : { shell })
-  };
+  if (webhook !== undefined && shell !== undefined) return { webhook, shell };
+  if (webhook !== undefined) return { webhook };
+  return { shell: shell! };
 }
 
 export function normalizeGatefileConfig(rawConfig: unknown, sourceLabel?: string): GatefileConfig {
@@ -322,7 +338,7 @@ export function normalizeGatefileConfig(rawConfig: unknown, sourceLabel?: string
         } catch {
           issues.push({
             path: `signers.trustedPublicKeys[${i}]`,
-            message: "must be a valid PEM-encoded public key"
+            message: "must be a canonical Ed25519 SPKI public PEM"
           });
         }
       });
@@ -334,9 +350,16 @@ export function normalizeGatefileConfig(rawConfig: unknown, sourceLabel?: string
             "trust policy is empty; configure at least one of trustedKeyIds or trustedPublicKeys, or remove signers"
         });
       } else {
-        normalized.signers = {};
-        if (trustedKeyIds.length > 0) normalized.signers.trustedKeyIds = trustedKeyIds;
-        if (trustedPublicKeys.length > 0) normalized.signers.trustedPublicKeys = trustedPublicKeys;
+        normalized.signers = trustedKeyIds.length > 0
+          ? {
+              trustedKeyIds: trustedKeyIds as [string, ...string[]],
+              ...(trustedPublicKeys.length > 0
+                ? { trustedPublicKeys: trustedPublicKeys as [string, ...string[]] }
+                : {})
+            }
+          : {
+              trustedPublicKeys: trustedPublicKeys as [string, ...string[]]
+            };
       }
     }
   }

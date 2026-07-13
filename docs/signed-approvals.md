@@ -49,7 +49,10 @@ the pair before retrying.
    plaintext logs. Restrict it to the signing user.
 3. Distribute public identity to repo operators:
   - key ID printed by `generate-attestation-key`, and/or
-  - public key PEM
+  - Ed25519 public key encoded as SPKI PEM (`BEGIN PUBLIC KEY`)
+
+Gatefile rejects private PEM blocks and non-Ed25519 keys in
+`signers.trustedPublicKeys`; never place the private key in repository config.
 4. Configure repo trust policy in `gatefile.config.json`:
 
 ```json

@@ -248,10 +248,21 @@ export interface HookCommandConfig {
   cwd?: string;
 }
 
-export interface NotificationActionConfig {
-  webhook?: string;
-  shell?: string;
-}
+export type NotificationActionConfig =
+  | { webhook: string; shell?: string }
+  | { webhook?: string; shell: string };
+
+export type NonEmptyStringArray = [string, ...string[]];
+
+export type SignerTrustConfig =
+  | {
+      trustedKeyIds: NonEmptyStringArray;
+      trustedPublicKeys?: string[];
+    }
+  | {
+      trustedKeyIds?: string[];
+      trustedPublicKeys: NonEmptyStringArray;
+    };
 
 export interface NotificationsConfig {
   onPlanCreated?: NotificationActionConfig;
@@ -259,10 +270,7 @@ export interface NotificationsConfig {
 }
 
 export interface GatefileConfig {
-  signers?: {
-    trustedKeyIds?: string[];
-    trustedPublicKeys?: string[];
-  };
+  signers?: SignerTrustConfig;
   hooks?: {
     beforeApprove?: HookCommandConfig;
     beforeApply?: HookCommandConfig;

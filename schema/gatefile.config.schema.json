@@ -58,19 +58,18 @@
     },
     "publicKeyPem": {
       "type": "string",
-      "pattern": "^-----BEGIN PUBLIC KEY-----\\r?\\n[A-Za-z0-9+/=\\r\\n]+\\r?\\n-----END PUBLIC KEY-----\\s*$"
+      "description": "An Ed25519 public key encoded as one SPKI PEM block.",
+      "pattern": "^\\s*-----BEGIN PUBLIC KEY-----\\r?\\nMCowBQYDK2VwAyEA[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=\\r?\\n-----END PUBLIC KEY-----\\s*$"
     },
     "signers": {
       "type": "object",
       "properties": {
         "trustedKeyIds": {
           "type": "array",
-          "minItems": 1,
           "items": { "$ref": "#/$defs/nonEmptyString" }
         },
         "trustedPublicKeys": {
           "type": "array",
-          "minItems": 1,
           "items": { "$ref": "#/$defs/publicKeyPem" }
         }
       },
@@ -79,12 +78,16 @@
         {
           "type": "object",
           "required": ["trustedKeyIds"],
-          "properties": { "trustedKeyIds": {} }
+          "properties": {
+            "trustedKeyIds": { "type": "array", "minItems": 1 }
+          }
         },
         {
           "type": "object",
           "required": ["trustedPublicKeys"],
-          "properties": { "trustedPublicKeys": {} }
+          "properties": {
+            "trustedPublicKeys": { "type": "array", "minItems": 1 }
+          }
         }
       ]
     },

@@ -1,5 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { generateKeyPairSync } = require('node:crypto');
+const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -120,6 +122,154 @@ test('schema and runtime enforce policy, signer, and notification shapes consist
   }
 });
 
+test('schema and runtime accept only Ed25519 SPKI public keys as signer material', () => {
+  const ed25519 = generateKeyPairSync('ed25519');
+  const rsa = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const canonicalEd25519 = ed25519.publicKey
+    .export({ format: 'pem', type: 'spki' })
+    .toString();
+  const nonCanonicalLines = canonicalEd25519.trim().split('\n');
+  const base64Alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  const encodedKey = nonCanonicalLines[1];
+  const finalDataIndex = base64Alphabet.indexOf(encodedKey.at(-2));
+  nonCanonicalLines[1] =
+    `${encodedKey.slice(0, -2)}${base64Alphabet[finalDataIndex + 1]}=`;
+  const nonCanonicalEd25519 = nonCanonicalLines.join('\n');
+  const cases = [
+    [canonicalEd25519, true],
+    [ed25519.privateKey.export({ format: 'pem', type: 'pkcs8' }).toString(), false],
+    [rsa.publicKey.export({ format: 'pem', type: 'spki' }).toString(), false],
+    ['-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----', false],
+    [nonCanonicalEd25519, false]
+  ];
+
+  for (const [key, expected] of cases) {
+    const config = { signers: { trustedPublicKeys: [key] } };
+    assert.equal(
+      validatesSchema(config),
+      expected,
+      `unexpected schema result for ${key.split('\n')[0]}: ${JSON.stringify(validatesSchema.errors)}`
+    );
+    assert.equal(
+      runtimeAccepts(config),
+      expected,
+      `unexpected runtime result for ${key.split('\n')[0]}`
+    );
+  }
+});
+
+test('schema and runtime allow an empty optional signer array when the other source is non-empty', () => {
+  const configs = [
+    {
+      signers: {
+        trustedKeyIds: [],
+        trustedPublicKeys: [publicKeyPem]
+      }
+    },
+    {
+      signers: {
+        trustedKeyIds: ['security-team-prod-1'],
+        trustedPublicKeys: []
+      }
+    }
+  ];
+
+  for (const config of configs) {
+    assert.equal(
+      validatesSchema(config),
+      true,
+      `schema rejected ${JSON.stringify(config)}: ${JSON.stringify(validatesSchema.errors)}`
+    );
+    assert.equal(runtimeAccepts(config), true, `runtime rejected ${JSON.stringify(config)}`);
+  }
+});
+
+test('schema and runtime require lowercase HTTP(S) webhook schemes', () => {
+  const cases = [
+    ['https://example.com/event', true],
+    ['http://example.com/event', true],
+    ['HTTPS://example.com/event', false],
+    ['HTTP://example.com/event', false]
+  ];
+
+  for (const [webhook, expected] of cases) {
+    const config = { notifications: { onPlanCreated: { webhook } } };
+    assert.equal(
+      validatesSchema(config),
+      expected,
+      `unexpected schema result for ${webhook}: ${JSON.stringify(validatesSchema.errors)}`
+    );
+    assert.equal(runtimeAccepts(config), expected, `unexpected runtime result for ${webhook}`);
+  }
+});
+
+test('public GatefileConfig types require non-empty signer and notification shapes', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gatefile-config-types-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const packageRoot = path.resolve(__dirname, '..');
+
+  fs.writeFileSync(path.join(root, 'consumer.ts'), `
+import type { GatefileConfig } from ${JSON.stringify(path.join(packageRoot, 'dist'))};
+
+const validKeyId: GatefileConfig = { signers: { trustedKeyIds: ['security-team-prod-1'] } };
+const validPublicKey: GatefileConfig = { signers: { trustedPublicKeys: ['public-key-pem'] } };
+const emptyOptionalIds: GatefileConfig = {
+  signers: { trustedKeyIds: [], trustedPublicKeys: ['public-key-pem'] }
+};
+const emptyOptionalKeys: GatefileConfig = {
+  signers: { trustedKeyIds: ['security-team-prod-1'], trustedPublicKeys: [] }
+};
+const validWebhook: GatefileConfig = {
+  notifications: { onPlanCreated: { webhook: 'https://example.com/event' } }
+};
+const validShell: GatefileConfig = {
+  notifications: { onPlanApproved: { shell: 'node notify.js' } }
+};
+
+// @ts-expect-error A signer policy must contain at least one non-empty trust source.
+const emptySigners: GatefileConfig = { signers: {} };
+// @ts-expect-error An empty key ID array is not a trust source.
+const emptyKeyIds: GatefileConfig = { signers: { trustedKeyIds: [] } };
+// @ts-expect-error An empty public-key array is not a trust source.
+const emptyPublicKeys: GatefileConfig = { signers: { trustedPublicKeys: [] } };
+// @ts-expect-error A notification action must select a webhook or shell command.
+const emptyNotification: GatefileConfig = { notifications: { onPlanCreated: {} } };
+
+void [
+  validKeyId,
+  validPublicKey,
+  emptyOptionalIds,
+  emptyOptionalKeys,
+  validWebhook,
+  validShell,
+  emptySigners,
+  emptyKeyIds,
+  emptyPublicKeys,
+  emptyNotification
+];
+`, 'utf8');
+  fs.writeFileSync(path.join(root, 'tsconfig.json'), `${JSON.stringify({
+    compilerOptions: {
+      strict: true,
+      noEmit: true,
+      skipLibCheck: false,
+      types: [],
+      lib: ['ES2020'],
+      module: 'commonjs',
+      moduleResolution: 'node'
+    },
+    files: ['consumer.ts']
+  }, null, 2)}\n`, 'utf8');
+
+  const tsc = path.join(packageRoot, 'node_modules', '.bin', 'tsc');
+  const result = spawnSync(tsc, ['-p', path.join(root, 'tsconfig.json')], {
+    cwd: root,
+    encoding: 'utf8',
+    shell: false
+  });
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+});
+
 test('deprecated notification hook keys migrate to canonical notifications', () => {
   const legacy = {
     hooks: {
@@ -198,7 +348,7 @@ test('notification loading and shell execution use the explicitly pinned reposit
   assert.equal(fs.readFileSync(marker, 'utf8'), repoRoot);
 });
 
-test('deprecated approval notification API dispatches the canonical plan-approved event', async (t) => {
+test('deprecated approval notification API dispatches the canonical plan-approved action', async (t) => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'gatefile-config-approved-alias-'));
   const repoPath = path.join(base, 'repo');
   fs.mkdirSync(repoPath);
