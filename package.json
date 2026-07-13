@@ -6,6 +6,16 @@
   "type": "commonjs",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "require": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./schema/gatefile.schema.json": "./schema/gatefile.schema.json",
+    "./schema/gatefile.config.schema.json": "./schema/gatefile.config.schema.json",
+    "./package.json": "./package.json"
+  },
   "bin": {
     "gatefile": "dist/cli.js",
     "gatefile-mcp": "dist/mcp-server.js"
