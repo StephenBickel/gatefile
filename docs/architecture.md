@@ -137,6 +137,11 @@ and enforcement rechecks the manifest digests and cross-report bindings. The
 manifest binds the plan hashes, Gatefile version, trusted policy, evidence
 digests, and checked-out commit.
 
+This boundary assumes the caller workflow is protected and no hostile same-user
+process is already running on the worker. Examples pin every dependency by full
+commit SHA and place the gate before consumer code execution; workflow
+protection and runner isolation remain deployment responsibilities.
+
 ## Audit boundary
 
 Audit is a read-only projection of authenticated external apply receipts and

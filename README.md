@@ -331,6 +331,11 @@ the gate. Repositories intentionally evaluating without signer policy must opt
 in explicitly with `allow-unsigned-no-policy: "true"`; that mode is not a
 substitute for trusted approval verification.
 
+Pin the workflow and all Actions by full commit SHA, enforce the check through
+a protected required workflow/ruleset, and run it before executing pull-request
+code on an isolated runner. The Action does not sandbox a hostile same-user
+process that was already started on the worker.
+
 See [docs/github-pr-gate-example.md](docs/github-pr-gate-example.md) for full workflow examples, including the [fork-safe signed-approval artifact flow](docs/examples/github-native-signed-approval-fork-request.yml).
 
 ## Config + Hooks

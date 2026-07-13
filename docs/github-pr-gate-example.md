@@ -24,6 +24,14 @@ snapshot explicitly to an Action-owned Gatefile runner. A pull request cannot
 weaken verification by replacing its working-tree `gatefile.config.json` or by
 placing malicious build output in the consumer repository.
 
+The Action cannot authenticate or protect the workflow that calls it. Pin every
+Action by full commit SHA and enforce the gate from a protected required
+workflow or organization/repository ruleset; a pull request allowed to replace
+its own required workflow can bypass any in-repository check. Run this gate
+before any step that executes pull-request code, preferably on an isolated
+GitHub-hosted runner. A hostile same-user process already running on the worker
+is outside this Action's isolation boundary and can tamper with runner files.
+
 ## Configure the trusted policy digest
 
 Compute the SHA-256 digest of the exact `gatefile.config.json` bytes on the base
