@@ -1,8 +1,23 @@
 # gatefile Product Roadmap (2026)
 
-Gatefile is being developed as a full product for governed agent execution, not a demo-only MVP.
+**Status: Experimental alpha — not production-ready.**
 
-## Current Baseline (shipped in 0.1.x)
+Gatefile is being developed toward a full product for governed agent execution, but the current `0.3.0-alpha.0` package is for controlled evaluation only.
+
+## Alpha stabilization freeze
+
+Feature expansion is frozen while the existing surface is stabilized. Accepted work is limited to:
+
+- Security fixes
+- Correctness fixes
+- Compatibility work
+- Tests
+- Documentation
+- Release stabilization
+
+New product surface and feature work are deferred until the stabilization freeze ends. The roadmap phases below describe deferred direction, not active feature commitments.
+
+## Current implemented baseline
 
 - Hash-bound plan integrity and approvals (`create/inspect/verify/approve/apply`)
 - File/command policy guardrails, timeouts, and precondition checks
@@ -12,7 +27,9 @@ Gatefile is being developed as a full product for governed agent execution, not 
 - Plan dependency sequencing (`dependsOn`)
 - GitHub PR review surfaces and adapter ingestion
 
-## Phase 1: Provable Approvals + PR-Native Gating (now)
+## Deferred feature roadmap
+
+### Phase 1: Provable Approvals + PR-Native Gating
 
 Rationale: trust bottleneck is approval identity, and GitHub PR is the dominant review venue.
 
@@ -23,7 +40,7 @@ Rationale: trust bottleneck is approval identity, and GitHub PR is the dominant 
 - Expand PR output and gate signals to include signer trust state (`trusted`, `untrusted`, `unsigned`)
 - Publish operator guidance for key generation/distribution, trust config, and GitHub signing flow
 
-## Phase 2: GitHub-Native Review/Approval UX
+### Phase 2: GitHub-Native Review/Approval UX
 
 Rationale: reduce friction between plan review and repo review.
 
@@ -33,7 +50,7 @@ Rationale: reduce friction between plan review and repo review.
 - Approval UX that can sign from CI-safe contexts without exposing raw secret material in logs
 - First-party GitHub workflow example for fork-safe signed approvals using an artifact handoff
 
-## Phase 3: Official Agent Adapters + SDKs
+### Phase 3: Official Agent Adapters + SDKs
 
 Rationale: product adoption depends on easy integration across agent ecosystems.
 
@@ -42,7 +59,7 @@ Rationale: product adoption depends on easy integration across agent ecosystems.
 - Reference adapters for common agent frameworks with conformance tests
 - Compatibility matrix and deprecation policy for adapter payload versions
 
-## Phase 4: Integrity + Rollback Hardening
+### Phase 4: Integrity + Rollback Hardening
 
 Rationale: production usage needs stronger tamper evidence and recoverability.
 
@@ -51,7 +68,7 @@ Rationale: production usage needs stronger tamper evidence and recoverability.
 - Better command-side recovery support (operator-defined compensating actions)
 - Integrity and rollback diagnostics in inspect/verify outputs
 
-## Phase 5: Policy Packs + Multi-Plan Orchestration
+### Phase 5: Policy Packs + Multi-Plan Orchestration
 
 Rationale: enterprise teams need opinionated defaults and coordinated change sets.
 
@@ -60,7 +77,7 @@ Rationale: enterprise teams need opinionated defaults and coordinated change set
 - Multi-plan orchestration DAG with staged approvals and execution windows
 - Cross-plan risk rollups and dependency failure impact reporting
 
-## Phase 6: Commercial Packaging + Launch
+### Phase 6: Commercial Packaging + Launch
 
 Rationale: convert OSS utility into an adoptable, supportable product surface.
 
