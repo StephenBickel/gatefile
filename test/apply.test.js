@@ -174,7 +174,8 @@ test('applyPlan resolves configured beforeApply hook cwd from the repository roo
       },
       { repoRoot }
     ),
-    'ci-user'
+    'ci-user',
+    { repoRoot }
   );
   const config = {
     hooks: {
@@ -210,7 +211,16 @@ test('previewPlan shows file and command actions without executing side effects'
 
     assert.equal(report.success, true);
     assert.equal(report.preconditionsChecked, false);
+    assert.deepEqual(report.staticGate, {
+      passed: false,
+      verificationReady: true,
+      dependenciesSatisfied: true,
+      operationsAllowed: false,
+      preconditionsChecked: false
+    });
     assert.equal(report.results.length, 4);
+    assert.equal(report.results[0].allowed, true);
+    assert.ok(report.results.some((result) => !result.allowed));
     assert.match(report.results[0].message, /would create/);
     assert.match(report.results[0].details, /path safety: allowed/);
     assert.match(report.results[1].message, /would update/);
@@ -284,6 +294,8 @@ test('previewPlan on pending plans is allowed and reports not-ready verification
 
     assert.equal(report.success, true);
     assert.equal(report.results.length, 4);
+    assert.equal(report.staticGate.passed, false);
+    assert.equal(report.staticGate.verificationReady, false);
     assertDryRunVerification(report, {
       status: 'not-ready',
       approvalStatus: 'pending',
@@ -619,6 +631,9 @@ test('previewPlan marks file operations denied when path is outside default work
 
     assert.equal(report.success, true);
     assert.equal(report.results.length, 1);
+    assert.equal(report.results[0].allowed, false);
+    assert.equal(report.staticGate.operationsAllowed, false);
+    assert.equal(report.staticGate.passed, false);
     assert.match(report.results[0].message, /\[DENIED by file policy\]/);
     assert.match(report.results[0].details, /path safety: denied/);
     assert.match(report.results[0].details, /allowedRoots:/);

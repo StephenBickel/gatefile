@@ -211,6 +211,8 @@ export interface ApplyReport {
 
 export interface DryRunOperationPreview {
   operationId: string;
+  /** Whether the operation passes static file/command policy checks. */
+  allowed: boolean;
   message: string;
   details?: string;
 }
@@ -231,12 +233,29 @@ export interface DryRunReport {
   verification: DryRunVerificationSummary;
   dependencies: DependencyStatus;
   results: DryRunOperationPreview[];
+  staticGate: {
+    passed: boolean;
+    verificationReady: boolean;
+    dependenciesSatisfied: boolean;
+    operationsAllowed: boolean;
+    preconditionsChecked: false;
+  };
   recovery: RecoveryGuidance;
 }
 
 export interface HookCommandConfig {
   command: string;
   cwd?: string;
+}
+
+export interface NotificationActionConfig {
+  webhook?: string;
+  shell?: string;
+}
+
+export interface NotificationsConfig {
+  onPlanCreated?: NotificationActionConfig;
+  onPlanApproved?: NotificationActionConfig;
 }
 
 export interface GatefileConfig {
@@ -247,7 +266,12 @@ export interface GatefileConfig {
   hooks?: {
     beforeApprove?: HookCommandConfig;
     beforeApply?: HookCommandConfig;
+    /** @deprecated Use notifications.onPlanCreated. */
+    onPlanCreated?: NotificationActionConfig;
+    /** @deprecated Use notifications.onPlanApproved. */
+    onApprovalNeeded?: NotificationActionConfig;
   };
+  notifications?: NotificationsConfig;
 }
 
 export interface HookContext {

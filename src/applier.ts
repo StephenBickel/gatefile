@@ -341,6 +341,7 @@ function describeFilePreview(
     const after = op.after ?? "";
     return {
       operationId: op.id,
+      allowed: pathSafety.allowed,
       message: `would create ${op.path}${deniedSuffix}`,
       details: `${pathSafetyDetails(pathSafety)}; after: ${after.length} chars, ${lineCount(after)} lines`
     };
@@ -353,6 +354,7 @@ function describeFilePreview(
     const deltaPrefix = delta >= 0 ? "+" : "";
     return {
       operationId: op.id,
+      allowed: pathSafety.allowed,
       message: `would update ${op.path}${deniedSuffix}`,
       details: `${pathSafetyDetails(pathSafety)}; before: ${before.length} chars, after: ${after.length} chars, delta: ${deltaPrefix}${delta}, lines: ${lineCount(before)} -> ${lineCount(after)}`
     };
@@ -361,6 +363,7 @@ function describeFilePreview(
   const before = op.before;
   return {
     operationId: op.id,
+    allowed: pathSafety.allowed,
     message: `would delete ${op.path}${deniedSuffix}`,
     details:
       `${pathSafetyDetails(pathSafety)}; ` +
@@ -383,6 +386,7 @@ function describeCommandPreview(
   const denialDetails = policyResult.allowed ? "" : `, reason: ${policyResult.message}`;
   return {
     operationId: op.id,
+    allowed: policyResult.allowed,
     message: `would run command: ${formatCommandInvocation(op)}${deniedSuffix}`,
     details: `cwd: ${cwd}, allowFailure: ${allowFailure}, timeoutMs: ${timeoutMs}${policyDetails}${denialDetails}`
   };
@@ -952,6 +956,9 @@ export function previewPlan(plan: PlanFile, options: PlanRuntimeOptions = {}): D
       ? describeFilePreview(plan, op, repoRoot, [layout.stateHome])
       : describeCommandPreview(plan, op, repoRoot)
   );
+  const verificationReady = verification.status === "ready";
+  const dependenciesSatisfied = dependencies.allSatisfied;
+  const operationsAllowed = results.every((result) => result.allowed);
 
   return {
     planId: plan.id,
@@ -967,6 +974,13 @@ export function previewPlan(plan: PlanFile, options: PlanRuntimeOptions = {}): D
     },
     dependencies,
     results,
+    staticGate: {
+      passed: verificationReady && dependenciesSatisfied && operationsAllowed,
+      verificationReady,
+      dependenciesSatisfied,
+      operationsAllowed,
+      preconditionsChecked: false
+    },
     recovery: buildDryRunRecovery(plan)
   };
 }
