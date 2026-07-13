@@ -51,7 +51,7 @@ export interface EngineApproveOptions extends ApprovePlanOptions {
 
 export class GatefileEngine {
   readonly context: GatefileEngineContext;
-  private readonly explicitConfig?: GatefileConfig;
+  readonly #explicitConfig?: GatefileConfig;
 
   constructor(options: GatefileEngineOptions = {}) {
     const repoRoot = getRepoRoot(options.repoRoot);
@@ -61,15 +61,15 @@ export class GatefileEngine {
       stateHome: resolveStateHome(options.stateHome)
     });
     Object.defineProperty(this, "context", { writable: false, configurable: false });
-    this.explicitConfig = options.config === undefined
+    this.#explicitConfig = options.config === undefined
       ? undefined
       : normalizeGatefileConfig(options.config);
   }
 
   private policyConfig(): GatefileConfig {
-    return this.explicitConfig === undefined
+    return this.#explicitConfig === undefined
       ? loadGatefileConfig(this.context.repoRoot)
-      : normalizeGatefileConfig(this.explicitConfig);
+      : normalizeGatefileConfig(this.#explicitConfig);
   }
 
   createPlan(draft: PlanDraft): PlanFile {

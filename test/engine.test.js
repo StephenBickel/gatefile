@@ -134,6 +134,31 @@ test('GatefileEngine context binding cannot be replaced to redirect authority', 
   assert.equal(engine.createPlan(makeDraft('Preserve authority')).context.repositoryId, 'repo:engine-test');
 });
 
+test('GatefileEngine keeps explicit policy in runtime-private pinned state', (t) => {
+  const { repoRoot, stateHome } = makeFixture(t, 'gatefile-engine-private-policy-');
+  const suppliedConfig = { signers: { trustedKeyIds: ['trusted-key'] } };
+  const engine = new GatefileEngine({
+    repoRoot,
+    repositoryId: 'repo:private-policy-test',
+    stateHome,
+    config: suppliedConfig
+  });
+  const unsignedPlan = engine.approvePlan(
+    engine.createPlan(makeDraft('Preserve explicit policy')),
+    'reviewer'
+  );
+
+  assert.equal(Object.getOwnPropertyDescriptor(engine, 'explicitConfig'), undefined);
+  assert.equal(engine.verifyPlan(unsignedPlan).status, 'not-ready');
+
+  suppliedConfig.signers.trustedKeyIds.length = 0;
+  engine.explicitConfig = {};
+
+  const report = engine.verifyPlan(unsignedPlan);
+  assert.equal(report.signerTrust.policyConfigured, true);
+  assert.equal(report.status, 'not-ready');
+});
+
 test('GatefileEngine pins branch preconditions despite ambient cwd and Git routing', (t) => {
   const { repoRoot, otherRepoRoot, stateHome } = makeFixture(
     t,
