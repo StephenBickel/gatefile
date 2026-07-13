@@ -117,6 +117,15 @@ function staticStringValue(node, bindings = new Map()) {
     const right = staticStringValue(node.right, bindings);
     return left === undefined || right === undefined ? undefined : left + right;
   }
+  if (ts.isTemplateExpression(node)) {
+    let value = node.head.text;
+    for (const span of node.templateSpans) {
+      const expressionValue = staticStringValue(span.expression, bindings);
+      if (expressionValue === undefined) return undefined;
+      value += expressionValue + span.literal.text;
+    }
+    return value;
+  }
   return undefined;
 }
 
@@ -276,11 +285,17 @@ function boundaryViolations(file, source) {
         moduleName !== undefined &&
         kernelModuleFor(file, moduleName) !== undefined
       ) {
-        if (ts.isIdentifier(callee) && requireAliases.has(callee.text)) {
+        if (
+          (ts.isIdentifier(callee) && requireAliases.has(callee.text)) ||
+          (ts.isPropertyAccessExpression(callee) && callee.name.text === 'require')
+        ) {
           violations.push(`${file}: CommonJS load from ${moduleName}`);
-        }
-        if (callee.kind === ts.SyntaxKind.ImportKeyword) {
+        } else if (callee.kind === ts.SyntaxKind.ImportKeyword) {
           violations.push(`${file}: dynamic import from ${moduleName}`);
+        } else {
+          // A statically known lifecycle-kernel specifier passed to an arbitrary
+          // callable can execute through createRequire or another loader alias.
+          violations.push(`${file}: executable module path passed to call ${moduleName}`);
         }
       }
       if (ts.isIdentifier(callee) && LIFECYCLE_SYMBOLS.has(callee.text)) {
@@ -403,6 +418,26 @@ test('boundary follows static module and CommonJS loader aliases', () => {
     'src/fixture.ts: CommonJS load from ./applier',
     'src/fixture.ts: CommonJS load from ./verify',
     'src/fixture.ts: dynamic import from ./planner'
+  ]);
+});
+
+test('boundary rejects module.require, interpolated specifiers, and createRequire loaders', () => {
+  const source = `
+    import { createRequire } from "node:module";
+    const rawModule = module.require("./applier.js");
+    const name = "applier";
+    const rawTemplate = require(\`./\${name}\`);
+    const load = createRequire(__filename);
+    const rawCreated = load("./verify");
+    rawModule.applyPlan(plan);
+    rawTemplate.applyPlan(plan);
+    rawCreated.verifyPlan(plan);
+  `;
+
+  assert.deepEqual(boundaryViolations('src/raw-lifecycle.ts', source), [
+    'src/raw-lifecycle.ts: CommonJS load from ./applier.js',
+    'src/raw-lifecycle.ts: CommonJS load from ./applier',
+    'src/raw-lifecycle.ts: executable module path passed to call ./verify'
   ]);
 });
 
