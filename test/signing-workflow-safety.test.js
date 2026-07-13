@@ -1,7 +1,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const childProcess = require('node:child_process');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 
 const root = path.resolve(__dirname, '..');
@@ -16,7 +18,7 @@ const failClosedWorkflowError = /reviewed workflow contract/;
 // After a conscious security re-review, recompute and deliberately repin this digest;
 // never derive or update the expected value automatically from the workflow under test.
 const reviewedForkSigningWorkflowSha256 =
-  '6a8fa0eb73d6dbd101e5b700c4875fe5e39f4603ffa4b301ca9bf98ff6e567ec';
+  '0470d20f847092906d2081ca2ba5ef9fd6d347dc688de00c0903635b63587253';
 
 function documentationFiles(directory) {
   return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
@@ -54,21 +56,90 @@ function workflowRunScripts(workflow) {
   return scripts.join('\n');
 }
 
+function workflowStep(workflow, name) {
+  const lines = workflow.split('\n');
+  const start = lines.findIndex((line) => line.trim() === `- name: ${name}`);
+  assert.notEqual(start, -1, `workflow step not found: ${name}`);
+
+  const indentation = lines[start].match(/^[ ]*/)[0].length;
+  let end = start + 1;
+  while (end < lines.length) {
+    if (lines[end].match(/^[ ]*/)[0].length === indentation && lines[end].trimStart().startsWith('- name:')) {
+      break;
+    }
+    end += 1;
+  }
+  return lines.slice(start, end).join('\n');
+}
+
+function workflowStepScript(step) {
+  const lines = step.split('\n');
+  const start = lines.findIndex((line) => /^([ ]*)script:[ \t]*\|[-+]?[ \t]*$/.test(line));
+  assert.notEqual(start, -1, 'github-script script block not found');
+
+  const indentation = lines[start].match(/^[ ]*/)[0].length;
+  const block = [];
+  for (let index = start + 1; index < lines.length; index += 1) {
+    const line = lines[index];
+    const lineIndentation = line.match(/^[ ]*/)[0].length;
+    if (line.trim() !== '' && lineIndentation <= indentation) break;
+    block.push(line.slice(Math.min(line.length, indentation + 2)));
+  }
+  return block.join('\n');
+}
+
+function runArtifactMetadataValidation(context) {
+  const workflow = fs.readFileSync(forkSigningWorkflow, 'utf8');
+  const script = workflowRunScripts(workflowStep(workflow, 'Validate artifact metadata'));
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'gatefile-artifact-metadata-'));
+  const artifactDirectory = path.join(directory, '.gatefile-artifacts/input');
+  const outputPath = path.join(directory, 'github-output.txt');
+
+  try {
+    fs.mkdirSync(artifactDirectory, { recursive: true });
+    fs.writeFileSync(
+      path.join(artifactDirectory, 'context.json'),
+      `${JSON.stringify(context)}\n`,
+      'utf8'
+    );
+    fs.writeFileSync(outputPath, '', 'utf8');
+    const result = childProcess.spawnSync('bash', ['-euo', 'pipefail', '-c', script], {
+      cwd: directory,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        GITHUB_OUTPUT: outputPath,
+        GITHUB_REPOSITORY: 'trusted-owner/trusted-repo'
+      }
+    });
+
+    return {
+      status: result.status,
+      stderr: result.stderr,
+      output: fs.readFileSync(outputPath, 'utf8')
+    };
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+}
+
 function normalizedWorkflowSha256(workflow) {
   const normalized = `${workflow.replace(/\r\n?/g, '\n').replace(/\n+$/, '')}\n`;
   return crypto.createHash('sha256').update(normalized, 'utf8').digest('hex');
 }
 
-function assertForkSigningWorkflowSafe(workflow) {
+function assertReviewedForkSigningWorkflow(workflow) {
   assert.equal(
     normalizedWorkflowSha256(workflow),
     reviewedForkSigningWorkflowSha256,
     'privileged signing workflow no longer matches the reviewed workflow contract; security re-review and conscious digest repin are required'
   );
+}
 
+function assertForkSigningWorkflowSemantics(workflow) {
   const runScripts = workflowRunScripts(workflow);
   const checkoutUses = workflow.match(
-    /^[ \t]*uses:[ \t]*actions\/checkout@[^\s#]+[ \t]*$/gm
+    /^[ \t]*uses:[ \t]*["']?actions\/checkout@[^\s#"']+["']?[ \t]*$/gm
   ) ?? [];
 
   assert.equal(
@@ -88,14 +159,14 @@ function assertForkSigningWorkflowSafe(workflow) {
   );
   assert.doesNotMatch(
     runScripts,
-    /(?:^|\n)[ \t]*(?:run:[ \t]*)?(?:git[ \t]+(?:checkout|switch|worktree)|gh[ \t]+pr[ \t]+checkout)\b/im,
+    /(?:^|\n)[ \t]*(?:run:[ \t]*)?(?:git\b[^\n]*(?:checkout|switch|worktree)|gh[ \t]+pr[ \t]+checkout)\b/im,
     'signing workflow must not checkout PR or head refs with shell commands'
   );
 
   const artifactPath = String.raw`(?:\.\/)?\.gatefile-artifacts\/input\/`;
   const artifactExecutionChecks = [
     [runScripts, new RegExp(
-      String.raw`(?:^|\n)[ \t]*(?:run:[ \t]*)?(?:bash|sh|zsh|node|deno|bun|python(?:\d+(?:\.\d+)*)?|ruby|perl)[ \t]+(?:--?[^\s]+[ \t]+)*["']?${artifactPath}`,
+      String.raw`(?:^|\n)[ \t]*(?:run:[ \t]*)?(?:env[ \t]+(?:(?:--?[^\s]+|[A-Za-z_][A-Za-z0-9_]*=[^\s]+)[ \t]+)*)?(?:bash|sh|zsh|node|deno|bun|python(?:\d+(?:\.\d+)*)?|ruby|perl)[ \t]+(?:--?[^\s]+[ \t]+)*["']?${artifactPath}`,
       'im'
     )],
     [runScripts, new RegExp(
@@ -130,6 +201,10 @@ function assertForkSigningWorkflowSafe(workflow) {
     new RegExp(
       String.raw`(?:\.\/)?\.gatefile-artifacts\/input\/[^\s"']*(?:gatefile\.config\.(?:json|ya?ml)|hooks?[^\s"']*)`,
       'im'
+    ),
+    new RegExp(
+      String.raw`\b(?:cp|install|mv)\b[^\n]*${artifactPath}[^\n]*\bgatefile\.config\.(?:json|ya?ml)\b`,
+      'im'
     )
   ];
 
@@ -140,6 +215,11 @@ function assertForkSigningWorkflowSafe(workflow) {
       'signing workflow must not load config or hooks from the PR artifact'
     );
   }
+}
+
+function assertForkSigningWorkflowSafe(workflow) {
+  assertReviewedForkSigningWorkflow(workflow);
+  assertForkSigningWorkflowSemantics(workflow);
 }
 
 function appendWorkflowSteps(workflow, steps) {
@@ -203,6 +283,76 @@ test('fork-safe signing workflow explicitly checks out the trusted default branc
   assert.doesNotThrow(() => assertForkSigningWorkflowSafe(workflow));
 });
 
+test('artifact metadata validation accepts a GitHub SHA and normalizes it to lowercase', () => {
+  const result = runArtifactMetadataValidation({
+    baseRepo: 'trusted-owner/trusted-repo',
+    prNumber: 17,
+    headSha: 'ABCDEF0123456789ABCDEF0123456789ABCDEF01'
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(
+    result.output,
+    'pr_number=17\nhead_sha=abcdef0123456789abcdef0123456789abcdef01\n'
+  );
+});
+
+const maliciousShaCases = [
+  ['short SHA', 'abcdef0'],
+  [
+    'JavaScript template payload',
+    '${globalThis.process.mainModule.constructor._load("node:fs").writeFileSync("/tmp/gatefile-pwned","1")}'
+  ],
+  ['newline output injection', `${'a'.repeat(40)}\nforged_output=attacker-controlled`]
+];
+
+for (const [name, headSha] of maliciousShaCases) {
+  test(`artifact metadata validation rejects ${name}`, () => {
+    const result = runArtifactMetadataValidation({
+      baseRepo: 'trusted-owner/trusted-repo',
+      prNumber: 17,
+      headSha
+    });
+    assert.notEqual(result.status, 0, `accepted malicious headSha: ${JSON.stringify(headSha)}`);
+    assert.equal(result.output, '', `wrote GITHUB_OUTPUT for: ${JSON.stringify(headSha)}`);
+  });
+}
+
+test('github-script receives artifact metadata only through environment variables', () => {
+  const workflow = fs.readFileSync(forkSigningWorkflow, 'utf8');
+  const commentStep = workflowStep(workflow, 'Comment PR with signed artifact details');
+  const script = workflowStepScript(commentStep);
+
+  assert.doesNotMatch(script, /\$\{\{\s*steps\.context\.outputs\./);
+  assert.match(commentStep, /env:\n\s+PR_NUMBER: \$\{\{ steps\.context\.outputs\.pr_number \}\}/);
+  assert.match(commentStep, /HEAD_SHA: \$\{\{ steps\.context\.outputs\.head_sha \}\}/);
+  assert.match(script, /process\.env\.PR_NUMBER/);
+  assert.match(script, /process\.env\.HEAD_SHA/);
+});
+
+test('signing key is always deleted before upload and comment actions', () => {
+  const workflow = fs.readFileSync(forkSigningWorkflow, 'utf8');
+  const stepNames = [...workflow.matchAll(/^\s*- name: (.+)$/gm)].map((match) => match[1]);
+  const verifyIndex = stepNames.indexOf('Verify trust + readiness');
+  const cleanupIndex = stepNames.indexOf('Cleanup signing key');
+  const uploadIndex = stepNames.indexOf('Upload signed plan artifact');
+  const commentIndex = stepNames.indexOf('Comment PR with signed artifact details');
+
+  assert.equal(cleanupIndex, verifyIndex + 1, 'cleanup must immediately follow sign/verify');
+  assert.ok(cleanupIndex < uploadIndex, 'cleanup must precede artifact upload');
+  assert.ok(cleanupIndex < commentIndex, 'cleanup must precede the comment action');
+  assert.match(workflowStep(workflow, 'Cleanup signing key'), /if: always\(\)/);
+});
+
+test('reviewed workflow contract rejects every unreviewed content mutation', () => {
+  const workflow = fs.readFileSync(forkSigningWorkflow, 'utf8');
+
+  assert.throws(
+    () => assertReviewedForkSigningWorkflow(`${workflow}# unreviewed mutation\n`),
+    failClosedWorkflowError
+  );
+});
+
 test('workflow safety assertion rejects a later checkout of PR code', () => {
   const workflow = fs.readFileSync(forkSigningWorkflow, 'utf8');
   const maliciousWorkflow = appendWorkflowSteps(workflow, [
@@ -213,8 +363,8 @@ test('workflow safety assertion rejects a later checkout of PR code', () => {
   ]);
 
   assert.throws(
-    () => assertForkSigningWorkflowSafe(maliciousWorkflow),
-    failClosedWorkflowError,
+    () => assertForkSigningWorkflowSemantics(maliciousWorkflow),
+    /exactly one checkout/,
     'the safety assertion accepted a later PR checkout'
   );
 });
@@ -227,8 +377,8 @@ test('workflow safety assertion rejects a shell checkout of a PR ref', () => {
   ]);
 
   assert.throws(
-    () => assertForkSigningWorkflowSafe(maliciousWorkflow),
-    failClosedWorkflowError,
+    () => assertForkSigningWorkflowSemantics(maliciousWorkflow),
+    /checkout PR or head refs/,
     'the safety assertion accepted a shell checkout of a PR ref'
   );
 });
@@ -241,8 +391,8 @@ test('workflow safety assertion rejects executing a script from the PR artifact'
   ]);
 
   assert.throws(
-    () => assertForkSigningWorkflowSafe(maliciousWorkflow),
-    failClosedWorkflowError,
+    () => assertForkSigningWorkflowSemantics(maliciousWorkflow),
+    /execute files from the PR artifact/,
     'the safety assertion accepted executable PR artifact content'
   );
 });
@@ -255,8 +405,8 @@ test('workflow safety assertion rejects PR-supplied config or hooks', () => {
   ]);
 
   assert.throws(
-    () => assertForkSigningWorkflowSafe(maliciousWorkflow),
-    failClosedWorkflowError,
+    () => assertForkSigningWorkflowSemantics(maliciousWorkflow),
+    /load config or hooks from the PR artifact/,
     'the safety assertion accepted PR-supplied config and hooks'
   );
 });
@@ -271,8 +421,8 @@ test('workflow safety assertion rejects a quoted checkout with an input-controll
   ]);
 
   assert.throws(
-    () => assertForkSigningWorkflowSafe(maliciousWorkflow),
-    failClosedWorkflowError,
+    () => assertForkSigningWorkflowSemantics(maliciousWorkflow),
+    /exactly one checkout/,
     'the safety assertion accepted a quoted checkout with an input-controlled ref'
   );
 });
@@ -285,8 +435,8 @@ test('workflow safety assertion rejects git checkout with global options', () =>
   ]);
 
   assert.throws(
-    () => assertForkSigningWorkflowSafe(maliciousWorkflow),
-    failClosedWorkflowError,
+    () => assertForkSigningWorkflowSemantics(maliciousWorkflow),
+    /checkout PR or head refs/,
     'the safety assertion accepted git -C checkout of a PR ref'
   );
 });
@@ -299,8 +449,8 @@ test('workflow safety assertion rejects artifact execution through env', () => {
   ]);
 
   assert.throws(
-    () => assertForkSigningWorkflowSafe(maliciousWorkflow),
-    failClosedWorkflowError,
+    () => assertForkSigningWorkflowSemantics(maliciousWorkflow),
+    /execute files from the PR artifact/,
     'the safety assertion accepted env-wrapped artifact execution'
   );
 });
@@ -309,14 +459,12 @@ test('workflow safety assertion rejects copying artifact config into the trusted
   const workflow = fs.readFileSync(forkSigningWorkflow, 'utf8');
   const maliciousWorkflow = appendWorkflowSteps(workflow, [
     '      - name: Install attacker config before signing',
-    '        run: |',
-    '          cp .gatefile-artifacts/input/config.json gatefile.config.json',
-    '          node dist/cli.js approve-plan .gatefile-artifacts/input/plan.json'
+    '        run: cp .gatefile-artifacts/input/config.json gatefile.config.json && node dist/cli.js approve-plan .gatefile-artifacts/input/plan.json'
   ]);
 
   assert.throws(
-    () => assertForkSigningWorkflowSafe(maliciousWorkflow),
-    failClosedWorkflowError,
+    () => assertForkSigningWorkflowSemantics(maliciousWorkflow),
+    /load config or hooks from the PR artifact/,
     'the safety assertion accepted artifact config copied into the trusted checkout'
   );
 });
