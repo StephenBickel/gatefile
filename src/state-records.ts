@@ -107,6 +107,15 @@ export interface StateDependencyStatus {
   allSatisfied: boolean;
 }
 
+export interface ReceiptAuditMetadata {
+  summary: string;
+  source: string;
+  approvedBy: string;
+  approvedAt: string;
+  approvalIdentity: "signed" | "unsigned";
+  signerKeyId: string | null;
+}
+
 export interface RollbackRecordEntry {
   snapshotEntryId: string;
   operationId: string;
@@ -137,6 +146,8 @@ export interface ReceiptRecordBody {
   results: StateOperationResult[];
   dependencies: StateDependencyStatus;
   rollbackEntries: RollbackRecordEntry[];
+  /** Added after state v1 launch; absent only on older authenticated receipts. */
+  audit?: ReceiptAuditMetadata;
 }
 
 export interface AuthenticatedReceiptRecord extends ReceiptRecordBody {
@@ -753,6 +764,7 @@ function assertRollbackEntry(value: unknown, index: number): RollbackRecordEntry
 
 function assertReceiptBody(value: unknown): ReceiptRecordBody {
   const body = assertRecord(value, "receipt record");
+  const hasAudit = Object.prototype.hasOwnProperty.call(body, "audit");
   assertExactFields(
     body,
     [
@@ -767,7 +779,8 @@ function assertReceiptBody(value: unknown): ReceiptRecordBody {
       "success",
       "results",
       "dependencies",
-      "rollbackEntries"
+      "rollbackEntries",
+      ...(hasAudit ? ["audit"] : [])
     ],
     "receipt record"
   );
@@ -826,6 +839,49 @@ function assertReceiptBody(value: unknown): ReceiptRecordBody {
     rollbackOperations.add(entry.operationId);
   }
 
+  let audit: ReceiptAuditMetadata | undefined;
+  if (hasAudit) {
+    const metadata = assertRecord(body.audit, "receipt.audit");
+    assertExactFields(
+      metadata,
+      [
+        "summary",
+        "source",
+        "approvedBy",
+        "approvedAt",
+        "approvalIdentity",
+        "signerKeyId"
+      ],
+      "receipt.audit"
+    );
+    if (metadata.approvalIdentity !== "signed" && metadata.approvalIdentity !== "unsigned") {
+      throw new StateRecordValidationError(
+        "receipt.audit.approvalIdentity must be signed or unsigned"
+      );
+    }
+    const signerKeyId = metadata.signerKeyId === null
+      ? null
+      : assertBoundId(metadata.signerKeyId, "receipt.audit.signerKeyId");
+    if (metadata.approvalIdentity === "signed" && signerKeyId === null) {
+      throw new StateRecordValidationError(
+        "receipt.audit signed approval must include signerKeyId"
+      );
+    }
+    if (metadata.approvalIdentity === "unsigned" && signerKeyId !== null) {
+      throw new StateRecordValidationError(
+        "receipt.audit unsigned approval may not include signerKeyId"
+      );
+    }
+    audit = {
+      summary: assertText(metadata.summary, "receipt.audit.summary"),
+      source: assertText(metadata.source, "receipt.audit.source"),
+      approvedBy: assertText(metadata.approvedBy, "receipt.audit.approvedBy"),
+      approvedAt: assertCanonicalTimestamp(metadata.approvedAt, "receipt.audit.approvedAt"),
+      approvalIdentity: metadata.approvalIdentity,
+      signerKeyId
+    };
+  }
+
   return {
     type: "gatefile-apply-receipt",
     stateVersion: STATE_RECORD_VERSION,
@@ -838,7 +894,8 @@ function assertReceiptBody(value: unknown): ReceiptRecordBody {
     success,
     results,
     dependencies: assertDependencies(body.dependencies),
-    rollbackEntries
+    rollbackEntries,
+    ...(audit ? { audit } : {})
   };
 }
 

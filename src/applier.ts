@@ -55,6 +55,7 @@ import type {
 } from "./safe-fs";
 import { exactFileStateToStored } from "./state-records";
 import type {
+  ReceiptAuditMetadata,
   ReceiptRecordBody,
   RollbackRecordEntry,
   SnapshotRecordBody
@@ -661,6 +662,7 @@ function assertPreparedReceiptFits(
     results: pessimisticResults,
     dependencies,
     rollbackEntries: pessimisticRollbackEntries,
+    audit: receiptAuditMetadata(plan),
     authentication: {
       scheme: "hmac-sha256",
       envelopeVersion: 1,
@@ -674,6 +676,25 @@ function assertPreparedReceiptFits(
       `Prepared authenticated receipt could require ${byteLength} bytes, exceeding the pre-mutation budget ${APPLY_RECEIPT_WORST_CASE_BUDGET_BYTES}`
     );
   }
+}
+
+function receiptAuditMetadata(plan: PlanFile): ReceiptAuditMetadata {
+  if (
+    plan.approval.status !== "approved" ||
+    !plan.approval.approvedBy ||
+    !plan.approval.approvedAt
+  ) {
+    throw new Error("An authenticated apply receipt requires complete approval metadata");
+  }
+  const signerKeyId = plan.approval.attestation?.keyId ?? null;
+  return {
+    summary: plan.summary,
+    source: plan.source,
+    approvedBy: plan.approval.approvedBy,
+    approvedAt: plan.approval.approvedAt,
+    approvalIdentity: signerKeyId === null ? "unsigned" : "signed",
+    signerKeyId
+  };
 }
 
 function receiptBodyForApply(
@@ -702,7 +723,8 @@ function receiptBodyForApply(
       mutationStatus: result.mutationStatus ?? "none"
     })),
     dependencies,
-    rollbackEntries: rollbackEntriesForApply(snapshot.record, mutations)
+    rollbackEntries: rollbackEntriesForApply(snapshot.record, mutations),
+    audit: receiptAuditMetadata(plan)
   };
 }
 
