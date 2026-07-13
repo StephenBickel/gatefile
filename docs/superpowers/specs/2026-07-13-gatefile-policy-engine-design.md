@@ -45,8 +45,10 @@ Construction accepts a `GatefileEngineOptions` object:
   directory outside Git.
 - `repositoryId`: explicit integration override, otherwise derived once from the
   canonical root.
-- `stateHome`: optional trusted external state directory forwarded consistently
-  to inspection, preview, apply, rollback, and pipeline operations.
+- `stateHome`: optional trusted external state directory input. The effective
+  explicit/environment/platform-default path is resolved once at construction
+  and forwarded consistently to inspection, preview, apply, rollback, and
+  pipeline operations.
 - `config`: optional explicit configuration. It is normalized and defensively
   copied at construction.
 
