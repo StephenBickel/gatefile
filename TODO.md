@@ -2,7 +2,7 @@
 
 **Status: Experimental alpha — not production-ready.**
 
-Feature expansion is frozen. Active work is limited to security fixes, correctness fixes, compatibility work, tests, documentation, and release work. The incomplete items below are deferred until the stabilization freeze ends.
+Feature expansion is frozen. Active work is limited to security fixes, correctness fixes, compatibility work, tests, documentation, and release stabilization. The incomplete items below are deferred until the stabilization freeze ends.
 
 ## Deferred: Public Launch (MVP)
 

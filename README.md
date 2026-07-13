@@ -39,7 +39,7 @@ Agent emits plan → Human reviews → Approve hash → Apply with guardrails �
 
 ## Who Is This For?
 
-**Engineering teams shipping autonomous agents to production.** Your agent proposes a database migration, a config rewrite, and a deploy script. Today you either babysit every action or trust full-auto. Gatefile is the middle ground: agent-speed planning with human-gated execution.
+**Engineering teams evaluating future autonomous-agent production workflows.** During alpha, treat this as a controlled-evaluation scenario, not a production deployment recommendation: your agent proposes a database migration, a config rewrite, and a deploy script. Gatefile demonstrates agent-speed planning with human-gated execution.
 
 **DevOps teams building AI-powered CI/CD.** When an agent is part of your pipeline — auto-fix, auto-refactor, auto-migrate — you need a machine-readable checkpoint between "agent proposed this" and "this actually ran." Gatefile is that checkpoint, with a GitHub Action ready to drop into any workflow.
 
@@ -129,9 +129,9 @@ gatefile lint-config
 
 An agent proposes a refactor touching 30 files across 4 packages. Without Gatefile, you either read every diff interactively or trust full-auto. With Gatefile, the agent emits a plan, your tech lead reviews the operation summary and risk scores, approves the hash, and apply executes only what was approved.
 
-### 2. Production Ops Automation
+### 2. Future scenario: Production Ops Automation
 
-An ops agent wants to rotate configs, restart a service, and validate health. The plan declares the exact file changes, commands, and preconditions (must be on `main`, must have `ALLOW_OPS_APPLY` set). Apply refuses if preconditions fail, and every action is receipted for rollback.
+Controlled evaluation only while Gatefile is alpha: an ops agent wants to rotate configs, restart a service, and validate health. The plan declares the exact file changes, commands, and preconditions (must be on `main`, must have `ALLOW_OPS_APPLY` set). Apply refuses if preconditions fail, and every action is receipted for rollback.
 
 ### 3. CI Gate for Agent PRs
 
@@ -319,7 +319,7 @@ See the [Product Roadmap](docs/product-roadmap.md) for the deferred feature road
 
 ## Contributing
 
-Gatefile is in an alpha stabilization freeze. Contributions are limited to security fixes, correctness fixes, compatibility work, tests, documentation, and release work. New product surface, integrations, and feature work are deferred until the freeze ends.
+Gatefile is in an alpha stabilization freeze. Contributions are limited to security fixes, correctness fixes, compatibility work, tests, documentation, and release stabilization. New product surface, integrations, and feature work are deferred until the freeze ends.
 
 1. Open an issue describing stabilization work
 2. Keep changes focused and documented

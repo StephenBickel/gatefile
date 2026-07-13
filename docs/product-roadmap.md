@@ -13,7 +13,7 @@ Feature expansion is frozen while the existing surface is stabilized. Accepted w
 - Compatibility work
 - Tests
 - Documentation
-- Release work
+- Release stabilization
 
 New product surface and feature work are deferred until the stabilization freeze ends. The roadmap phases below describe deferred direction, not active feature commitments.
 

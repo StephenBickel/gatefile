@@ -33,6 +33,23 @@ test('README gives an unambiguous alpha warning before usage guidance', () => {
   assert.ok(readme.indexOf(status) < readme.indexOf('## Quick Start'), 'alpha warning must appear before Quick Start');
 });
 
+test('README presents production use cases as future controlled-evaluation scenarios', () => {
+  const readme = read('README.md');
+
+  assertIncludesAll(
+    readme,
+    [
+      'Engineering teams evaluating future autonomous-agent production workflows.',
+      'controlled-evaluation scenario, not a production deployment recommendation',
+      '### 2. Future scenario: Production Ops Automation',
+      'Controlled evaluation only while Gatefile is alpha'
+    ],
+    'README production scenarios'
+  );
+  assert.ok(!readme.includes('**Engineering teams shipping autonomous agents to production.**'));
+  assert.ok(!readme.includes('### 2. Production Ops Automation'));
+});
+
 test('roadmap freezes feature expansion during stabilization', () => {
   const roadmap = read('docs/product-roadmap.md');
 
@@ -45,7 +62,7 @@ test('roadmap freezes feature expansion during stabilization', () => {
       'Compatibility work',
       'Tests',
       'Documentation',
-      'Release work',
+      'Release stabilization',
       'New product surface and feature work are deferred'
     ],
     'stabilization freeze'
@@ -69,6 +86,15 @@ test('root roadmap does not advertise deferred features as near-term work', () =
     ],
     'root roadmap'
   );
+});
+
+test('freeze language uses the exact release stabilization category', () => {
+  for (const relativePath of ['README.md', 'TODO.md', 'docs/product-roadmap.md']) {
+    const contents = read(relativePath);
+
+    assert.match(contents, /release stabilization/i, `${relativePath} must name release stabilization`);
+    assert.doesNotMatch(contents, /\brelease work\b/i, `${relativePath} must not use generic release work`);
+  }
 });
 
 test('package prerelease does not change schema or protocol versions', () => {
