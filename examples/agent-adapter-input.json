@@ -19,7 +19,8 @@
     ],
     "commands": [
       {
-        "command": "npm test -- --testNamePattern=status"
+        "executable": "npm",
+        "args": ["test", "--", "--testNamePattern=status"]
       }
     ],
     "preconditions": [

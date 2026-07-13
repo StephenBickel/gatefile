@@ -10,6 +10,12 @@ function makeSafeDraft(root) {
   const allowedRoot = path.join(root, 'workspace');
   const createdFile = path.join(allowedRoot, 'approved.txt');
   const commandLog = path.join(allowedRoot, 'command.log');
+  const commandArgs = [
+    '-e',
+    `require("node:fs").appendFileSync(${JSON.stringify(
+      commandLog
+    )}, "safe command executed\\\\n", "utf8")`
+  ];
 
   return {
     allowedRoot,
@@ -29,9 +35,8 @@ function makeSafeDraft(root) {
         {
           id: 'op_cmd_marker',
           type: 'command',
-          command: `${process.execPath} -e 'require("node:fs").appendFileSync(${JSON.stringify(
-            commandLog
-          )}, "safe command executed\\\\n", "utf8")'`,
+          executable: process.execPath,
+          args: commandArgs,
           allowFailure: false
         }
       ],
@@ -39,7 +44,7 @@ function makeSafeDraft(root) {
       execution: {
         commandPolicy: {
           mode: 'allow',
-          patterns: [process.execPath]
+          rules: [{ executable: process.execPath, args: [...commandArgs] }]
         },
         filePolicy: {
           allowedRoots: [allowedRoot]

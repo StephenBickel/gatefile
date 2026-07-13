@@ -3,6 +3,7 @@ import { PlanFile } from "./types";
 import { scoreRisk } from "./risk";
 import { computePlanHash, withComputedIntegrity } from "./hash";
 import { createApprovalAttestation } from "./attestation";
+import { validatePlanCommandContract } from "./command";
 
 export type PlanDraft = Omit<
   PlanFile,
@@ -20,6 +21,7 @@ export function createPlanFromDraft(draft: PlanDraft): PlanFile {
   if (!draft.operations || draft.operations.length === 0) {
     throw new Error("Plan draft must include at least one operation");
   }
+  validatePlanCommandContract(draft);
 
   const risk = scoreRisk(draft.operations);
 
@@ -50,6 +52,7 @@ export function approvePlan(
   approvedBy: string,
   options: ApprovePlanOptions = {}
 ): PlanFile {
+  validatePlanCommandContract(plan);
   const currentHash = computePlanHash(plan);
   const shouldSign = Boolean(options.signingPrivateKeyPem);
   if (

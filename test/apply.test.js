@@ -43,7 +43,11 @@ function makePlanDraft(tempRoot) {
         {
           id: 'op_command',
           type: 'command',
-          command: `${process.execPath} -e "require('node:fs').writeFileSync(${JSON.stringify(markerPath)}, 'ran', 'utf8')"`
+          executable: process.execPath,
+          args: [
+            '-e',
+            `require('node:fs').writeFileSync(${JSON.stringify(markerPath)}, 'ran', 'utf8')`
+          ]
         }
       ],
       preconditions: [{ kind: 'git_clean' }],
@@ -124,13 +128,22 @@ function assertRecoveryShape(recovery) {
 }
 
 function commandWriteFile(filePath, value) {
-  return `${process.execPath} -e 'require("node:fs").writeFileSync(${JSON.stringify(
-    filePath
-  )}, ${JSON.stringify(value)}, "utf8")'`;
+  return {
+    executable: process.execPath,
+    args: [
+      '-e',
+      `require("node:fs").writeFileSync(${JSON.stringify(filePath)}, ${JSON.stringify(
+        value
+      )}, "utf8")`
+    ]
+  };
 }
 
 function commandSleep(ms) {
-  return `${process.execPath} -e 'setTimeout(() => {}, ${ms})'`;
+  return {
+    executable: process.execPath,
+    args: ['-e', `setTimeout(() => {}, ${ms})`]
+  };
 }
 
 test('previewPlan shows file and command actions without executing side effects', () => {
@@ -317,14 +330,14 @@ test('applyPlan runs allowed command operations', (t) => {
       {
         id: 'op_command_allow',
         type: 'command',
-        command: commandWriteFile(markerPath, 'allowed')
+        ...commandWriteFile(markerPath, 'allowed')
       }
     ],
     preconditions: [],
     execution: {
       commandPolicy: {
         mode: 'allow',
-        patterns: [`${process.execPath} -e`]
+        rules: [commandWriteFile(markerPath, 'allowed')]
       }
     }
   };
@@ -357,14 +370,14 @@ test('applyPlan denies commands that do not match allow policy', () => {
         {
           id: 'op_command_deny',
           type: 'command',
-          command: commandWriteFile(markerPath, 'denied')
+          ...commandWriteFile(markerPath, 'denied')
         }
       ],
       preconditions: [],
       execution: {
         commandPolicy: {
           mode: 'allow',
-          patterns: ['npm test']
+          rules: [{ executable: 'npm', args: ['test'] }]
         }
       }
     };
@@ -397,7 +410,7 @@ test('applyPlan reports command timeout failures', (t) => {
       {
         id: 'op_command_timeout',
         type: 'command',
-        command: commandSleep(200),
+        ...commandSleep(200),
         timeoutMs: 25
       }
     ],
@@ -438,7 +451,7 @@ test('applyPlan respects allowFailure for timed out commands', (t) => {
       {
         id: 'op_command_timeout_allowed',
         type: 'command',
-        command: commandSleep(200),
+        ...commandSleep(200),
         timeoutMs: 25,
         allowFailure: true
       },

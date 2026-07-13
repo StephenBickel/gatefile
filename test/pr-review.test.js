@@ -29,7 +29,8 @@ function makeDraft() {
       {
         id: 'op_cmd_1',
         type: 'command',
-        command: "node -e \"console.log('ok')\"",
+        executable: 'node',
+        args: ['-e', "console.log('ok')"],
         allowFailure: true
       }
     ],

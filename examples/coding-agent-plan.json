@@ -20,7 +20,8 @@
     {
       "id": "op_cmd_1",
       "type": "command",
-      "command": "npm run typecheck",
+      "executable": "npm",
+      "args": ["run", "typecheck"],
       "cwd": ".",
       "allowFailure": false
     }

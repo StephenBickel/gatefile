@@ -31,7 +31,10 @@ It does not change gatefile schema or apply semantics; it feeds the existing flo
       }
     ],
     "commands": [
-      { "command": "npm test -- --testNamePattern=status" }
+      {
+        "executable": "npm",
+        "args": ["test", "--", "--testNamePattern=status"]
+      }
     ]
   }
 }

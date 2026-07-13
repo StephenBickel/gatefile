@@ -29,7 +29,8 @@
 5. Applier (`src/applier.ts`)
 - `previewPlan` returns side-effect-free operation previews and includes verification status/blockers
 - `applyPlan` executes approved operations in order
-- Applies MVP command safety controls (timeout defaults + optional allow/deny policy matching)
+- Executes structured executable/argument arrays with `shell: false`
+- Applies timeout defaults plus optional exact-tuple allow/deny policy matching
 - Writes repo-local pre-apply file snapshots + apply receipts under `.gatefile/state`
 - Enforces minimal plan dependency sequencing (`dependsOn`) via successful prior receipts
 - Returns per-operation result report with rollback receipt/snapshot metadata
@@ -63,7 +64,7 @@
 - Apply should be deterministic and policy-aware
 - Risk is explainable, not magical
 - Stubs should be honest and visible
-- File and shell actions come first; integrations come later
+- File and structured command actions come first; integrations come later
 
 ## Non-goals (MVP)
 

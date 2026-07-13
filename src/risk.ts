@@ -1,4 +1,5 @@
 import { Operation, RiskLevel, RiskProfile } from "./types";
+import { formatCommandInvocation, isPotentiallyDestructiveCommand } from "./command";
 
 function levelFromScore(score: number): RiskLevel {
   if (score >= 8) return "high";
@@ -23,17 +24,23 @@ export function scoreRisk(operations: Operation[]): RiskProfile {
         score += 2;
         reasons.push(`Sensitive path touched: ${op.path}`);
       }
+      continue;
     }
 
     if (op.type === "command") {
+      const invocation = formatCommandInvocation(op);
       score += 2;
-      reasons.push(`Command execution: ${op.command}`);
+      reasons.push(`Command execution: ${invocation}`);
 
-      if (op.command.includes("rm -rf") || op.command.includes("sudo")) {
+      if (isPotentiallyDestructiveCommand(op)) {
         score += 4;
-        reasons.push(`Potentially destructive command: ${op.command}`);
+        reasons.push(`Potentially destructive command: ${invocation}`);
       }
+      continue;
     }
+
+    const unsupported = op as unknown as { type?: unknown };
+    throw new Error(`Unsupported operation type in risk scoring: ${String(unsupported.type)}`);
   }
 
   return {

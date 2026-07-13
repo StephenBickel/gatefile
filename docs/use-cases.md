@@ -27,7 +27,7 @@
 - Every action is receipted — file snapshots before apply, structured results after
 - `rollback-apply` restores file state from the receipt chain
 
-**Key features used:** Preconditions, command policy (allow/deny patterns), timeouts, snapshots + receipts, rollback.
+**Key features used:** Preconditions, exact structured command policy rules, timeouts, snapshots + receipts, rollback.
 
 ## 3. CI Gate for Agent PRs
 
