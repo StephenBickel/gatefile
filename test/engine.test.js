@@ -159,6 +159,32 @@ test('GatefileEngine keeps explicit policy in runtime-private pinned state', (t)
   assert.equal(report.status, 'not-ready');
 });
 
+test('GatefileEngine validates approval input before running policy hooks', (t) => {
+  const { repoRoot, stateHome } = makeFixture(t, 'gatefile-engine-approval-order-');
+  const markerPath = path.join(repoRoot, 'malformed-hook-ran');
+  const hookScript = "require('node:fs').writeFileSync('malformed-hook-ran', 'yes')";
+  const engine = new GatefileEngine({
+    repoRoot,
+    repositoryId: 'repo:approval-order-test',
+    stateHome,
+    config: {
+      hooks: {
+        beforeApprove: {
+          command: `${JSON.stringify(process.execPath)} -e ${JSON.stringify(hookScript)}`
+        }
+      }
+    }
+  });
+  const malformedPlan = engine.createPlan(makeDraft('Reject before hook'));
+  malformedPlan.version = '1';
+
+  assert.throws(
+    () => engine.approvePlan(malformedPlan, 'reviewer'),
+    /unsupported plan version; expected v2/i
+  );
+  assert.equal(fs.existsSync(markerPath), false);
+});
+
 test('GatefileEngine pins branch preconditions despite ambient cwd and Git routing', (t) => {
   const { repoRoot, otherRepoRoot, stateHome } = makeFixture(
     t,

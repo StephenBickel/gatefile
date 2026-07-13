@@ -27,6 +27,7 @@ import { loadGatefileConfig, normalizeGatefileConfig } from "./config";
 import { runPolicyHook } from "./hooks";
 import { getRepoRoot, repositoryIdForRoot } from "./state";
 import { resolveStateHome } from "./state-auth";
+import { validatePlanFile } from "./validation";
 
 export interface GatefileEngineOptions {
   repoRoot?: string;
@@ -104,6 +105,7 @@ export class GatefileEngine {
     approvedBy: string,
     options: EngineApproveOptions = {}
   ): PlanFile {
+    validatePlanFile(plan);
     if (plan.context?.repositoryId !== this.context.repositoryId) {
       throw new Error(
         `Plan repository context ${String(plan.context?.repositoryId)} does not match engine repository context ${this.context.repositoryId}`
