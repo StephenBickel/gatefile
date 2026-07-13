@@ -21,9 +21,11 @@ export {
   inspectPlan,
   approvePlan as approvePlanFile,
   verifyPlan as verifyPlanFile,
-  applyPlan as applyPlanFile
+  applyPlan as applyPlanFile,
+  rollbackApply as rollbackApplyFile
 } from "./sdk";
 export type {
+  SdkEngineOptions,
   CreateOptions,
   InspectOptions,
   ApproveOptions,

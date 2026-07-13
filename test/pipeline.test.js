@@ -26,6 +26,47 @@ function recoveryFixture(t, prefix) {
   return { base, repoRoot, stateHome, plansDir };
 }
 
+function policyFixture(t, prefix) {
+  const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
+  const repoRoot = path.join(base, 'repo');
+  const stateHome = path.join(base, 'state');
+  const plansDir = path.join(repoRoot, 'plans');
+  const targetPath = path.join(repoRoot, 'managed.txt');
+  fs.mkdirSync(plansDir, { recursive: true });
+  t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+  return { base, repoRoot, stateHome, plansDir, targetPath };
+}
+
+function writeApprovedPolicyPlan(fixture, filename = 'policy.json') {
+  const plan = approvePlan(
+    createPlanFromDraft({
+      source: 'pipeline-policy-test',
+      summary: 'Pipeline policy test plan',
+      operations: [
+        {
+          id: 'op_pipeline_policy',
+          type: 'file',
+          action: 'create',
+          path: fixture.targetPath,
+          after: 'created by pipeline policy test\n'
+        }
+      ],
+      preconditions: []
+    }, { repoRoot: fixture.repoRoot }),
+    'pipeline-policy-reviewer'
+  );
+  fs.writeFileSync(
+    path.join(fixture.plansDir, filename),
+    `${JSON.stringify(plan, null, 2)}\n`,
+    'utf8'
+  );
+  return plan;
+}
+
+function blockingPolicyCommand(exitCode) {
+  return `${JSON.stringify(process.execPath)} -e ${JSON.stringify(`process.exit(${exitCode})`)}`;
+}
+
 function writeApprovedFilePlan(fixture, operation) {
   const plan = approvePlan(
     createPlanFromDraft({
@@ -118,6 +159,42 @@ test('run-pipeline --continue-on-error processes all plans', () => {
   assert.equal(failed.length, 2); // both fail (unapproved)
 });
 
+test('pipeline reports engine context initialization errors and skips remaining plans by default', () => {
+  const dir = tmpDir();
+  writePlan(dir, 'a.json', baseDraft('context-a'));
+  writePlan(dir, 'b.json', baseDraft('context-b'));
+
+  const result = runPipeline(dir, { stateHome: 'relative-state-home' });
+
+  assert.equal(result.success, false, JSON.stringify(result, null, 2));
+  assert.equal(result.results.length, 2);
+  assert.equal(result.results.filter((entry) => entry.status === 'failed').length, 1);
+  assert.equal(result.results.filter((entry) => entry.status === 'skipped').length, 1);
+  assert.match(result.results.find((entry) => entry.status === 'failed').message, /State home must be an absolute path/);
+  assert.equal(result.results.find((entry) => entry.status === 'failed').applyReport, undefined);
+  assert.equal(
+    result.results.find((entry) => entry.status === 'skipped').message,
+    'Skipped due to previous failure'
+  );
+});
+
+test('pipeline reports engine config initialization errors for every plan with continueOnError', () => {
+  const dir = tmpDir();
+  writePlan(dir, 'a.json', baseDraft('config-a'));
+  writePlan(dir, 'b.json', baseDraft('config-b'));
+
+  const result = runPipeline(dir, {
+    continueOnError: true,
+    config: { signers: { trustedKeyIds: [] } }
+  });
+
+  assert.equal(result.success, false, JSON.stringify(result, null, 2));
+  assert.equal(result.results.length, 2);
+  assert.ok(result.results.every((entry) => entry.status === 'failed'));
+  assert.ok(result.results.every((entry) => /trust policy is empty/.test(entry.message)));
+  assert.ok(result.results.every((entry) => entry.applyReport === undefined));
+});
+
 test('formatPipelineSummary produces readable output', () => {
   const dir = tmpDir();
   writePlan(dir, 'a.json', baseDraft('a'));
@@ -136,6 +213,151 @@ test('run-pipeline skips non-plan JSON files', () => {
   const result = runPipeline(dir, { dryRun: true });
   assert.equal(result.results.length, 1);
   assert.equal(result.success, true);
+});
+
+test('pipeline rejects unsigned approvals under trusted-signer policy without mutation', (t) => {
+  const f = policyFixture(t, 'gatefile-pipeline-signer-policy-');
+  const plan = writeApprovedPolicyPlan(f);
+
+  const result = runPipeline(f.plansDir, {
+    repoRoot: f.repoRoot,
+    stateHome: f.stateHome,
+    config: { signers: { trustedKeyIds: ['required-pipeline-signer'] } }
+  });
+
+  assert.equal(result.success, false, JSON.stringify(result, null, 2));
+  assert.deepEqual(result.order, [plan.id]);
+  assert.equal(result.results.length, 1);
+  assert.equal(result.results[0].status, 'failed');
+  assert.match(result.results[0].message, /Plan failed verification/);
+  assert.match(result.results[0].message, /approval is unsigned/i);
+  assert.equal(result.results[0].applyReport, undefined);
+  assert.equal(fs.existsSync(f.targetPath), false);
+});
+
+test('pipeline reports beforeApply denial without target mutation', (t) => {
+  const f = policyFixture(t, 'gatefile-pipeline-before-apply-');
+  const plan = writeApprovedPolicyPlan(f);
+
+  const result = runPipeline(f.plansDir, {
+    repoRoot: f.repoRoot,
+    stateHome: f.stateHome,
+    config: {
+      hooks: {
+        beforeApply: { command: blockingPolicyCommand(41) }
+      }
+    }
+  });
+
+  assert.equal(result.success, false, JSON.stringify(result, null, 2));
+  assert.deepEqual(result.order, [plan.id]);
+  assert.equal(result.results.length, 1);
+  assert.equal(result.results[0].status, 'failed');
+  assert.match(result.results[0].message, /Policy hook beforeApply blocked execution/);
+  assert.equal(result.results[0].applyReport, undefined);
+  assert.equal(fs.existsSync(f.targetPath), false);
+});
+
+test('pipeline constructs one engine and delegates each real plan directly to applyPlan', (t) => {
+  const f = policyFixture(t, 'gatefile-pipeline-one-engine-');
+  fs.writeFileSync(
+    path.join(f.plansDir, 'a.json'),
+    JSON.stringify({ id: 'plan_pipeline_a', operations: [] }),
+    'utf8'
+  );
+  fs.writeFileSync(
+    path.join(f.plansDir, 'b.json'),
+    JSON.stringify({ id: 'plan_pipeline_b', operations: [] }),
+    'utf8'
+  );
+
+  const enginePath = require.resolve('../dist/engine');
+  const pipelinePath = require.resolve('../dist/pipeline');
+  const engineModule = require(enginePath);
+  const OriginalEngine = engineModule.GatefileEngine;
+  const constructedWith = [];
+  const applyCalls = [];
+
+  engineModule.GatefileEngine = class PipelineEngineProbe {
+    constructor(options) {
+      constructedWith.push(options);
+    }
+
+    verifyPlan() {
+      throw new Error('pipeline must not separately verify before apply');
+    }
+
+    applyPlan(plan, options) {
+      applyCalls.push({ plan, options });
+      return {
+        planId: plan.id,
+        appliedAt: '2026-07-13T00:00:00.000Z',
+        success: true,
+        results: [],
+        recovery: {
+          transactionalRollback: false,
+          affectedPaths: [],
+          attemptedOperationIds: [],
+          succeededOperationIds: [],
+          pendingOperationIds: [],
+          steps: [],
+          notes: []
+        },
+        dependencies: {
+          requiredPlanIds: [],
+          missingPlanIds: [],
+          allSatisfied: true
+        },
+        snapshot: {
+          id: `snapshot_${plan.id}`,
+          path: '/stub/snapshot.json',
+          fileCount: 0
+        },
+        receipt: { id: `receipt_${plan.id}`, path: '/stub/receipt.json' },
+        rollbackContext: {
+          receiptId: `receipt_${plan.id}`,
+          repoRoot: f.repoRoot,
+          repositoryId: 'repo:pipeline-probe',
+          stateHome: f.stateHome
+        },
+        rollbackCommand: `gatefile rollback-apply receipt_${plan.id} --yes`
+      };
+    }
+  };
+  delete require.cache[pipelinePath];
+
+  const config = { signers: { trustedKeyIds: ['pipeline-probe-key'] } };
+  try {
+    const isolatedPipeline = require(pipelinePath);
+    const result = isolatedPipeline.runPipeline(f.plansDir, {
+      repoRoot: f.repoRoot,
+      repositoryId: 'repo:pipeline-probe',
+      stateHome: f.stateHome,
+      config
+    });
+
+    assert.equal(result.success, true, JSON.stringify(result, null, 2));
+    assert.equal(constructedWith.length, 1);
+    assert.deepEqual(constructedWith[0], {
+      repoRoot: f.repoRoot,
+      repositoryId: 'repo:pipeline-probe',
+      stateHome: f.stateHome,
+      config
+    });
+    assert.equal(applyCalls.length, 2);
+    assert.deepEqual(
+      applyCalls.map((call) => call.options),
+      [
+        { planPath: path.join(f.plansDir, 'a.json') },
+        { planPath: path.join(f.plansDir, 'b.json') }
+      ]
+    );
+    assert.ok(result.results.every((entry) => entry.status === 'passed'));
+    assert.ok(result.results.every((entry) => entry.applyReport?.success === true));
+  } finally {
+    engineModule.GatefileEngine = OriginalEngine;
+    delete require.cache[pipelinePath];
+  }
 });
 
 test('pipeline preserves authenticated recovery authority after a post-commit directory fsync failure', (t) => {

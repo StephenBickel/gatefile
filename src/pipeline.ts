@@ -1,19 +1,13 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { resolve, join } from "node:path";
-import { ApplyReport, PlanFile } from "./types";
-import { applyPlan, previewPlan } from "./applier";
-import { verifyPlan } from "./verify";
+import type { ApplyReport, PlanFile } from "./types";
+import { GatefileEngine, type GatefileEngineOptions } from "./engine";
 
 // ── Types ─────────────────────────────────────────────────────
 
-export interface PipelineOptions {
+export interface PipelineOptions extends GatefileEngineOptions {
   dryRun?: boolean;
   continueOnError?: boolean;
-  repoRoot?: string;
-  /** Explicit repository identity override for non-filesystem integrations. */
-  repositoryId?: string;
-  /** Trusted operator override for external authenticated state. */
-  stateHome?: string;
 }
 
 export type PipelinePlanStatus = "passed" | "failed" | "skipped";
@@ -113,6 +107,36 @@ export function runPipeline(dir: string, options?: PipelineOptions): PipelineRes
 
   const sorted = topologicalSort(entries);
   const order = sorted.map((e) => e.plan.id);
+  let engine: GatefileEngine;
+  try {
+    engine = new GatefileEngine({
+      repoRoot: options?.repoRoot,
+      repositoryId: options?.repositoryId,
+      stateHome: options?.stateHome,
+      config: options?.config
+    });
+  } catch (err) {
+    const message = options?.dryRun
+      ? `Dry-run failed: ${(err as Error).message}`
+      : (err as Error).message;
+    const results = sorted.map((entry, index): PipelinePlanResult => {
+      if (index > 0 && !options?.continueOnError) {
+        return {
+          planId: entry.plan.id,
+          file: entry.file,
+          status: "skipped",
+          message: "Skipped due to previous failure"
+        };
+      }
+      return {
+        planId: entry.plan.id,
+        file: entry.file,
+        status: "failed",
+        message
+      };
+    });
+    return { success: false, order, results };
+  }
   const results: PipelinePlanResult[] = [];
   let failed = false;
 
@@ -129,10 +153,8 @@ export function runPipeline(dir: string, options?: PipelineOptions): PipelineRes
 
     if (options?.dryRun) {
       try {
-        previewPlan(entry.plan, {
-          repoRoot: options?.repoRoot,
-          repositoryId: options?.repositoryId,
-          stateHome: options?.stateHome
+        engine.previewPlan(entry.plan, {
+          planPath: join(resolve(dir), entry.file)
         });
         results.push({
           planId: entry.plan.id,
@@ -154,25 +176,8 @@ export function runPipeline(dir: string, options?: PipelineOptions): PipelineRes
 
     // Real execution
     try {
-      const verification = verifyPlan(entry.plan, {
-        repoRoot: options?.repoRoot,
-        repositoryId: options?.repositoryId
-      });
-      if (!verification.readyToApplyFromIntegrityApproval) {
-        failed = true;
-        results.push({
-          planId: entry.plan.id,
-          file: entry.file,
-          status: "failed",
-          message: `Verification failed: ${verification.blockers.join("; ")}`
-        });
-        continue;
-      }
-
-      const report = applyPlan(entry.plan, {
-        repoRoot: options?.repoRoot,
-        repositoryId: options?.repositoryId,
-        stateHome: options?.stateHome
+      const report = engine.applyPlan(entry.plan, {
+        planPath: join(resolve(dir), entry.file)
       });
       if (report.success) {
         results.push({
