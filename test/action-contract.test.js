@@ -476,6 +476,7 @@ test('PR review example requires both verification readiness and a passing stati
 
 test('CI verifies every supported Node release and audits the full dependency tree', () => {
   const workflow = fs.readFileSync(path.join(projectRoot, '.github/workflows/ci.yml'), 'utf8');
+  assert.match(workflow, /uses:\s*actions\/checkout@[0-9a-f]{40}[\s\S]*?with:\s*\n\s*fetch-depth:\s*0/);
   assert.match(workflow, /node-version:\s*\["18",\s*"20",\s*"22"\]/);
   assert.match(workflow, /node-version:\s*\$\{\{ matrix\.node-version \}\}/);
   assert.match(workflow, /run:\s*npm audit(?:\s|$)/);
