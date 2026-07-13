@@ -101,6 +101,15 @@ function boundaryViolations(file, source) {
   function visit(node) {
     if (ts.isCallExpression(node)) {
       const callee = node.expression;
+      const [specifier] = node.arguments;
+      if (specifier && ts.isStringLiteral(specifier) && KERNEL_MODULES.has(specifier.text)) {
+        if (ts.isIdentifier(callee) && callee.text === 'require') {
+          violations.push(`${file}: CommonJS load from ${specifier.text}`);
+        }
+        if (callee.kind === ts.SyntaxKind.ImportKeyword) {
+          violations.push(`${file}: dynamic import from ${specifier.text}`);
+        }
+      }
       if (ts.isIdentifier(callee) && LIFECYCLE_SYMBOLS.has(callee.text)) {
         violations.push(`${file}: direct lifecycle call ${callee.text}()`);
       }
@@ -144,4 +153,20 @@ test('boundary permits pure formatters, type-only imports, and commented example
   `;
 
   assert.deepEqual(boundaryViolations('fixture.ts', source), []);
+});
+
+test('boundary reports CommonJS and dynamic lifecycle-kernel loads', () => {
+  const source = `
+    const verifier = require("./verify");
+    const apply = require("./applier").applyPlan;
+    async function loadPlanner() {
+      return import("./planner");
+    }
+  `;
+
+  assert.deepEqual(boundaryViolations('fixture.ts', source), [
+    'fixture.ts: CommonJS load from ./verify',
+    'fixture.ts: CommonJS load from ./applier',
+    'fixture.ts: dynamic import from ./planner'
+  ]);
 });

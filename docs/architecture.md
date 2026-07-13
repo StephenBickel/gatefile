@@ -4,29 +4,44 @@
 
 ## Layers
 
-1. CLI (`src/cli.ts`)
-- Parses commands
-- Reads/writes plan files
-- Calls planner/verify/applier modules
+1. First-party adapters (`src/cli.ts`, `src/sdk.ts`, `src/pipeline.ts`,
+   `src/review.ts`, `src/pr-review.ts`, `src/mcp.ts`)
+- Parse CLI, file, pipeline, review, and MCP transports
+- Construct or receive a `GatefileEngine` for the selected runtime context
+- Delegate policy-sensitive lifecycle decisions to the engine
+- Retain adapter-owned plan JSON I/O, presentation, audit calls, and outbound
+  notification delivery
 
-2. Planner (`src/planner.ts`)
+2. Policy engine (`src/engine.ts`)
+- `GatefileEngine` is the primary supported in-memory lifecycle boundary
+- Pins an immutable canonical repository root, repository ID, and external state
+  home when constructed
+- Reloads default repository config once per top-level method, or uses the
+  normalized defensive snapshot supplied explicitly at construction
+- Passes one effective config snapshot and the pinned context through every
+  policy check performed by that method
+- Exposes create, inspect/format, approve, verify, preview, apply, and rollback
+
+3. Planner (`src/planner.ts`)
 - Validates shape
 - Adds metadata (ids, timestamps)
 - Computes risk profile
 - Computes deterministic plan hash over normalized content
 - Returns a normalized plan artifact
 
-3. Preconditions (`src/preconditions.ts`)
+4. Preconditions (`src/preconditions.ts`)
 - Runs guard checks before apply
-- Examples: clean git tree, expected branch, required env vars
+- Evaluates Git state in the engine's pinned canonical repository
+- Examples: clean Git tree, expected branch, required environment variables
 
-4. Verifier (`src/verify.ts`)
+5. Verifier and inspector (`src/verify.ts`, `src/inspect.ts`)
 - Computes current deterministic hash
 - Checks integrity metadata presence + hash match
 - Checks approval/hash binding
-- Returns a simple ready/not-ready status with blockers
+- Evaluates signer trust and dependency status using engine-supplied context
+- Returns structured readiness, blockers, and inspection data
 
-5. Applier (`src/applier.ts`)
+6. Applier and authenticated state (`src/applier.ts`, `src/state.ts`)
 - `previewPlan` returns side-effect-free operation previews and includes verification status/blockers
 - `applyPlan` executes approved operations in order
 - Executes structured executable/argument arrays with `shell: false`
@@ -48,16 +63,36 @@
 - Returns per-operation result report with rollback receipt/snapshot metadata
 - Hard-stops on unsafe or unmet preconditions
 
-6. Review TUI (`src/review.ts`)
-- Interactive terminal UI for reviewing plans
-- Colored diff preview, keyboard navigation, approve/reject
-- Falls back to inspect output if stdin is not a TTY
-
-7. Risk Engine (`src/risk.ts`)
+7. Risk engine and pure helpers (`src/risk.ts` and focused modules)
 - Heuristic risk scoring for operations
 - Produces rationale to support reviewer decisions
+- Keeps hashing, validation, adaptation, formatting, attestation cryptography,
+  and key generation reusable outside the authorization boundary
 
-## Data Flow
+## Supported API boundary
+
+All first-party lifecycle adapters now pass through `GatefileEngine`. The
+package-root lifecycle exports `createPlanFromDraft`, `approvePlan`, `verifyPlan`,
+`buildInspectReport`, `previewPlan`, `applyPlan`, and `rollbackApply` are
+engine-backed compatibility wrappers, not independent policy implementations.
+
+The planner, verifier, inspector, and applier kernels remain internal building
+blocks. Deep `dist/*` imports are unsupported, but they are not yet technically
+blocked: this alpha still ships the complete `dist` tree without a package
+`exports` map. PR7 will define that installed-package boundary. PR6 also does not
+redesign legacy audit storage or the split best-effort notification-hook config;
+those audit/config/package contracts remain separate PR7 work.
+
+## Adapter Data Flow
+
+1. An adapter parses arguments, transport input, and any plan JSON.
+2. It constructs or receives an engine pinned to the requested runtime context.
+3. The selected top-level method resolves one config snapshot and delegates to
+   the focused lifecycle kernels with that snapshot and pinned context.
+4. Only after the engine method succeeds does the adapter persist plan JSON or
+   render/return the result.
+
+## Plan Lifecycle
 
 1. Agent/tool emits draft changeset JSON
 2. `create-plan` normalizes + scores risk
