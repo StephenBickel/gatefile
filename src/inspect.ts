@@ -3,7 +3,7 @@ import { GatefileConfig, PlanFile } from "./types";
 import { verifyPlan } from "./verify";
 import { dependencyStatus } from "./state";
 
-interface InspectOptions {
+export interface InspectOptions {
   repoRoot?: string;
   repositoryId?: string;
   stateHome?: string;

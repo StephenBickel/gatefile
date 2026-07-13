@@ -45,6 +45,15 @@ export type {
   EnginePlanOptions,
   EngineApproveOptions
 } from "./engine";
+export {
+  createPlanFromDraft,
+  approvePlan,
+  verifyPlan,
+  buildInspectReport,
+  previewPlan,
+  applyPlan,
+  rollbackApply
+} from "./engine-api";
 
 import { repositoryIdForRoot as resolveRepositoryIdForRoot } from "./state";
 

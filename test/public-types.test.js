@@ -52,13 +52,15 @@ test('the packed package root compiles for consumers without ambient Node typing
   assert.equal(extract.status, 0, `${extract.stdout}\n${extract.stderr}`);
 
   fs.writeFileSync(path.join(root, 'consumer.ts'), `
-import { PLAN_VERSION } from 'gatefile';
+import { GatefileEngine, PLAN_VERSION } from 'gatefile';
 import type { ApplyReceipt, SnapshotFile, RollbackEntry } from 'gatefile';
 declare const receipt: ApplyReceipt;
 declare const snapshot: SnapshotFile;
 declare const rollback: RollbackEntry;
+const engine = new GatefileEngine();
 const values: string[] = [
   PLAN_VERSION,
+  engine.context.repositoryId,
   receipt.authentication.tag,
   snapshot.entries[0]?.before.kind ?? 'absent',
   rollback.after.kind
