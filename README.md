@@ -5,6 +5,8 @@
 
 **Terraform for AI agent side effects.**
 
+**Status: Experimental alpha — not production-ready.** Gatefile is under stabilization; interfaces, file formats, and security behavior may change before a stable release. Evaluate it in controlled environments, and do not rely on it as the sole security boundary for production agent execution.
+
 ![gatefile demo](demo.gif)
 
 Your AI agent wants to edit 14 files and run 3 shell commands. Do you trust it?
@@ -302,7 +304,7 @@ See [schema/gatefile.config.schema.json](schema/gatefile.config.schema.json) for
 
 ## Roadmap
 
-See [TODO.md](TODO.md) for near-term plans. Current focus:
+See the [Product Roadmap](docs/product-roadmap.md) for the deferred feature roadmap. During the stabilization freeze, the current implemented surface includes:
 
 - [x] Interactive review TUI (`gatefile review`)
 - [x] CLI with create/inspect/verify/approve/apply
@@ -317,9 +319,9 @@ See [TODO.md](TODO.md) for near-term plans. Current focus:
 
 ## Contributing
 
-Contributions welcome — especially around agent adapter integrations, real-world use-case feedback, and safer apply strategies.
+Gatefile is in an alpha stabilization freeze. Contributions are limited to security fixes, correctness fixes, compatibility work, tests, documentation, and release work. New product surface, integrations, and feature work are deferred until the freeze ends.
 
-1. Open an issue (or pick from TODO.md)
+1. Open an issue describing stabilization work
 2. Keep changes focused and documented
 3. Include examples when behavior changes
 

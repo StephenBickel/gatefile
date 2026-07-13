@@ -1,8 +1,10 @@
 # Roadmap
 
-This project stays intentionally MVP-sized: local CLI, schema-backed plans, hash-bound approvals, and verification before apply.
+**Status: Experimental alpha — not production-ready.**
 
-## Public Launch (MVP)
+Feature expansion is frozen. Active work is limited to security fixes, correctness fixes, compatibility work, tests, documentation, and release work. The incomplete items below are deferred until the stabilization freeze ends.
+
+## Deferred: Public Launch (MVP)
 
 1. Publish one end-to-end demo from plan creation through rejected/approved apply.
 
@@ -29,6 +31,6 @@ This project stays intentionally MVP-sized: local CLI, schema-backed plans, hash
 
 12. Added MCP server (`gatefile-mcp`) exposing all 4 core operations (inspect, verify, approve, apply) as MCP tools for Claude Desktop, Claude Code, and other MCP hosts.
 
-## After Launch (Small Backlog)
+## Deferred post-alpha backlog
 
 1. Add optional branch-protection wiring examples for artifact-based signed approval checks.
