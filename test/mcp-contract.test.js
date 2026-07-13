@@ -198,4 +198,3 @@ test('oversized lines are rejected from a bounded buffer and later requests surv
     { jsonrpc: '2.0', id: 2, result: {} }
   ]);
 });
-
