@@ -61,7 +61,8 @@ import type {
 } from "./state-records";
 import {
   inheritPinnedRepoRoot,
-  isRuntimeRepoRootPinned
+  isRuntimeRepoRootPinned,
+  pinnedRepoRootState
 } from "./pinned-runtime";
 
 const DEFAULT_COMMAND_TIMEOUT_MS = 10_000;
@@ -771,9 +772,12 @@ function applyCore(plan: PlanFile, options: PlanRuntimeOptions): ApplyReport {
   preflightStateForApply(stateOptions, plan.id, receiptId);
 
   if (!preflightFailure && options.config) {
+    const pinned = pinnedRepoRootState(options);
     runPolicyHook(options.config, "beforeApply", plan, {
       repoRoot,
-      planPath: options.planPath
+      planPath: options.planPath,
+      gitExecutable: pinned?.gitExecutable,
+      pathEnvironment: pinned?.pathEnvironment
     });
   }
 
@@ -979,7 +983,10 @@ export function applyPlan(plan: PlanFile, options: PlanRuntimeOptions = {}): App
   }
 
   const repoRoot = runtimeRepoRoot(options);
-  const preflight = checkPreconditions(plan.preconditions, { cwd: repoRoot });
+  const preflight = checkPreconditions(
+    plan.preconditions,
+    inheritPinnedRepoRoot(options, { cwd: repoRoot })
+  );
   if (!preflight.ok) {
     throw new Error(`Preconditions failed: ${preflight.message}`);
   }

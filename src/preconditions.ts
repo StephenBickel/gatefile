@@ -1,6 +1,11 @@
 import { execFileSync } from "node:child_process";
+import { dirname } from "node:path";
 import { Precondition } from "./types";
 import { sanitizedGitEnvironment } from "./git-environment";
+import {
+  isRuntimeRepoRootPinned,
+  pinnedRepoRootState
+} from "./pinned-runtime";
 
 export interface PreconditionResult {
   ok: boolean;
@@ -12,20 +17,35 @@ export interface PreconditionOptions {
   cwd?: string;
 }
 
-function getCurrentBranch(cwd?: string): string {
-  return execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
-    cwd,
+function gitEnvironment(options: PreconditionOptions): NodeJS.ProcessEnv {
+  const pinned = pinnedRepoRootState(options);
+  return sanitizedGitEnvironment(process.env, {
+    gitExecutable: pinned?.gitExecutable,
+    pathEnvironment: pinned?.pathEnvironment,
+    ...(isRuntimeRepoRootPinned(options) && options.cwd !== undefined
+      ? { ceilingDirectory: dirname(options.cwd) }
+      : {})
+  });
+}
+
+function gitExecutable(options: PreconditionOptions): string {
+  return pinnedRepoRootState(options)?.gitExecutable ?? "git";
+}
+
+function getCurrentBranch(options: PreconditionOptions): string {
+  return execFileSync(gitExecutable(options), ["rev-parse", "--abbrev-ref", "HEAD"], {
+    cwd: options.cwd,
     encoding: "utf8",
-    env: sanitizedGitEnvironment(),
+    env: gitEnvironment(options),
     shell: false
   }).trim();
 }
 
-function isGitClean(cwd?: string): boolean {
-  const out = execFileSync("git", ["status", "--porcelain", "--", ".", ":(exclude).gatefile/state"], {
-    cwd,
+function isGitClean(options: PreconditionOptions): boolean {
+  const out = execFileSync(gitExecutable(options), ["status", "--porcelain", "--", ".", ":(exclude).gatefile/state"], {
+    cwd: options.cwd,
     encoding: "utf8",
-    env: sanitizedGitEnvironment(),
+    env: gitEnvironment(options),
     shell: false
   }).trim();
   return out.length === 0;
@@ -36,15 +56,26 @@ export function checkPreconditions(
   options: PreconditionOptions = {}
 ): PreconditionResult {
   for (const p of preconditions) {
+    if (
+      (p.kind === "git_clean" || p.kind === "branch_is") &&
+      pinnedRepoRootState(options)?.gitRepositoryRoot === false
+    ) {
+      return {
+        ok: false,
+        message: "Pinned repository root was not a Git repository when the engine was constructed",
+        failed: p
+      };
+    }
+
     if (p.kind === "git_clean") {
-      if (!isGitClean(options.cwd)) {
+      if (!isGitClean(options)) {
         return { ok: false, message: "Git working tree is not clean", failed: p };
       }
     }
 
     if (p.kind === "branch_is") {
       const expected = p.value ?? "";
-      const actual = getCurrentBranch(options.cwd);
+      const actual = getCurrentBranch(options);
       if (actual !== expected) {
         return {
           ok: false,

@@ -1,17 +1,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const ts = require('typescript');
-
-const ADAPTERS = [
-  'src/cli.ts',
-  'src/sdk.ts',
-  'src/pipeline.ts',
-  'src/review.ts',
-  'src/pr-review.ts',
-  'src/mcp.ts'
-];
 
 const KERNEL_MODULES = new Set(['./planner', './applier', './verify', './inspect']);
 const LIFECYCLE_SYMBOLS = new Set([
@@ -26,6 +18,59 @@ const LIFECYCLE_SYMBOLS = new Set([
 const PURE_VALUE_IMPORTS = new Map([
   ['./inspect', new Set(['formatInspectSummary'])]
 ]);
+const AUTHORIZED_KERNEL_IMPORTS = new Map([
+  ['src/engine.ts', new Map([
+    ['./planner', new Set(['approvePlan', 'createPlanFromDraft'])],
+    ['./applier', new Set(['applyPlan', 'previewPlan', 'rollbackApply'])],
+    ['./verify', new Set(['verifyPlan'])],
+    ['./inspect', new Set(['buildInspectReport', 'formatInspectSummary'])]
+  ])],
+  ['src/applier.ts', new Map([
+    ['./verify', new Set(['verifyPlan'])]
+  ])],
+  ['src/inspect.ts', new Map([
+    ['./verify', new Set(['verifyPlan'])]
+  ])]
+]);
+const AUTHORIZED_STAR_REEXPORTS = new Map([
+  ['src/index.ts', new Set(KERNEL_MODULES)]
+]);
+const AUTHORIZED_DIRECT_CALLS = new Map([
+  ['src/engine.ts', new Set(['createPlanFromDraft', 'buildInspectReport'])],
+  ['src/applier.ts', new Set(['verifyPlan'])],
+  ['src/inspect.ts', new Set(['verifyPlan'])]
+]);
+
+function isAuthorizedKernelImport(file, kernelModule, importedName) {
+  return (
+    PURE_VALUE_IMPORTS.get(kernelModule)?.has(importedName) === true ||
+    AUTHORIZED_KERNEL_IMPORTS.get(file)?.get(kernelModule)?.has(importedName) === true
+  );
+}
+
+function sourceFiles(root) {
+  const files = [];
+
+  function walk(directory) {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const absolute = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        walk(absolute);
+      } else if (entry.isFile() && entry.name.endsWith('.ts')) {
+        files.push(path.relative(root, absolute).split(path.sep).join('/'));
+      }
+    }
+  }
+
+  walk(path.join(root, 'src'));
+  return files.sort();
+}
+
+function sourceBoundaryViolations(root) {
+  return sourceFiles(root).flatMap((file) =>
+    boundaryViolations(file, fs.readFileSync(path.join(root, file), 'utf8'))
+  );
+}
 
 function kernelModuleFor(file, moduleName) {
   if (!moduleName.startsWith('.')) return undefined;
@@ -173,14 +218,16 @@ function boundaryViolations(file, source) {
       if (kernelModule === undefined || statement.isTypeOnly) continue;
       const clause = statement.exportClause;
       if (clause === undefined) {
-        violations.push(`${file}: value star re-export from ${moduleName}`);
+        if (AUTHORIZED_STAR_REEXPORTS.get(file)?.has(kernelModule) !== true) {
+          violations.push(`${file}: value star re-export from ${moduleName}`);
+        }
       } else if (ts.isNamespaceExport(clause)) {
         violations.push(`${file}: value namespace re-export from ${moduleName}`);
       } else {
         for (const element of clause.elements) {
           if (element.isTypeOnly) continue;
           const importedName = (element.propertyName ?? element.name).text;
-          if (PURE_VALUE_IMPORTS.get(kernelModule)?.has(importedName)) continue;
+          if (isAuthorizedKernelImport(file, kernelModule, importedName)) continue;
           violations.push(`${file}: value re-export ${importedName} from ${moduleName}`);
         }
       }
@@ -213,7 +260,7 @@ function boundaryViolations(file, source) {
     for (const element of bindings.elements) {
       if (element.isTypeOnly) continue;
       const importedName = (element.propertyName ?? element.name).text;
-      if (PURE_VALUE_IMPORTS.get(kernelModule)?.has(importedName)) continue;
+      if (isAuthorizedKernelImport(file, kernelModule, importedName)) continue;
       violations.push(`${file}: value import ${importedName} from ${moduleName}`);
     }
   }
@@ -237,7 +284,9 @@ function boundaryViolations(file, source) {
         }
       }
       if (ts.isIdentifier(callee) && LIFECYCLE_SYMBOLS.has(callee.text)) {
-        violations.push(`${file}: direct lifecycle call ${callee.text}()`);
+        if (AUTHORIZED_DIRECT_CALLS.get(file)?.has(callee.text) !== true) {
+          violations.push(`${file}: direct lifecycle call ${callee.text}()`);
+        }
       }
       if (
         ts.isPropertyAccessExpression(callee) &&
@@ -257,17 +306,30 @@ function boundaryViolations(file, source) {
   return [...new Set(violations)];
 }
 
-test('first-party adapters do not import or call lifecycle kernels directly', () => {
+test('all first-party source files honor the lifecycle-kernel boundary', () => {
   const root = path.join(__dirname, '..');
-  const violations = ADAPTERS.flatMap((file) =>
-    boundaryViolations(file, fs.readFileSync(path.join(root, file), 'utf8'))
-  );
+  const violations = sourceBoundaryViolations(root);
 
   assert.deepEqual(
     violations,
     [],
     `Lifecycle boundary violations:\n${violations.map((entry) => `- ${entry}`).join('\n')}`
   );
+});
+
+test('repository-wide scan catches a transitive lifecycle helper', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gatefile-boundary-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(root, 'src'));
+  fs.writeFileSync(
+    path.join(root, 'src', 'raw-lifecycle.ts'),
+    'export { applyPlan } from "./applier";\n',
+    'utf8'
+  );
+
+  assert.deepEqual(sourceBoundaryViolations(root), [
+    'src/raw-lifecycle.ts: value re-export applyPlan from ./applier'
+  ]);
 });
 
 test('boundary permits pure formatters, type-only imports, and commented examples', () => {

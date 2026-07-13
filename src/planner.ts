@@ -66,7 +66,7 @@ export function approvePlan(
   approvedBy: string,
   options: ApprovePlanOptions = {}
 ): PlanFile {
-  validatePlanForApproval(plan);
+  validatePlanForApproval(plan, approvedBy, options);
   const currentHash = computePlanHash(plan);
   const shouldSign = Boolean(options.signingPrivateKeyPem);
   if (

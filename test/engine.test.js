@@ -179,8 +179,71 @@ test('GatefileEngine keeps a selected non-Git root pinned after repository topol
     }),
     'reviewer'
   );
+  const approvedBranchGuard = engine.approvePlan(
+    engine.createPlan({
+      source: 'pinned-root-test',
+      summary: 'Do not inherit a later parent branch',
+      operations: [{
+        id: 'op_pinned_branch_guard',
+        type: 'file',
+        action: 'create',
+        path: 'branch-guard.txt',
+        after: 'must not apply\n'
+      }],
+      preconditions: [{ kind: 'branch_is', value: 'policy-branch' }]
+    }),
+    'reviewer'
+  );
+  const approvedCleanGuard = engine.approvePlan(
+    engine.createPlan({
+      source: 'pinned-root-test',
+      summary: 'Do not inherit a later parent clean tree',
+      operations: [{
+        id: 'op_pinned_clean_guard',
+        type: 'file',
+        action: 'create',
+        path: 'clean-guard.txt',
+        after: 'must not apply\n'
+      }],
+      preconditions: [{ kind: 'git_clean' }]
+    }),
+    'reviewer'
+  );
 
-  execFileSync('git', ['init', '-q', base]);
+  execFileSync('git', ['init', '-q', '-b', 'policy-branch', base]);
+  fs.writeFileSync(path.join(base, '.gitignore'), 'selected/\n', 'utf8');
+  execFileSync('git', [
+    '-C',
+    base,
+    '-c',
+    'user.name=Gatefile Tests',
+    '-c',
+    'user.email=gatefile-tests@example.invalid',
+    'add',
+    '.gitignore'
+  ]);
+  execFileSync('git', [
+    '-C',
+    base,
+    '-c',
+    'user.name=Gatefile Tests',
+    '-c',
+    'user.email=gatefile-tests@example.invalid',
+    'commit',
+    '-q',
+    '-m',
+    'initialize parent repository'
+  ]);
+
+  for (const guardedPlan of [approvedBranchGuard, approvedCleanGuard]) {
+    assert.throws(
+      () => engine.applyPlan(guardedPlan),
+      /Preconditions failed:.*not a Git repository/i
+    );
+  }
+  assert.equal(fs.existsSync(path.join(repoRoot, 'branch-guard.txt')), false);
+  assert.equal(fs.existsSync(path.join(repoRoot, 'clean-guard.txt')), false);
+
   const report = engine.applyPlan(approved);
 
   assert.equal(report.success, true);
@@ -285,6 +348,29 @@ test('GatefileEngine validates approval input before running policy hooks', (t) 
   assert.throws(
     () => engine.approvePlan(riskTamperedPlan, 'reviewer'),
     /stored risk does not match risk recomputed/i
+  );
+  assert.equal(fs.existsSync(markerPath), false);
+
+  const validPlan = engine.createPlan(makeDraft('Reject invalid reviewer before hook'));
+  assert.throws(
+    () => engine.approvePlan(validPlan, ''),
+    /approvedBy.*non-empty/i
+  );
+  assert.equal(fs.existsSync(markerPath), false);
+
+  assert.throws(
+    () => engine.approvePlan(validPlan, 'reviewer', {
+      signingPrivateKeyPem: 'not a private key'
+    }),
+    /valid Ed25519 private key/i
+  );
+  assert.equal(fs.existsSync(markerPath), false);
+
+  assert.throws(
+    () => engine.approvePlan(validPlan, 'reviewer', {
+      signingKeyId: 'key-without-private-material'
+    }),
+    /signingKeyId requires signingPrivateKeyPem/i
   );
   assert.equal(fs.existsSync(markerPath), false);
 });
@@ -433,6 +519,150 @@ test('beforeApply hooks use the pinned repository despite ambient Git routing', 
   assert.equal(report.success, true);
   assert.equal(fs.existsSync(path.join(repoRoot, 'engine-output.txt')), true);
   assert.equal(fs.existsSync(path.join(otherRepoRoot, 'engine-output.txt')), false);
+});
+
+test('Git preconditions use the executable pinned at engine construction', (t) => {
+  if (process.platform === 'win32') {
+    t.skip('POSIX executable substitution fixture');
+    return;
+  }
+  const { repoRoot, stateHome } = makeFixture(t, 'gatefile-engine-git-path-');
+  commitOnBranch(repoRoot, 'denied');
+  const engine = new GatefileEngine({
+    repoRoot,
+    repositoryId: 'repo:git-path-test',
+    stateHome
+  });
+  const approved = engine.approvePlan(
+    engine.createPlan({
+      ...makeDraft('Reject substituted Git executable'),
+      preconditions: [{ kind: 'branch_is', value: 'approved' }]
+    }),
+    'reviewer'
+  );
+  const fakeBin = path.join(path.dirname(repoRoot), 'fake-bin');
+  fs.mkdirSync(fakeBin);
+  fs.writeFileSync(path.join(fakeBin, 'git'), '#!/bin/sh\nprintf "approved\\n"\n', {
+    encoding: 'utf8',
+    mode: 0o755
+  });
+
+  assert.throws(
+    () => runWithProcessContext(
+      repoRoot,
+      { PATH: `${fakeBin}${path.delimiter}${process.env.PATH}` },
+      () => engine.applyPlan(approved)
+    ),
+    /Branch mismatch.*Expected approved, got denied/i
+  );
+  assert.equal(fs.existsSync(path.join(repoRoot, 'engine-output.txt')), false);
+});
+
+test('Git cleanliness ignores later HOME and XDG global-config changes', (t) => {
+  const { repoRoot, stateHome } = makeFixture(t, 'gatefile-engine-git-home-');
+  commitOnBranch(repoRoot, 'engine-branch');
+  const engine = new GatefileEngine({
+    repoRoot,
+    repositoryId: 'repo:git-home-test',
+    stateHome
+  });
+  const approved = engine.approvePlan(
+    engine.createPlan({
+      ...makeDraft('Reject global ignore injection'),
+      preconditions: [{ kind: 'git_clean' }]
+    }),
+    'reviewer'
+  );
+  fs.writeFileSync(path.join(repoRoot, 'dirty.txt'), 'must remain visible\n', 'utf8');
+  const fakeHome = path.join(path.dirname(repoRoot), 'fake-home');
+  const xdgHome = path.join(fakeHome, 'xdg');
+  const excludesFile = path.join(fakeHome, 'ignore-all');
+  fs.mkdirSync(xdgHome, { recursive: true });
+  fs.writeFileSync(excludesFile, '*\n', 'utf8');
+  fs.writeFileSync(
+    path.join(fakeHome, '.gitconfig'),
+    `[core]\n\texcludesFile = ${excludesFile}\n`,
+    'utf8'
+  );
+
+  assert.throws(
+    () => runWithProcessContext(
+      repoRoot,
+      { HOME: fakeHome, XDG_CONFIG_HOME: xdgHome },
+      () => engine.applyPlan(approved)
+    ),
+    /Git working tree is not clean/i
+  );
+  assert.equal(fs.existsSync(path.join(repoRoot, 'engine-output.txt')), false);
+});
+
+test('policy hooks use the Git executable pinned at engine construction', (t) => {
+  if (process.platform === 'win32') {
+    t.skip('POSIX executable substitution fixture');
+    return;
+  }
+  const { repoRoot, stateHome } = makeFixture(t, 'gatefile-engine-hook-path-');
+  commitOnBranch(repoRoot, 'denied');
+  const engine = new GatefileEngine({
+    repoRoot,
+    repositoryId: 'repo:hook-path-test',
+    stateHome,
+    config: {
+      hooks: {
+        beforeApprove: {
+          command: 'test "$(git rev-parse --abbrev-ref HEAD)" = approved'
+        }
+      }
+    }
+  });
+  const plan = engine.createPlan(makeDraft('Reject hook Git substitution'));
+  const fakeBin = path.join(path.dirname(repoRoot), 'hook-fake-bin');
+  fs.mkdirSync(fakeBin);
+  fs.writeFileSync(path.join(fakeBin, 'git'), '#!/bin/sh\nprintf "approved\\n"\n', {
+    encoding: 'utf8',
+    mode: 0o755
+  });
+
+  assert.throws(
+    () => runWithProcessContext(
+      repoRoot,
+      { PATH: `${fakeBin}${path.delimiter}${process.env.PATH}` },
+      () => engine.approvePlan(plan, 'reviewer')
+    ),
+    /Policy hook beforeApprove blocked execution/i
+  );
+});
+
+test('repository identity ignores ambient global remote configuration', (t) => {
+  const { repoRoot, otherRepoRoot, stateHome } = makeFixture(
+    t,
+    'gatefile-engine-global-remote-'
+  );
+  const fakeHome = path.join(path.dirname(repoRoot), 'remote-home');
+  const xdgHome = path.join(fakeHome, 'xdg');
+  fs.mkdirSync(xdgHome, { recursive: true });
+  fs.writeFileSync(
+    path.join(fakeHome, '.gitconfig'),
+    '[remote "origin"]\n\turl = https://attacker.invalid/shared.git\n',
+    'utf8'
+  );
+
+  const [engine, otherEngine] = runWithProcessContext(
+    repoRoot,
+    { HOME: fakeHome, XDG_CONFIG_HOME: xdgHome },
+    () => [
+      new GatefileEngine({ repoRoot, stateHome }),
+      new GatefileEngine({ repoRoot: otherRepoRoot, stateHome })
+    ]
+  );
+
+  assert.notEqual(engine.context.repositoryId, otherEngine.context.repositoryId);
+  assert.match(engine.context.repositoryId, /^file:/);
+  assert.match(otherEngine.context.repositoryId, /^file:/);
+  assert.throws(
+    () => otherEngine.approvePlan(engine.createPlan(makeDraft('Bind local identity')), 'reviewer'),
+    /repository context.*does not match engine/i
+  );
 });
 
 test('GatefileEngine reloads the default repository config for each operation', (t) => {
