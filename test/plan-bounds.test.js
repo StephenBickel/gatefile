@@ -58,7 +58,8 @@ function approvedPlanWithOperations(repoRoot, operations) {
       },
       { repoRoot }
     ),
-    'bounds-reviewer'
+    'bounds-reviewer',
+    { repoRoot }
   );
   const mutated = {
     ...seed,
@@ -296,7 +297,7 @@ test('excessive directory chains are rejected before the target mutation', (t) =
     }],
     preconditions: [],
     execution: { filePolicy: { allowedRoots: [f.repoRoot] } }
-  }, { repoRoot: f.repoRoot }), 'bounds-reviewer');
+  }, { repoRoot: f.repoRoot }), 'bounds-reviewer', { repoRoot: f.repoRoot });
 
   const report = applyPlan(plan, { repoRoot: f.repoRoot, stateHome: f.stateHome });
   assert.equal(report.success, false);

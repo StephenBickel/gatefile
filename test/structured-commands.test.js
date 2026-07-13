@@ -151,7 +151,8 @@ test('nonzero exits stop apply unless allowFailure explicitly permits continuati
         preconditions: [],
         execution: { filePolicy: { allowedRoots: [root] } }
       }, { repoRoot: root }),
-      'reviewer'
+      'reviewer',
+      { repoRoot: root }
     );
     const failed = applyPlan(failingPlan, { repoRoot: root });
     assert.equal(failed.success, false);
@@ -183,7 +184,8 @@ test('nonzero exits stop apply unless allowFailure explicitly permits continuati
         preconditions: [],
         execution: { filePolicy: { allowedRoots: [root] } }
       }, { repoRoot: root }),
-      'reviewer'
+      'reviewer',
+      { repoRoot: root }
     );
     const continued = applyPlan(allowedPlan, { repoRoot: root });
     assert.equal(continued.success, true);
@@ -661,7 +663,7 @@ test('all command policies are preflighted before an earlier file mutation', () 
           rules: [{ executable: denied.executable, args: denied.args }]
         }
       }
-    }, { repoRoot: root }), 'reviewer');
+    }, { repoRoot: root }), 'reviewer', { repoRoot: root });
 
     const report = applyPlan(plan, { repoRoot: root });
     assert.equal(report.success, false);
@@ -699,7 +701,7 @@ test('git top-level is the stable base for relative files and command cwd', () =
         }
       ],
       preconditions: []
-    }, { repoRoot: root }), 'reviewer');
+    }, { repoRoot: root }), 'reviewer', { repoRoot: root });
 
     const report = applyPlan(plan, { repoRoot: subdir });
     assert.equal(report.success, true);
