@@ -20,6 +20,7 @@ const {
 
 const CLI_PATH = path.join(__dirname, '..', 'dist', 'cli.js');
 const MCP_SERVER_PATH = path.join(__dirname, '..', 'dist', 'mcp-server.js');
+const MCP_MODULE_PATH = path.join(__dirname, '..', 'dist', 'mcp.js');
 
 function fixture(t, prefix) {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -41,18 +42,34 @@ function spawnCli(args, options = {}) {
   });
 }
 
-function callMcp(name, args, options = {}) {
+function spawnMcp(requests, options = {}, startup = {}) {
+  const script = [
+    'const { startMcpServer } = require(process.argv[1]);',
+    'startMcpServer(JSON.parse(process.argv[2]));'
+  ].join(' ');
+  const required = options.require ?? [];
+  const { require: _require, ...spawnOptions } = options;
+  return spawnSync(process.execPath, [
+    ...required.flatMap((modulePath) => ['--require', modulePath]),
+    '-e',
+    script,
+    MCP_MODULE_PATH,
+    JSON.stringify(startup)
+  ], {
+    encoding: 'utf8',
+    input: `${requests.map((request) => JSON.stringify(request)).join('\n')}\n`,
+    ...spawnOptions
+  });
+}
+
+function callMcp(name, args, options = {}, startup = {}) {
   const request = {
     jsonrpc: '2.0',
     id: 1,
     method: 'tools/call',
     params: { name, arguments: args }
   };
-  const result = spawnSync(process.execPath, [MCP_SERVER_PATH], {
-    encoding: 'utf8',
-    input: `${JSON.stringify(request)}\n`,
-    ...options
-  });
+  const result = spawnMcp([request], options, startup);
   assert.equal(result.status, 0, result.stderr);
   return JSON.parse(result.stdout.trim());
 }
@@ -124,7 +141,10 @@ test('SDK apply returns a complete rollback context that reuses explicit stateHo
   const planPath = path.join(f.repoRoot, 'plan.json');
 
   await createPlan(filePlanDraft(target), { outPath: planPath, repoRoot: f.repoRoot });
-  await approvePlanFile(planPath, { approvedBy: 'sdk-reviewer' });
+  await approvePlanFile(planPath, {
+    approvedBy: 'sdk-reviewer',
+    repoRoot: f.repoRoot
+  });
   const report = await applyPlanFile(planPath, {
     repoRoot: f.repoRoot,
     stateHome: f.stateHome
@@ -155,7 +175,8 @@ test('rollback CLI accepts explicit repository/state flags and can place flags b
   const repositoryId = 'repo:pr5-cli-explicit';
   const plan = approvePlan(
     createPlanFromDraft(filePlanDraft(target), { context: { repositoryId } }),
-    'cli-reviewer'
+    'cli-reviewer',
+    { repoRoot: f.repoRoot, repositoryId }
   );
   const applied = applyPlan(plan, {
     repoRoot: f.repoRoot,
@@ -219,7 +240,8 @@ test('pipeline forwards repositoryId and stateHome through verify and apply', (t
 
   const plan = approvePlan(
     createPlanFromDraft(filePlanDraft(target), { context: { repositoryId } }),
-    'pipeline-reviewer'
+    'pipeline-reviewer',
+    { repoRoot: f.repoRoot, repositoryId }
   );
   fs.writeFileSync(path.join(plansDir, 'plan.json'), JSON.stringify(plan, null, 2), 'utf8');
 
@@ -241,14 +263,17 @@ test('MCP apply and rollback tool results set isError for failure reports', (t) 
   const f = fixture(t, 'gatefile-pr5-mcp-failed-report-');
   const hookPath = writeFailedReportHook(f.base);
   const planPath = path.join(f.repoRoot, 'stub-plan.json');
-  fs.writeFileSync(planPath, '{}\n', 'utf8');
+  const plan = createPlanFromDraft(filePlanDraft(path.join(f.repoRoot, 'stub.txt')), {
+    repoRoot: f.repoRoot
+  });
+  fs.writeFileSync(planPath, `${JSON.stringify(plan)}\n`, 'utf8');
 
   const requests = [
     {
       jsonrpc: '2.0',
       id: 1,
       method: 'tools/call',
-      params: { name: 'apply_plan', arguments: { path: planPath } }
+      params: { name: 'apply_plan', arguments: { path: 'stub-plan.json' } }
     },
     {
       jsonrpc: '2.0',
@@ -257,14 +282,17 @@ test('MCP apply and rollback tool results set isError for failure reports', (t) 
       params: { name: 'rollback_apply', arguments: { receipt_id: 'receipt-stub' } }
     }
   ];
-  const result = spawnSync(
-    process.execPath,
-    ['--require', hookPath, CLI_PATH, 'mcp'],
+  const result = spawnMcp(
+    requests,
     {
       cwd: f.repoRoot,
       env: childEnv(f.stateHome),
-      encoding: 'utf8',
-      input: `${requests.map((request) => JSON.stringify(request)).join('\n')}\n`
+      require: [hookPath]
+    },
+    {
+      repoRoot: f.repoRoot,
+      stateHome: f.stateHome,
+      capabilities: { apply: true, rollback: true }
     }
   );
 
@@ -298,8 +326,14 @@ test('MCP approve enforces beforeApprove policy and preserves exact plan bytes',
 
   const response = callMcp(
     'approve_plan',
-    { path: planPath, by: 'blocked-mcp-reviewer', repo_root: f.repoRoot },
-    { cwd: f.base, env: childEnv(f.stateHome) }
+    { path: 'blocked-approval-plan.json' },
+    { cwd: f.base, env: childEnv(f.stateHome) },
+    {
+      repoRoot: f.repoRoot,
+      stateHome: f.stateHome,
+      capabilities: { approve: true },
+      approval: { approvedBy: 'blocked-mcp-reviewer' }
+    }
   );
 
   assert.equal(response.result.isError, true, response.result.content[0].text);
@@ -327,14 +361,18 @@ test('MCP signed approval remains adapter-owned and signer policy blocks apply w
   const spawnOptions = { cwd: f.base, env: childEnv(f.stateHome) };
   const approveResponse = callMcp(
     'approve_plan',
+    { path: 'untrusted-signer-plan.json' },
+    spawnOptions,
     {
-      path: planPath,
-      by: 'signed-mcp-reviewer',
-      signing_key: privateKeyPath,
-      key_id: signingKeys.keyId,
-      repo_root: f.repoRoot
-    },
-    spawnOptions
+      repoRoot: f.repoRoot,
+      stateHome: f.stateHome,
+      capabilities: { approve: true },
+      approval: {
+        approvedBy: 'signed-mcp-reviewer',
+        signingPrivateKeyPem: fs.readFileSync(privateKeyPath, 'utf8'),
+        signingKeyId: signingKeys.keyId
+      }
+    }
   );
   assert.equal(
     approveResponse.result.isError,
@@ -346,8 +384,13 @@ test('MCP signed approval remains adapter-owned and signer policy blocks apply w
 
   const applyResponse = callMcp(
     'apply_plan',
-    { path: planPath, repo_root: f.repoRoot, state_home: f.stateHome },
-    spawnOptions
+    { path: 'untrusted-signer-plan.json' },
+    spawnOptions,
+    {
+      repoRoot: f.repoRoot,
+      stateHome: f.stateHome,
+      capabilities: { apply: true }
+    }
   );
 
   assert.equal(applyResponse.result.isError, true, applyResponse.result.content[0].text);
@@ -355,7 +398,7 @@ test('MCP signed approval remains adapter-owned and signer policy blocks apply w
   assert.equal(fs.existsSync(target), false);
 });
 
-test('MCP schemas expose explicit runtime context for every repository-bound tool', (t) => {
+test('MCP schemas expose no request-selected authority and privileged tools are default-disabled', (t) => {
   const f = fixture(t, 'gatefile-pr5-mcp-schema-');
   const request = { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} };
   const result = spawnSync(process.execPath, [MCP_SERVER_PATH], {
@@ -370,35 +413,27 @@ test('MCP schemas expose explicit runtime context for every repository-bound too
   assert.deepEqual([...tools.keys()], [
     'inspect_plan',
     'create_plan',
-    'approve_plan',
     'verify_plan',
-    'dry_run_plan',
-    'apply_plan',
-    'rollback_apply'
+    'dry_run_plan'
   ]);
 
-  for (const name of ['inspect_plan', 'dry_run_plan', 'apply_plan', 'rollback_apply']) {
-    const properties = tools.get(name).inputSchema.properties;
-    for (const contextField of ['repo_root', 'repository_id', 'state_home']) {
-      assert.equal(
-        properties[contextField]?.type,
-        'string',
-        `${name} must expose optional ${contextField}`
-      );
+  for (const [name, tool] of tools) {
+    assert.equal(tool.inputSchema.additionalProperties, false, name);
+    const properties = tool.inputSchema.properties;
+    for (const authorityField of [
+      'repo_root',
+      'repository_id',
+      'state_home',
+      'by',
+      'signing_key',
+      'key_id'
+    ]) {
+      assert.equal(properties[authorityField], undefined, `${name}.${authorityField}`);
     }
-  }
-  for (const name of ['create_plan', 'approve_plan', 'verify_plan']) {
-    const properties = tools.get(name).inputSchema.properties;
-    assert.equal(properties.repo_root?.type, 'string', `${name} must expose optional repo_root`);
-    assert.equal(
-      properties.repository_id?.type,
-      'string',
-      `${name} must expose optional repository_id`
-    );
   }
 });
 
-test('MCP explicit runtime context survives unrelated cwd and state environment', (t) => {
+test('MCP startup-pinned runtime context survives unrelated cwd and state environment', (t) => {
   const f = fixture(t, 'gatefile-pr5-mcp-context-');
   const unrelatedCwd = path.join(f.base, 'unrelated');
   const decoyStateHome = path.join(f.base, 'decoy-state');
@@ -408,13 +443,15 @@ test('MCP explicit runtime context survives unrelated cwd and state environment'
   const planPath = path.join(f.repoRoot, 'apply-plan.json');
   const plan = approvePlan(
     createPlanFromDraft(filePlanDraft(target), { context: { repositoryId } }),
-    'mcp-context-reviewer'
+    'mcp-context-reviewer',
+    { repoRoot: f.repoRoot, repositoryId }
   );
   fs.writeFileSync(planPath, `${JSON.stringify(plan, null, 2)}\n`, 'utf8');
-  const runtimeArgs = {
-    repo_root: f.repoRoot,
-    repository_id: repositoryId,
-    state_home: f.stateHome
+  const startup = {
+    repoRoot: f.repoRoot,
+    repositoryId,
+    stateHome: f.stateHome,
+    capabilities: { apply: true, rollback: true }
   };
   const spawnOptions = {
     cwd: unrelatedCwd,
@@ -423,8 +460,9 @@ test('MCP explicit runtime context survives unrelated cwd and state environment'
 
   const appliedResponse = callMcp(
     'apply_plan',
-    { path: planPath, ...runtimeArgs },
-    spawnOptions
+    { path: 'apply-plan.json' },
+    spawnOptions,
+    startup
   );
   assert.equal(appliedResponse.result.isError, false, appliedResponse.result.content[0].text);
   const applied = JSON.parse(appliedResponse.result.content[0].text);
@@ -448,8 +486,9 @@ test('MCP explicit runtime context survives unrelated cwd and state environment'
 
   const inspectedResponse = callMcp(
     'inspect_plan',
-    { path: dependentPath, json: true, ...runtimeArgs },
-    spawnOptions
+    { path: 'dependent-plan.json', json: true },
+    spawnOptions,
+    startup
   );
   assert.equal(inspectedResponse.result.isError, false, inspectedResponse.result.content[0].text);
   const inspected = JSON.parse(inspectedResponse.result.content[0].text);
@@ -457,8 +496,9 @@ test('MCP explicit runtime context survives unrelated cwd and state environment'
 
   const previewResponse = callMcp(
     'dry_run_plan',
-    { path: dependentPath, ...runtimeArgs },
-    spawnOptions
+    { path: 'dependent-plan.json' },
+    spawnOptions,
+    startup
   );
   assert.equal(previewResponse.result.isError, false, previewResponse.result.content[0].text);
   const preview = JSON.parse(previewResponse.result.content[0].text);
@@ -466,8 +506,9 @@ test('MCP explicit runtime context survives unrelated cwd and state environment'
 
   const verifiedResponse = callMcp(
     'verify_plan',
-    { path: planPath, repo_root: f.repoRoot, repository_id: repositoryId },
-    spawnOptions
+    { path: 'apply-plan.json' },
+    spawnOptions,
+    startup
   );
   assert.equal(verifiedResponse.result.isError, false, verifiedResponse.result.content[0].text);
   assert.equal(JSON.parse(verifiedResponse.result.content[0].text).status, 'ready');
@@ -477,19 +518,19 @@ test('MCP explicit runtime context survives unrelated cwd and state environment'
     'create_plan',
     {
       draft: filePlanDraft(path.join(f.repoRoot, 'created-through-mcp.txt')),
-      out: createdPath,
-      repo_root: f.repoRoot,
-      repository_id: repositoryId
+      out: 'created-through-mcp.json'
     },
-    spawnOptions
+    spawnOptions,
+    startup
   );
   assert.equal(createdResponse.result.isError, false, createdResponse.result.content[0].text);
   assert.equal(JSON.parse(fs.readFileSync(createdPath, 'utf8')).context.repositoryId, repositoryId);
 
   const rollbackResponse = callMcp(
     'rollback_apply',
-    { receipt_id: applied.receipt.id, ...runtimeArgs },
-    spawnOptions
+    { receipt_id: applied.receipt.id },
+    spawnOptions,
+    startup
   );
   assert.equal(rollbackResponse.result.isError, false, rollbackResponse.result.content[0].text);
   assert.equal(JSON.parse(rollbackResponse.result.content[0].text).success, true);
