@@ -5,7 +5,14 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
-const { createPlanFromDraft, approvePlan, buildInspectReport, formatInspectSummary } = require('../dist');
+const {
+  GatefileEngine,
+  createPlanFromDraft,
+  approvePlan,
+  buildInspectReport,
+  formatInspectSummary,
+  reviewPlan
+} = require('../dist');
 const CLI_PATH = path.join(__dirname, '..', 'dist', 'cli.js');
 
 function makeDraft() {
@@ -131,4 +138,37 @@ test('formatInspectSummary includes signer trust state when policy is configured
   });
 
   assert.match(summary, /trust: unsigned/);
+});
+
+test('non-TTY review readiness matches the injected engine signer policy', async (t) => {
+  const engine = new GatefileEngine({
+    repoRoot: process.cwd(),
+    config: {
+      signers: {
+        trustedKeyIds: ['required-review-signer']
+      }
+    }
+  });
+  const plan = engine.approvePlan(engine.createPlan(makeDraft()), 'ci-user');
+  const planPath = writePlan(t, plan);
+  const expected = engine.verifyPlan(plan);
+  const expectedSummary = engine.formatInspectPlan(plan, engine.inspectPlan(plan));
+  const messages = [];
+  const originalLog = console.log;
+  console.log = (...values) => messages.push(values.join(' '));
+
+  try {
+    await reviewPlan(planPath, { engine });
+  } finally {
+    console.log = originalLog;
+  }
+
+  const summary = messages.join('\n');
+  assert.equal(expected.signerTrust.status, 'unsigned');
+  assert.equal(summary, expectedSummary);
+  assert.match(summary, /trust: unsigned/);
+  assert.match(
+    summary,
+    new RegExp(`Ready To Apply: ${expected.status === 'ready' ? 'yes' : 'no'}`)
+  );
 });

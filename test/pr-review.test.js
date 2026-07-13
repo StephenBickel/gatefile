@@ -6,6 +6,7 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
 const {
+  GatefileEngine,
   createPlanFromDraft,
   approvePlan,
   previewPlan,
@@ -79,6 +80,82 @@ test('renderPRReviewComment shows signer trust details when policy is configured
 
   assert.match(markdown, /\| Signer trust \| unsigned \|/);
   assert.match(markdown, /Signer trust policy is configured/);
+});
+
+test('renderPRReviewComment readiness matches a supplied engine signer policy', () => {
+  const engine = new GatefileEngine({
+    repoRoot: process.cwd(),
+    config: {
+      signers: {
+        trustedKeyIds: ['required-pr-review-signer']
+      }
+    }
+  });
+  const plan = engine.approvePlan(engine.createPlan(makeDraft()), 'ci-user');
+  const expected = engine.verifyPlan(plan);
+  const markdown = renderPRReviewComment({ plan, engine });
+
+  assert.equal(expected.signerTrust.status, 'unsigned');
+  assert.match(markdown, new RegExp(`\\| Signer trust \\| ${expected.signerTrust.status} \\|`));
+  assert.match(
+    markdown,
+    new RegExp(
+      `\\| Apply ready \\| ${expected.readyToApplyFromIntegrityApproval ? 'yes' : 'no'} \\|`
+    )
+  );
+});
+
+test('renderPRReviewComment constructs one engine from supplied runtime context', (t) => {
+  const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'gatefile-pr-context-')));
+  const repoRoot = path.join(base, 'repo');
+  const stateHome = path.join(base, 'state');
+  const repositoryId = 'repo:pr-review-context';
+  fs.mkdirSync(repoRoot);
+  t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+
+  const engine = new GatefileEngine({ repoRoot, repositoryId, stateHome });
+  const plan = engine.approvePlan(engine.createPlan(makeDraft()), 'ci-user');
+  const expected = engine.verifyPlan(plan);
+  const markdown = renderPRReviewComment({
+    plan,
+    repoRoot,
+    repositoryId,
+    stateHome
+  });
+
+  assert.equal(expected.readyToApplyFromIntegrityApproval, true);
+  assert.match(markdown, /\| Apply ready \| yes \|/);
+});
+
+test('renderPRReviewComment asks the supplied engine only for missing assessments', () => {
+  const realEngine = new GatefileEngine({ repoRoot: process.cwd() });
+  const plan = realEngine.approvePlan(realEngine.createPlan(makeDraft()), 'ci-user');
+  const inspectReport = realEngine.inspectPlan(plan);
+  const verifyReport = realEngine.verifyPlan(plan);
+  let inspectCalls = 0;
+  let verifyCalls = 0;
+  const engine = {
+    inspectPlan(value) {
+      inspectCalls += 1;
+      return realEngine.inspectPlan(value);
+    },
+    verifyPlan(value) {
+      verifyCalls += 1;
+      return realEngine.verifyPlan(value);
+    }
+  };
+
+  renderPRReviewComment({ plan, inspectReport, engine });
+  assert.equal(inspectCalls, 0);
+  assert.equal(verifyCalls, 1);
+
+  renderPRReviewComment({ plan, verifyReport, engine });
+  assert.equal(inspectCalls, 1);
+  assert.equal(verifyCalls, 1);
+
+  renderPRReviewComment({ plan, inspectReport, verifyReport, engine });
+  assert.equal(inspectCalls, 1);
+  assert.equal(verifyCalls, 1);
 });
 
 test('renderPRReviewComment includes dry-run highlights when provided', () => {
