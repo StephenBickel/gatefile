@@ -8,6 +8,7 @@ const { spawnSync, execFileSync } = require('node:child_process');
 
 const projectRoot = path.resolve(__dirname, '..');
 const actionRelativePath = path.join('.github', 'actions', 'gatefile-pr-gate');
+const PINNED_GATEFILE_ACTION_SHA = '9c193dd39c7c1e7b20ca3f8c42f0a72860b15814';
 
 function sha256(bytes) {
   return crypto.createHash('sha256').update(bytes).digest('hex');
@@ -335,7 +336,11 @@ test('published Action examples pin a release and bind policy to the PR base', (
     path.join(projectRoot, 'docs/examples/github-pr-gate.yml'),
     'utf8'
   );
-  assert.match(reusable, /gatefile-pr-gate@v0\.3\.0-alpha\.0/);
+  assert.match(
+    reusable,
+    new RegExp(`gatefile-pr-gate@${PINNED_GATEFILE_ACTION_SHA}`)
+  );
+  assert.doesNotMatch(reusable, /gatefile-pr-gate@v/);
   assert.match(reusable, /fetch-depth: 0/);
   assert.match(reusable, /trusted-policy-ref: \$\{\{ github\.event\.pull_request\.base\.sha \}\}/);
   assert.match(reusable, /trusted-policy-sha256: \$\{\{ vars\.GATEFILE_POLICY_SHA256 \}\}/);

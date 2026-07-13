@@ -30,12 +30,12 @@ jobs:
         run: |
           set -euo pipefail
           action_checkout="$(mktemp -d "${RUNNER_TEMP}/gatefile-action.XXXXXX")"
-          git clone \
-            --branch v0.3.0-alpha.0 \
-            --depth 1 \
-            --single-branch \
-            https://github.com/StephenBickel/gatefile.git \
-            "${action_checkout}"
+          action_sha=9c193dd39c7c1e7b20ca3f8c42f0a72860b15814
+          git -C "${action_checkout}" init -q
+          git -C "${action_checkout}" remote add origin https://github.com/StephenBickel/gatefile.git
+          git -C "${action_checkout}" fetch --depth 1 origin "${action_sha}"
+          git -C "${action_checkout}" -c advice.detachedHead=false checkout --detach FETCH_HEAD
+          test "$(git -C "${action_checkout}" rev-parse HEAD)" = "${action_sha}"
           action_path="${action_checkout}/.github/actions/gatefile-pr-gate"
           test -f "${action_path}/run.sh"
           printf 'path=%s\n' "${action_path}" >> "${GITHUB_OUTPUT}"

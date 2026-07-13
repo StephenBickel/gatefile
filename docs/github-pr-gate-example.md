@@ -65,7 +65,7 @@ jobs:
           persist-credentials: false
 
       - name: Gatefile PR gate
-        uses: StephenBickel/gatefile/.github/actions/gatefile-pr-gate@v0.3.0-alpha.0
+        uses: StephenBickel/gatefile/.github/actions/gatefile-pr-gate@9c193dd39c7c1e7b20ca3f8c42f0a72860b15814
         with:
           plan-path: .plan/plan.json
           trusted-policy-ref: ${{ github.event.pull_request.base.sha }}
