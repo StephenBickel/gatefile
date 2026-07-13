@@ -1,5 +1,4 @@
-import { computePlanHash } from "./hash";
-import { GatefileConfig, PlanFile } from "./types";
+import { GatefileConfig, PlanFile, VerifyPlanReport } from "./types";
 import { verifyPlan } from "./verify";
 import { dependencyStatus } from "./state";
 import { inheritPinnedRepoRoot } from "./pinned-runtime";
@@ -32,18 +31,19 @@ export interface InspectReport {
     missingPlanIds: string[];
     allSatisfied: boolean;
   };
+  /** Complete verification evidence captured in the same inspection operation. */
+  verification: VerifyPlanReport;
 }
 
 export function buildInspectReport(plan: PlanFile, options: InspectOptions = {}): InspectReport {
-  const currentHash = computePlanHash(plan);
-  const recordedPlanHash = plan.integrity?.planHash;
-  const integrityMatches = recordedPlanHash === currentHash;
-  const approvalBound =
-    plan.approval.status === "approved" &&
-    plan.approval.approvedPlanHash === currentHash;
+  const verification = verifyPlan(plan, inheritPinnedRepoRoot(options, {
+    repoRoot: options.repoRoot,
+    repositoryId: options.repositoryId,
+    config: options.config
+  }));
   const dependencies = dependencyStatus(plan, inheritPinnedRepoRoot(options, {
     repoRoot: options.repoRoot,
-    repositoryId: options.repositoryId ?? plan.context?.repositoryId,
+    repositoryId: options.repositoryId,
     stateHome: options.stateHome
   }));
 
@@ -55,32 +55,24 @@ export function buildInspectReport(plan: PlanFile, options: InspectOptions = {})
     risk: plan.risk,
     integrity: {
       ...plan.integrity,
-      planHash: recordedPlanHash ?? null,
-      currentPlanHash: currentHash,
-      integrityMatches
+      planHash: verification.hashes.recordedPlanHash,
+      currentPlanHash: verification.hashes.currentPlanHash,
+      integrityMatches: verification.checks.recordedHashMatchesCurrent
     },
     approval: {
       ...plan.approval,
-      boundToCurrentPlan: approvalBound
+      boundToCurrentPlan: verification.checks.approvalBoundToCurrentHash
     },
-    dependencies
+    dependencies,
+    verification
   };
 }
 
 export function formatInspectSummary(
   plan: PlanFile,
-  report: InspectReport,
-  options: {
-    config?: GatefileConfig;
-    repoRoot?: string;
-    repositoryId?: string;
-  } = {}
+  report: InspectReport
 ): string {
-  const verify = verifyPlan(plan, {
-    config: options.config,
-    repoRoot: options.repoRoot,
-    repositoryId: options.repositoryId
-  });
+  const verify = report.verification;
   const trustSuffix = verify.signerTrust.policyConfigured
     ? `, trust: ${verify.signerTrust.status}`
     : "";

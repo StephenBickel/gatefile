@@ -100,7 +100,7 @@ test('inspectPlan preserves malformed-plan error ordering without dereferencing 
     inspectPlan(planPath),
     (error) => {
       assert.equal(error.name, 'TypeError');
-      assert.match(error.message, /reading 'status'/);
+      assert.match(error.message, /reading '(?:status|approvedPlanHash)'/);
       assert.doesNotMatch(error.message, /reading 'repositoryId'/);
       return true;
     }
@@ -144,7 +144,7 @@ test('approvePlanFile validates malformed input before reading repository contex
   );
 });
 
-test('approvePlanFile keeps the plan repository ID when repoRoot only selects policy context', async (t) => {
+test('approvePlanFile requires an explicit trusted override for a custom repository ID', async (t) => {
   const f = sdkFileFixture(t, 'gatefile-sdk-custom-repository-id-');
   await createPlan(sdkFileDraft(f.targetPath), {
     outPath: f.planPath,
@@ -152,13 +152,46 @@ test('approvePlanFile keeps the plan repository ID when repoRoot only selects po
     repositoryId: 'repo:sdk-custom'
   });
 
+  const originalBytes = fs.readFileSync(f.planPath);
+  await assert.rejects(
+    approvePlanFile(f.planPath, {
+      approvedBy: 'custom-repository-reviewer',
+      repoRoot: f.repoRoot
+    }),
+    /repository context.*does not match engine repository context/i
+  );
+  assert.deepEqual(fs.readFileSync(f.planPath), originalBytes);
+
   const approved = await approvePlanFile(f.planPath, {
     approvedBy: 'custom-repository-reviewer',
-    repoRoot: f.repoRoot
+    repoRoot: f.repoRoot,
+    repositoryId: 'repo:sdk-custom'
   });
 
   assert.equal(approved.plan.context.repositoryId, 'repo:sdk-custom');
   assert.equal(approved.plan.approval.status, 'approved');
+});
+
+test('SDK inspect and approve reject a plan from another repository by default', async (t) => {
+  const repoA = sdkFileFixture(t, 'gatefile-sdk-authority-a-');
+  const repoB = sdkFileFixture(t, 'gatefile-sdk-authority-b-');
+  await createPlan(sdkFileDraft(repoA.targetPath), {
+    outPath: repoA.planPath,
+    repoRoot: repoA.repoRoot
+  });
+  const originalBytes = fs.readFileSync(repoA.planPath);
+
+  const inspected = await inspectPlan(repoA.planPath, { repoRoot: repoB.repoRoot });
+  assert.equal(inspected.verification.checks.repositoryContextMatches, false);
+  assert.equal(inspected.verification.status, 'not-ready');
+  await assert.rejects(
+    approvePlanFile(repoA.planPath, {
+      approvedBy: 'foreign-reviewer',
+      repoRoot: repoB.repoRoot
+    }),
+    /repository context.*does not match engine repository context/i
+  );
+  assert.deepEqual(fs.readFileSync(repoA.planPath), originalBytes);
 });
 
 test('approvePlanFile forwards signing and signer-policy context', async (t) => {
@@ -249,7 +282,7 @@ test('applyPlanFile executes file operations', async (t) => {
 
   const outPath = path.join(dir, 'plan.json');
   await createPlan(draft, { outPath, repoRoot: dir });
-  await approvePlanFile(outPath, { approvedBy: 'tester' });
+  await approvePlanFile(outPath, { approvedBy: 'tester', repoRoot: dir });
 
   const wrongContext = await verifyPlanFile(outPath);
   assert.equal(wrongContext.status, 'not-ready');

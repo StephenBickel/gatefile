@@ -65,6 +65,12 @@ test('buildInspectReport returns machine-readable inspect data', () => {
   assert.equal(report.integrity.integrityMatches, true);
   assert.equal(report.approval.status, 'pending');
   assert.equal(report.approval.boundToCurrentPlan, false);
+  assert.equal(report.verification.planId, plan.id);
+  assert.equal(report.verification.status, 'not-ready');
+  assert.equal(
+    report.verification.hashes.currentPlanHash,
+    report.integrity.currentPlanHash
+  );
 });
 
 test('formatInspectSummary returns concise human-readable output', () => {
@@ -98,6 +104,8 @@ test('inspect-plan CLI prints JSON with trailing --json', (t) => {
 
   assert.equal(report.id.length > 0, true);
   assert.equal(report.integrity.integrityMatches, true);
+  assert.equal(report.verification.planId, report.id);
+  assert.equal(report.verification.status, 'not-ready');
 });
 
 test('inspect-plan CLI accepts leading --json before plan path', (t) => {
@@ -128,16 +136,35 @@ test('tampered operation path causes inspect integrity mismatch', () => {
 
 test('formatInspectSummary includes signer trust state when policy is configured', () => {
   const plan = approvePlan(createPlanFromDraft(makeDraft()), 'ci-user');
-  const report = buildInspectReport(plan);
-  const summary = formatInspectSummary(plan, report, {
+  const report = buildInspectReport(plan, {
     config: {
       signers: {
         trustedKeyIds: ['trusted-signer-1']
       }
     }
   });
+  const summary = formatInspectSummary(plan, report);
 
   assert.match(summary, /trust: unsigned/);
+  assert.equal(report.verification.signerTrust.status, 'unsigned');
+  assert.equal(report.verification.status, 'not-ready');
+});
+
+test('formatInspectSummary renders the embedded verification snapshot without reloading policy', (t) => {
+  const repoRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'gatefile-inspect-snapshot-')));
+  t.after(() => fs.rmSync(repoRoot, { recursive: true, force: true }));
+  fs.writeFileSync(
+    path.join(repoRoot, 'gatefile.config.json'),
+    JSON.stringify({ signers: { trustedKeyIds: ['required-review-signer'] } })
+  );
+  const engine = new GatefileEngine({ repoRoot });
+  const plan = engine.approvePlan(engine.createPlan(makeDraft()), 'ci-user');
+  const report = engine.inspectPlan(plan);
+
+  fs.writeFileSync(path.join(repoRoot, 'gatefile.config.json'), '{}\n');
+  const summary = engine.formatInspectPlan(plan, report);
+  assert.match(summary, /trust: unsigned/);
+  assert.match(summary, /Ready To Apply: no/);
 });
 
 test('non-TTY review readiness matches the injected engine signer policy', async (t) => {

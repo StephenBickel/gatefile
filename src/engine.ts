@@ -138,12 +138,8 @@ export class GatefileEngine {
   }
 
   formatInspectPlan(plan: PlanFile, report: InspectReport): string {
-    const config = policyConfigFor(this);
-    return formatInspectSummary(plan, report, {
-      repoRoot: this.context.repoRoot,
-      repositoryId: this.context.repositoryId,
-      config
-    });
+    privateStateFor(this);
+    return formatInspectSummary(plan, report);
   }
 
   approvePlan(

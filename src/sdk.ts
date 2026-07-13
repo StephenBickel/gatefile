@@ -118,7 +118,7 @@ export async function inspectPlan(
   const plan = readPlan(planPath);
   const engine = new GatefileEngine({
     repoRoot: options?.repoRoot,
-    repositoryId: options?.repositoryId ?? plan.context?.repositoryId,
+    repositoryId: options?.repositoryId,
     stateHome: options?.stateHome,
     config: options?.config
   });
@@ -136,7 +136,7 @@ export async function approvePlan(
   validatePlanFile(plan);
   const engine = new GatefileEngine({
     repoRoot: options?.repoRoot,
-    repositoryId: options?.repositoryId ?? plan.context.repositoryId,
+    repositoryId: options?.repositoryId,
     config: options?.config
   });
   const approved = engine.approvePlan(plan, options?.approvedBy ?? "sdk", {
