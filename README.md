@@ -278,9 +278,11 @@ top-level (or canonical selected directory outside Git), its derived or explicit
 repository ID, and the resolved explicit/environment/platform-default state
 home. Later working-directory or environment changes cannot redirect that
 engine. If `config` is omitted, `gatefile.config.json` is reloaded from the
-pinned repository once at the start of each top-level method, and that method
-uses one normalized snapshot for all of its checks. Passing `config` instead
-pins a normalized, defensively copied snapshot at construction.
+pinned repository once at the start of each policy-sensitive method, and that
+method uses one normalized snapshot for all of its checks. Rollback deliberately
+does not load repository policy: authenticated recovery remains available even
+when the repository config is malformed. Passing `config` instead pins a
+normalized, defensively copied snapshot at construction.
 
 The package-root lifecycle names `createPlanFromDraft`, `approvePlan`,
 `verifyPlan`, `buildInspectReport`, `previewPlan`, `applyPlan`, and

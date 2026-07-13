@@ -12,6 +12,8 @@ import {
   approvePlan as approvePlanKernel,
   createPlanFromDraft
 } from "./planner";
+import { validatePlanForApproval } from "./approval-validation";
+import { pinRuntimeRepoRoot } from "./pinned-runtime";
 import {
   InspectReport,
   buildInspectReport,
@@ -23,11 +25,13 @@ import {
   previewPlan as previewPlanKernel,
   rollbackApply as rollbackApplyKernel
 } from "./applier";
-import { loadGatefileConfig, normalizeGatefileConfig } from "./config";
+import {
+  loadGatefileConfigFromPinnedRoot,
+  normalizeGatefileConfig
+} from "./config";
 import { runPolicyHook } from "./hooks";
-import { getRepoRoot, repositoryIdForRoot } from "./state";
-import { resolveStateHome } from "./state-auth";
-import { validatePlanFile } from "./validation";
+import { getRepoRoot, repositoryIdForPinnedRoot } from "./state";
+import { resolveStateHomeForContext } from "./state-auth";
 
 export interface GatefileEngineOptions {
   repoRoot?: string;
@@ -67,7 +71,7 @@ function privateStateFor(engine: GatefileEngine): GatefileEnginePrivateState {
 function policyConfigFor(engine: GatefileEngine): GatefileConfig {
   const state = privateStateFor(engine);
   return state.explicitConfig === undefined
-    ? loadGatefileConfig(engine.context.repoRoot)
+    ? loadGatefileConfigFromPinnedRoot(engine.context.repoRoot)
     : normalizeGatefileConfig(state.explicitConfig);
 }
 
@@ -78,8 +82,8 @@ export class GatefileEngine {
     const repoRoot = getRepoRoot(options.repoRoot);
     this.context = Object.freeze({
       repoRoot,
-      repositoryId: options.repositoryId ?? repositoryIdForRoot(repoRoot),
-      stateHome: resolveStateHome(options.stateHome)
+      repositoryId: options.repositoryId ?? repositoryIdForPinnedRoot(repoRoot),
+      stateHome: resolveStateHomeForContext(options.stateHome)
     });
     Object.defineProperty(this, "context", { writable: false, configurable: false });
     enginePrivateState.set(this, Object.freeze({
@@ -99,12 +103,12 @@ export class GatefileEngine {
 
   inspectPlan(plan: PlanFile): InspectReport {
     const config = policyConfigFor(this);
-    return buildInspectReport(plan, {
+    return buildInspectReport(plan, pinRuntimeRepoRoot({
       repoRoot: this.context.repoRoot,
       repositoryId: this.context.repositoryId,
       stateHome: this.context.stateHome,
       config
-    });
+    }));
   }
 
   formatInspectPlan(plan: PlanFile, report: InspectReport): string {
@@ -121,7 +125,7 @@ export class GatefileEngine {
     approvedBy: string,
     options: EngineApproveOptions = {}
   ): PlanFile {
-    validatePlanFile(plan);
+    validatePlanForApproval(plan);
     if (plan.context?.repositoryId !== this.context.repositoryId) {
       throw new Error(
         `Plan repository context ${String(plan.context?.repositoryId)} does not match engine repository context ${this.context.repositoryId}`
@@ -148,32 +152,32 @@ export class GatefileEngine {
 
   previewPlan(plan: PlanFile, options: EnginePlanOptions = {}): DryRunReport {
     const config = policyConfigFor(this);
-    return previewPlanKernel(plan, {
+    return previewPlanKernel(plan, pinRuntimeRepoRoot({
       repoRoot: this.context.repoRoot,
       repositoryId: this.context.repositoryId,
       stateHome: this.context.stateHome,
       planPath: options.planPath,
       config
-    });
+    }));
   }
 
   applyPlan(plan: PlanFile, options: EnginePlanOptions = {}): ApplyReport {
     const config = policyConfigFor(this);
-    return applyPlanKernel(plan, {
+    return applyPlanKernel(plan, pinRuntimeRepoRoot({
       repoRoot: this.context.repoRoot,
       repositoryId: this.context.repositoryId,
       stateHome: this.context.stateHome,
       planPath: options.planPath,
       config
-    });
+    }));
   }
 
   rollbackApply(receiptId: string): RollbackReport {
     privateStateFor(this);
-    return rollbackApplyKernel(receiptId, {
+    return rollbackApplyKernel(receiptId, pinRuntimeRepoRoot({
       repoRoot: this.context.repoRoot,
       repositoryId: this.context.repositoryId,
       stateHome: this.context.stateHome
-    });
+    }));
   }
 }

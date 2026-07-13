@@ -70,6 +70,7 @@ import type {
   SignedPathMetadata
 } from "./safe-fs";
 import { sanitizedGitEnvironment } from "./git-environment";
+import { isRuntimeRepoRootPinned } from "./pinned-runtime";
 
 export interface StateRuntimeOptions {
   repoRoot?: string;
@@ -122,6 +123,21 @@ export function getRepoRoot(repoRoot?: string): string {
   return stateRepositoryRoot(requestedRoot);
 }
 
+/** Preserve an already-selected repository root without rediscovering Git topology. */
+export function getPinnedRepoRoot(repoRoot: string): string {
+  return realpathSync(resolve(repoRoot));
+}
+
+function runtimeRepoRoot(options: StateRuntimeOptions): string {
+  if (isRuntimeRepoRootPinned(options)) {
+    if (options.repoRoot === undefined) {
+      throw new Error("A canonical repository root must be provided explicitly");
+    }
+    return getPinnedRepoRoot(options.repoRoot);
+  }
+  return getRepoRoot(options.repoRoot);
+}
+
 function gitOutput(repoRoot: string, args: string[]): string | undefined {
   const result = spawnSync("git", ["-C", repoRoot, ...args], {
     encoding: "utf8",
@@ -153,6 +169,15 @@ function normalizedRemoteIdentity(remote: string): string {
 /** Stable, non-secret identity for binding a plan to its intended repository. */
 export function repositoryIdForRoot(repoRoot?: string): string {
   const requestedRoot = getRepoRoot(repoRoot);
+  return repositoryIdForCanonicalRoot(requestedRoot);
+}
+
+/** Derive identity from an already-selected root without rediscovering Git topology. */
+export function repositoryIdForPinnedRoot(repoRoot: string): string {
+  return repositoryIdForCanonicalRoot(getPinnedRepoRoot(repoRoot));
+}
+
+function repositoryIdForCanonicalRoot(requestedRoot: string): string {
   const remote = gitOutput(requestedRoot, ["config", "--get", "remote.origin.url"]);
   return remote
     ? `git:${normalizedRemoteIdentity(remote)}`
@@ -173,9 +198,9 @@ function recordRepository(binding: StateRepositoryBinding): StateRecordRepositor
 
 export function getStateLayout(input: StateRuntimeInput = {}): StateLayout {
   const options = normalizeStateOptions(input);
-  const requestedRoot = getRepoRoot(options.repoRoot);
-  const repositoryId = options.repositoryId ?? repositoryIdForRoot(requestedRoot);
-  const binding = createStateRepositoryBinding(stateRepositoryRoot(requestedRoot), repositoryId);
+  const requestedRoot = runtimeRepoRoot(options);
+  const repositoryId = options.repositoryId ?? repositoryIdForCanonicalRoot(requestedRoot);
+  const binding = createStateRepositoryBinding(requestedRoot, repositoryId);
   const stateHome = resolveStateHome(options.stateHome);
   const recordsRoot = stateRecordsRoot(binding, stateHome);
   return {
@@ -779,7 +804,7 @@ export function rollbackByReceipt(
 
   const roots = [...new Set(chain.receipt.rollbackEntries.map((entry) => entry.allowedRoot))];
   const context = roots.length > 0
-    ? createSafeFsContext(getRepoRoot(options.repoRoot), roots, [chain.layout.stateHome])
+    ? createSafeFsContext(runtimeRepoRoot(options), roots, [chain.layout.stateHome])
     : undefined;
 
   const rollbackDecisions = context

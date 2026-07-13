@@ -134,6 +134,62 @@ test('GatefileEngine context binding cannot be replaced to redirect authority', 
   assert.equal(engine.createPlan(makeDraft('Preserve authority')).context.repositoryId, 'repo:engine-test');
 });
 
+test('GatefileEngine keeps a selected non-Git root pinned after repository topology changes', (t) => {
+  const base = fs.realpathSync(
+    fs.mkdtempSync(path.join(os.tmpdir(), 'gatefile-engine-pinned-root-'))
+  );
+  const stateHome = fs.realpathSync(
+    fs.mkdtempSync(path.join(os.tmpdir(), 'gatefile-engine-pinned-state-'))
+  );
+  const repoRoot = path.join(base, 'selected');
+  fs.mkdirSync(repoRoot);
+  t.after(() => {
+    fs.rmSync(base, { recursive: true, force: true });
+    fs.rmSync(stateHome, { recursive: true, force: true });
+  });
+  const hookScript = "require('node:fs').writeFileSync('hook-marker', 'ran')";
+  fs.writeFileSync(
+    path.join(repoRoot, 'gatefile.config.json'),
+    JSON.stringify({
+      hooks: {
+        beforeApply: {
+          command: `${JSON.stringify(process.execPath)} -e ${JSON.stringify(hookScript)}`
+        }
+      }
+    }),
+    'utf8'
+  );
+  const engine = new GatefileEngine({
+    repoRoot,
+    repositoryId: 'repo:pinned-selected-root',
+    stateHome
+  });
+  const approved = engine.approvePlan(
+    engine.createPlan({
+      source: 'pinned-root-test',
+      summary: 'Stay inside the originally selected directory',
+      operations: [{
+        id: 'op_pinned_root',
+        type: 'file',
+        action: 'create',
+        path: 'target.txt',
+        after: 'selected root only\n'
+      }],
+      preconditions: []
+    }),
+    'reviewer'
+  );
+
+  execFileSync('git', ['init', '-q', base]);
+  const report = engine.applyPlan(approved);
+
+  assert.equal(report.success, true);
+  assert.equal(report.rollbackContext.repoRoot, repoRoot);
+  assert.equal(fs.readFileSync(path.join(repoRoot, 'target.txt'), 'utf8'), 'selected root only\n');
+  assert.equal(fs.readFileSync(path.join(repoRoot, 'hook-marker'), 'utf8'), 'ran');
+  assert.equal(fs.existsSync(path.join(base, 'target.txt')), false);
+});
+
 test('GatefileEngine keeps explicit policy in runtime-private pinned state', (t) => {
   const { repoRoot, stateHome } = makeFixture(t, 'gatefile-engine-private-policy-');
   const suppliedConfig = { signers: { trustedKeyIds: ['trusted-key'] } };
@@ -219,6 +275,18 @@ test('GatefileEngine validates approval input before running policy hooks', (t) 
     /unsupported plan version; expected v2/i
   );
   assert.equal(fs.existsSync(markerPath), false);
+
+  const riskTamperedPlan = engine.createPlan(makeDraft('Reject risk drift before hook'));
+  riskTamperedPlan.risk = {
+    score: 999,
+    level: 'high',
+    reasons: ['tampered']
+  };
+  assert.throws(
+    () => engine.approvePlan(riskTamperedPlan, 'reviewer'),
+    /stored risk does not match risk recomputed/i
+  );
+  assert.equal(fs.existsSync(markerPath), false);
 });
 
 test('GatefileEngine pins branch preconditions despite ambient cwd and Git routing', (t) => {
@@ -296,6 +364,77 @@ test('GatefileEngine pins clean-tree preconditions despite ambient cwd and Git r
   assert.equal(fs.existsSync(path.join(otherRepoRoot, 'engine-output.txt')), false);
 });
 
+test('beforeApprove hooks use the pinned repository despite ambient Git routing', (t) => {
+  const { repoRoot, otherRepoRoot, stateHome } = makeFixture(
+    t,
+    'gatefile-engine-before-approve-git-env-'
+  );
+  commitOnBranch(repoRoot, 'engine-branch');
+  commitOnBranch(otherRepoRoot, 'other-branch');
+  const engine = new GatefileEngine({
+    repoRoot,
+    repositoryId: 'repo:before-approve-git-env',
+    stateHome,
+    config: {
+      hooks: {
+        beforeApprove: {
+          command: 'test "$(git rev-parse --abbrev-ref HEAD)" = engine-branch'
+        }
+      }
+    }
+  });
+  const plan = engine.createPlan(makeDraft('Pin approval hook repository'));
+
+  const approved = runWithProcessContext(
+    otherRepoRoot,
+    {
+      GIT_DIR: path.join(otherRepoRoot, '.git'),
+      GIT_WORK_TREE: otherRepoRoot
+    },
+    () => engine.approvePlan(plan, 'reviewer')
+  );
+
+  assert.equal(approved.approval.status, 'approved');
+});
+
+test('beforeApply hooks use the pinned repository despite ambient Git routing', (t) => {
+  const { repoRoot, otherRepoRoot, stateHome } = makeFixture(
+    t,
+    'gatefile-engine-before-apply-git-env-'
+  );
+  commitOnBranch(repoRoot, 'engine-branch');
+  commitOnBranch(otherRepoRoot, 'other-branch');
+  const engine = new GatefileEngine({
+    repoRoot,
+    repositoryId: 'repo:before-apply-git-env',
+    stateHome,
+    config: {
+      hooks: {
+        beforeApply: {
+          command: 'test "$(git rev-parse --abbrev-ref HEAD)" = engine-branch'
+        }
+      }
+    }
+  });
+  const approved = engine.approvePlan(
+    engine.createPlan(makeDraft('Pin apply hook repository')),
+    'reviewer'
+  );
+
+  const report = runWithProcessContext(
+    otherRepoRoot,
+    {
+      GIT_DIR: path.join(otherRepoRoot, '.git'),
+      GIT_WORK_TREE: otherRepoRoot
+    },
+    () => engine.applyPlan(approved)
+  );
+
+  assert.equal(report.success, true);
+  assert.equal(fs.existsSync(path.join(repoRoot, 'engine-output.txt')), true);
+  assert.equal(fs.existsSync(path.join(otherRepoRoot, 'engine-output.txt')), false);
+});
+
 test('GatefileEngine reloads the default repository config for each operation', (t) => {
   const { repoRoot, stateHome } = makeFixture(t, 'gatefile-engine-config-reload-');
   const engine = new GatefileEngine({
@@ -318,6 +457,44 @@ test('GatefileEngine reloads the default repository config for each operation', 
   const afterPolicy = engine.verifyPlan(unsignedPlan);
   assert.equal(afterPolicy.signerTrust.policyConfigured, true);
   assert.equal(afterPolicy.status, 'not-ready');
+});
+
+test('planning and verification remain available when Windows execution is fail-closed', (t) => {
+  const { repoRoot, stateHome } = makeFixture(t, 'gatefile-engine-windows-planning-');
+  const packageRoot = path.join(__dirname, '..', 'dist');
+  const script = `
+    const assert = require('node:assert/strict');
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    const { GatefileEngine, createPlanFromDraft } = require(${JSON.stringify(packageRoot)});
+    const repoRoot = ${JSON.stringify(repoRoot)};
+    const stateHome = ${JSON.stringify(stateHome)};
+    const draft = {
+      source: 'windows-planning-test',
+      summary: 'Keep non-mutating lifecycle available',
+      operations: [{
+        id: 'op_windows_planning',
+        type: 'file',
+        action: 'create',
+        path: 'windows-preview.txt',
+        after: 'preview only\\n'
+      }],
+      preconditions: []
+    };
+    const rootPlan = createPlanFromDraft(draft, {
+      repoRoot,
+      context: { repositoryId: 'repo:windows-root-wrapper' }
+    });
+    assert.equal(rootPlan.context.repositoryId, 'repo:windows-root-wrapper');
+    const engine = new GatefileEngine({
+      repoRoot,
+      repositoryId: 'repo:windows-engine',
+      stateHome
+    });
+    const approved = engine.approvePlan(engine.createPlan(draft), 'reviewer');
+    assert.equal(engine.verifyPlan(approved).status, 'ready');
+  `;
+
+  assert.doesNotThrow(() => execFileSync(process.execPath, ['-e', script], { stdio: 'pipe' }));
 });
 
 test('GatefileEngine rollback remains available when repository config becomes invalid', (t) => {

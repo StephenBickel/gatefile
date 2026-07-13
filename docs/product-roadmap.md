@@ -35,10 +35,12 @@ New product surface and feature work are deferred until the stabilization freeze
 ## Current stabilization boundary
 
 When an engine is constructed without explicit config, it reloads the pinned
-repository's `gatefile.config.json` once for each top-level method so long-running
-processes observe policy changes. Supplying `config` instead pins a normalized,
-defensively copied snapshot. Every policy check within one engine method receives
-the same snapshot, canonical repository root, repository ID, and state home.
+repository's `gatefile.config.json` once for each policy-sensitive method so
+long-running processes observe policy changes. Supplying `config` instead pins a
+normalized, defensively copied snapshot. Every policy check within one engine
+method receives the same snapshot, canonical repository root, repository ID,
+and state home. Rollback does not reload repository config, preserving
+authenticated recovery when policy is malformed.
 
 This engine migration does not finish the installed-package stabilization work.
 Raw lifecycle kernels and deep `dist/*` imports are unsupported, but the files

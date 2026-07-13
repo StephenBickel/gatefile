@@ -16,6 +16,7 @@ import {
   dependencyStatus,
   getStateLayout,
   getRepoRoot,
+  getPinnedRepoRoot,
   makeReceiptId,
   preflightStateForApply,
   prepareStateForApply,
@@ -58,6 +59,10 @@ import type {
   RollbackRecordEntry,
   SnapshotRecordBody
 } from "./state-records";
+import {
+  inheritPinnedRepoRoot,
+  isRuntimeRepoRootPinned
+} from "./pinned-runtime";
 
 const DEFAULT_COMMAND_TIMEOUT_MS = 10_000;
 
@@ -79,6 +84,16 @@ export interface PlanRuntimeOptions {
   stateHome?: string;
   planPath?: string;
   config?: GatefileConfig;
+}
+
+function runtimeRepoRoot(options: PlanRuntimeOptions): string {
+  if (isRuntimeRepoRootPinned(options)) {
+    if (options.repoRoot === undefined) {
+      throw new Error("A canonical repository root must be provided explicitly");
+    }
+    return getPinnedRepoRoot(options.repoRoot);
+  }
+  return getRepoRoot(options.repoRoot);
 }
 
 function effectiveAllowedRoots(plan: PlanFile, repoRoot: string): string[] {
@@ -527,12 +542,16 @@ function stateOptionsForPlan(
   plan: PlanFile,
   options: PlanRuntimeOptions,
   repoRoot: string
-): { repoRoot: string; repositoryId: string; stateHome?: string } {
-  return {
+): {
+  repoRoot: string;
+  repositoryId: string;
+  stateHome?: string;
+} {
+  return inheritPinnedRepoRoot(options, {
     repoRoot,
     repositoryId: plan.context.repositoryId,
     stateHome: options.stateHome
-  };
+  });
 }
 
 function rollbackEntriesForApply(
@@ -683,7 +702,7 @@ function receiptBodyForApply(
 }
 
 function applyCore(plan: PlanFile, options: PlanRuntimeOptions): ApplyReport {
-  const repoRoot = getRepoRoot(options.repoRoot);
+  const repoRoot = runtimeRepoRoot(options);
   const stateOptions = stateOptionsForPlan(plan, options, repoRoot);
   const layout = getStateLayout(stateOptions);
   const dependencies = dependencyStatus(plan, stateOptions);
@@ -916,7 +935,7 @@ export function previewPlan(plan: PlanFile, options: PlanRuntimeOptions = {}): D
     repositoryId: options.repositoryId,
     repoRoot: options.repoRoot
   });
-  const repoRoot = getRepoRoot(options.repoRoot);
+  const repoRoot = runtimeRepoRoot(options);
   const stateOptions = stateOptionsForPlan(plan, options, repoRoot);
   const layout = getStateLayout(stateOptions);
   const dependencies = dependencyStatus(
@@ -959,33 +978,33 @@ export function applyPlan(plan: PlanFile, options: PlanRuntimeOptions = {}): App
     throw new Error(`Plan failed verification: ${verification.blockers.join("; ")}`);
   }
 
-  const repoRoot = getRepoRoot(options.repoRoot);
+  const repoRoot = runtimeRepoRoot(options);
   const preflight = checkPreconditions(plan.preconditions, { cwd: repoRoot });
   if (!preflight.ok) {
     throw new Error(`Preconditions failed: ${preflight.message}`);
   }
 
-  return applyCore(plan, { ...options, repoRoot });
+  return applyCore(plan, inheritPinnedRepoRoot(options, { ...options, repoRoot }));
 }
 
 export function rollbackApply(receiptId: string, options: PlanRuntimeOptions = {}): RollbackReport {
   return rollbackByReceipt(
-    {
+    inheritPinnedRepoRoot(options, {
       repoRoot: options.repoRoot,
       repositoryId: options.repositoryId,
       stateHome: options.stateHome
-    },
+    }),
     receiptId
   );
 }
 
 export function snapshotFilePathForReceipt(receiptId: string, options: PlanRuntimeOptions = {}): string {
   return snapshotPath(
-    {
+    inheritPinnedRepoRoot(options, {
       repoRoot: options.repoRoot,
       repositoryId: options.repositoryId,
       stateHome: options.stateHome
-    },
+    }),
     receiptId
   );
 }

@@ -45,6 +45,21 @@ function kernelModuleFor(file, moduleName) {
   return undefined;
 }
 
+function staticStringValue(node) {
+  if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
+    return node.text;
+  }
+  if (ts.isParenthesizedExpression(node)) {
+    return staticStringValue(node.expression);
+  }
+  if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+    const left = staticStringValue(node.left);
+    const right = staticStringValue(node.right);
+    return left === undefined || right === undefined ? undefined : left + right;
+  }
+  return undefined;
+}
+
 function stripComments(source) {
   const scanner = ts.createScanner(
     ts.ScriptTarget.Latest,
@@ -121,16 +136,16 @@ function boundaryViolations(file, source) {
     if (ts.isCallExpression(node)) {
       const callee = node.expression;
       const [specifier] = node.arguments;
+      const moduleName = specifier === undefined ? undefined : staticStringValue(specifier);
       if (
-        specifier &&
-        ts.isStringLiteral(specifier) &&
-        kernelModuleFor(file, specifier.text) !== undefined
+        moduleName !== undefined &&
+        kernelModuleFor(file, moduleName) !== undefined
       ) {
         if (ts.isIdentifier(callee) && callee.text === 'require') {
-          violations.push(`${file}: CommonJS load from ${specifier.text}`);
+          violations.push(`${file}: CommonJS load from ${moduleName}`);
         }
         if (callee.kind === ts.SyntaxKind.ImportKeyword) {
-          violations.push(`${file}: dynamic import from ${specifier.text}`);
+          violations.push(`${file}: dynamic import from ${moduleName}`);
         }
       }
       if (ts.isIdentifier(callee) && LIFECYCLE_SYMBOLS.has(callee.text)) {
@@ -205,5 +220,21 @@ test('boundary rejects explicit JavaScript kernel paths with aliased lifecycle s
   assert.deepEqual(boundaryViolations('src/fixture.ts', source), [
     'src/fixture.ts: value import applyPlan from ./applier.js',
     'src/fixture.ts: CommonJS load from ./verify.js'
+  ]);
+});
+
+test('boundary rejects normalized and statically composed kernel specifiers', () => {
+  const source = `
+    import { approvePlan as rawApprove } from "./planner/../planner.js";
+    const rawApply = require("./" + "applier.js").applyPlan;
+    async function rawVerify() {
+      return import(\`./verify.js\`);
+    }
+  `;
+
+  assert.deepEqual(boundaryViolations('src/fixture.ts', source), [
+    'src/fixture.ts: value import approvePlan from ./planner/../planner.js',
+    'src/fixture.ts: CommonJS load from ./applier.js',
+    'src/fixture.ts: dynamic import from ./verify.js'
   ]);
 });

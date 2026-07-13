@@ -5,6 +5,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { URL } from "node:url";
 import { PlanFile, GatefileConfig } from "./types";
+import { sanitizedGitEnvironment } from "./git-environment";
 
 // ── Config types ──────────────────────────────────────────────
 
@@ -173,7 +174,11 @@ export function runPolicyHook(
     : context.repoRoot;
   const { execSync } = require("node:child_process") as typeof import("node:child_process");
   try {
-    execSync(hookConfig.command, { cwd, stdio: "pipe" });
+    execSync(hookConfig.command, {
+      cwd,
+      env: sanitizedGitEnvironment(),
+      stdio: "pipe"
+    });
   } catch {
     throw new Error(`Policy hook ${event} blocked execution`);
   }

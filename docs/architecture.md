@@ -16,10 +16,12 @@
 - `GatefileEngine` is the primary supported in-memory lifecycle boundary
 - Pins an immutable canonical repository root, repository ID, and external state
   home when constructed
-- Reloads default repository config once per top-level method, or uses the
-  normalized defensive snapshot supplied explicitly at construction
+- Reloads default repository config once per policy-sensitive method, or uses
+  the normalized defensive snapshot supplied explicitly at construction
 - Passes one effective config snapshot and the pinned context through every
   policy check performed by that method
+- Keeps authenticated rollback independent of repository config parsing so
+  malformed policy cannot make recovery unavailable
 - Exposes create, inspect/format, approve, verify, preview, apply, and rollback
 
 3. Planner (`src/planner.ts`)

@@ -5,7 +5,8 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
-const { approvePlan, createPlanFromDraft } = require('../dist');
+const gatefile = require('../dist');
+const { approvePlan, createPlanFromDraft } = gatefile;
 
 const lifecycleExports = [
   'applyPlan',
@@ -30,6 +31,11 @@ test('package root explicitly binds supported lifecycle exports to engine-api', 
     .filter(Boolean)
     .sort();
   assert.deepEqual(exportedNames, lifecycleExports);
+  assert.equal(
+    'validatePlanForApproval' in gatefile,
+    false,
+    'approval prevalidation must remain an internal engine/planner contract'
+  );
 });
 
 test('package-root approvePlan enforces beforeApprove policy from canonical cwd', (t) => {

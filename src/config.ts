@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { createPublicKey } from "node:crypto";
 import { resolve } from "node:path";
 import { GatefileConfig } from "./types";
-import { getRepoRoot } from "./state";
+import { getPinnedRepoRoot, getRepoRoot } from "./state";
 
 export const DEFAULT_CONFIG_FILE = "gatefile.config.json";
 
@@ -162,6 +162,17 @@ export function normalizeGatefileConfig(rawConfig: unknown, sourceLabel?: string
 
 export function loadGatefileConfig(repoRoot?: string, explicitPath?: string): GatefileConfig {
   const path = configPath(repoRoot, explicitPath);
+  return loadGatefileConfigAtPath(path);
+}
+
+/** Load policy from an engine-pinned root without rediscovering Git topology. */
+export function loadGatefileConfigFromPinnedRoot(repoRoot: string): GatefileConfig {
+  return loadGatefileConfigAtPath(
+    resolve(getPinnedRepoRoot(repoRoot), DEFAULT_CONFIG_FILE)
+  );
+}
+
+function loadGatefileConfigAtPath(path: string): GatefileConfig {
   if (!existsSync(path)) {
     return {};
   }

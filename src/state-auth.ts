@@ -254,6 +254,35 @@ function defaultStateHome(env: NodeJS.ProcessEnv): string {
   return join(base, "gatefile", "state-auth");
 }
 
+function selectedStateHomePath(
+  stateHome?: string,
+  env: NodeJS.ProcessEnv = process.env
+): string {
+  const selected = stateHome ?? env.GATEFILE_STATE_HOME ?? defaultStateHome(env);
+  assertNonEmptyNoNul(selected, "State home");
+  if (!isAbsolute(selected)) {
+    throw new StateAuthenticationError(
+      "State home must be an absolute path (including GATEFILE_STATE_HOME)"
+    );
+  }
+  return resolve(selected);
+}
+
+/**
+ * Pin the effective state-home selection without claiming the platform can use
+ * authenticated state. Windows keeps planning and verification available; the
+ * first authenticated-state access still fails closed through resolveStateHome.
+ */
+export function resolveStateHomeForContext(
+  stateHome?: string,
+  env: NodeJS.ProcessEnv = process.env
+): string {
+  const selected = selectedStateHomePath(stateHome, env);
+  return process.platform === "win32"
+    ? selected
+    : canonicalizeStateHomePath(selected);
+}
+
 /** Resolve the external trust-anchor home. Relative operator-controlled paths are rejected. */
 export function resolveStateHome(
   stateHome?: string,
@@ -264,14 +293,7 @@ export function resolveStateHome(
       "Authenticated Gatefile state requires POSIX ownership and private-permission enforcement"
     );
   }
-  const selected = stateHome ?? env.GATEFILE_STATE_HOME ?? defaultStateHome(env);
-  assertNonEmptyNoNul(selected, "State home");
-  if (!isAbsolute(selected)) {
-    throw new StateAuthenticationError(
-      "State home must be an absolute path (including GATEFILE_STATE_HOME)"
-    );
-  }
-  return canonicalizeStateHomePath(resolve(selected));
+  return canonicalizeStateHomePath(selectedStateHomePath(stateHome, env));
 }
 
 function isTrustedPlatformAlias(pathname: string, stat: Stats): boolean {
