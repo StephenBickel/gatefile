@@ -29,6 +29,8 @@ jobs:
     steps:
       - name: Checkout default branch
         uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.repository.default_branch }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v5
@@ -42,6 +44,8 @@ jobs:
           npm run build
 
       - name: Download PR plan artifact
+        # The artifact is inert input. This job uses the trusted default-branch
+        # checkout above and never checks out or runs PR code or PR-supplied hooks.
         uses: actions/download-artifact@v5
         with:
           github-token: ${{ github.token }}
@@ -52,7 +56,7 @@ jobs:
       - name: Validate artifact metadata
         id: context
         run: |
-          node -e 'const fs=require("node:fs");const p=".gatefile-artifacts/input/context.json";const c=JSON.parse(fs.readFileSync(p,"utf8"));if(c.baseRepo!==process.env.GITHUB_REPOSITORY){throw new Error(`Artifact baseRepo mismatch: ${c.baseRepo} vs ${process.env.GITHUB_REPOSITORY}`);}if(!Number.isInteger(c.prNumber)||c.prNumber<1){throw new Error("Artifact context missing valid prNumber");}if(typeof c.headSha!=="string"||c.headSha.length<7){throw new Error("Artifact context missing headSha");}fs.appendFileSync(process.env.GITHUB_OUTPUT,`pr_number=${c.prNumber}\nhead_sha=${c.headSha}\n`);'
+          node -e 'const fs=require("node:fs");const p=".gatefile-artifacts/input/context.json";const c=JSON.parse(fs.readFileSync(p,"utf8"));if(c.baseRepo!==process.env.GITHUB_REPOSITORY){throw new Error(`Artifact baseRepo mismatch: ${c.baseRepo} vs ${process.env.GITHUB_REPOSITORY}`);}if(!Number.isInteger(c.prNumber)||c.prNumber<1){throw new Error("Artifact context missing valid prNumber");}if(typeof c.headSha!=="string"||!/^[0-9a-f]{40}$/i.test(c.headSha)){throw new Error("Artifact context headSha must be a 40-character hexadecimal GitHub SHA");}const headSha=c.headSha.toLowerCase();fs.appendFileSync(process.env.GITHUB_OUTPUT,`pr_number=${c.prNumber}\nhead_sha=${headSha}\n`);'
 
       - name: Write signing key securely
         env:
@@ -77,6 +81,10 @@ jobs:
           node dist/cli.js verify-plan .gatefile-artifacts/input/plan.signed.json > .gatefile-artifacts/input/verify-signed-report.json
           node -e 'const fs=require("node:fs");const r=JSON.parse(fs.readFileSync(".gatefile-artifacts/input/verify-signed-report.json","utf8"));if(r.status!=="ready"||r.signerTrust.status!=="trusted"){console.error("Gatefile signed artifact check failed:",r.blockers.join("; "),"trust="+r.signerTrust.status);process.exit(1);}console.log("Signed artifact trusted:",r.planId,r.signerTrust.keyId||"no-key-id");'
 
+      - name: Cleanup signing key
+        if: always()
+        run: rm -f "${RUNNER_TEMP}/gatefile-approver.pem"
+
       - name: Upload signed plan artifact
         uses: actions/upload-artifact@v5
         with:
@@ -89,10 +97,17 @@ jobs:
 
       - name: Comment PR with signed artifact details
         uses: actions/github-script@v8
+        env:
+          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
+          HEAD_SHA: ${{ steps.context.outputs.head_sha }}
         with:
           script: |
-            const prNumber = Number('${{ steps.context.outputs.pr_number }}');
-            const artifactName = `gatefile-signed-plan-pr-${{ steps.context.outputs.pr_number }}-${{ steps.context.outputs.head_sha }}`;
+            const prNumber = Number(process.env.PR_NUMBER);
+            const headSha = process.env.HEAD_SHA || '';
+            if (!Number.isInteger(prNumber) || prNumber < 1 || !/^[0-9a-f]{40}$/.test(headSha)) {
+              throw new Error('Validated artifact metadata was not propagated safely');
+            }
+            const artifactName = `gatefile-signed-plan-pr-${prNumber}-${headSha}`;
             const body = [
               'Gatefile signed approval artifact is ready.',
               '',
@@ -108,7 +123,3 @@ jobs:
               issue_number: prNumber,
               body
             });
-
-      - name: Cleanup signing key
-        if: always()
-        run: rm -f "${RUNNER_TEMP}/gatefile-approver.pem"

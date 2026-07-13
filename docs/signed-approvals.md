@@ -83,23 +83,27 @@ Look for:
 - `signerTrust.status: "trusted"`
 - `status: "ready"`
 
-## GitHub-Native Signed Approval
+## Fork-Safe GitHub Signed Approval
 
-Same-repo PR branch flow:
-- `docs/examples/github-native-signed-approval.yml`
-
-This workflow:
-- checks out the PR branch
-- writes private key from secret to a temp file with strict permissions
-- signs plan approval in CI
-- verifies `status === "ready"` and `signerTrust.status === "trusted"`
-- commits the updated `.plan/plan.json` back to the PR branch
-
-Fork-safe artifact handoff flow:
+Use the artifact handoff pair:
 - `docs/examples/github-native-signed-approval-fork-request.yml`
 - `docs/examples/github-native-signed-approval-fork-sign.yml`
 
-This pattern avoids pushing to fork PR branches from the signing workflow.
+The PR workflow has read-only repository permission and no signing secret. It may use PR code to produce an unsigned plan and context, then uploads only those files as inert artifacts.
+
+The separate signing workflow must run trusted default-branch or immutable release code. It treats the downloaded JSON files as data, signs a copy, and never executes code or hooks from the PR. Any approval hook that the trusted Gatefile release invokes must also come from that trusted checkout. The workflow verifies that the signed artifact is trusted and ready, uploads it, and never pushes to the PR branch.
+
+## Rotate a key used with the removed same-repository example
+
+Anyone who copied or used the removed same-repository signing workflow should rotate its signing identity:
+
+1. Generate a replacement keypair outside the repository. Keep the new private key out of git and retain the printed key ID and public key PEM.
+2. Replace the GitHub Actions secret `GATEFILE_SIGNING_KEY_PEM` with the new private key at every repository, environment, or organization scope where the copied workflow used it. Do not keep the old value as a fallback.
+3. Update every applicable `gatefile.config.json` trust policy with the replacement `signers.trustedPublicKeys` entry and/or `signers.trustedKeyIds` entry. Roll out the replacement identity before removing the old one if uninterrupted verification is required.
+4. Revoke the old key after the replacement is deployed: remove its public key and key ID from every trust policy, delete remaining copies of its private key and GitHub secret value, and invalidate or re-approve outstanding artifacts according to local policy. In Gatefile, removing the old identity from the trust allowlist is what makes its later signatures untrusted.
+5. Verify the replacement by signing a fresh inert artifact through the fork-safe flow and running `gatefile verify-plan`. Require `approvalIdentity: "signed"`, `signerTrust.status: "trusted"`, `status: "ready"`, and the expected replacement key ID before retiring the rotation change.
+
+Repository status on 2026-07-12: The repository scan found no tracked private key, and the GitHub Actions repository-secret inventory returned no repository secrets. Therefore, no in-scope live key existed to rotate. This does not establish that copies outside this repository were rotated; operators who copied the removed workflow must complete the steps above in each affected scope.
 
 Also see:
 - `docs/github-pr-gate-example.md`
