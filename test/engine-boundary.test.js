@@ -45,16 +45,19 @@ function kernelModuleFor(file, moduleName) {
   return undefined;
 }
 
-function staticStringValue(node) {
+function staticStringValue(node, bindings = new Map()) {
   if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
     return node.text;
   }
+  if (ts.isIdentifier(node)) {
+    return bindings.get(node.text);
+  }
   if (ts.isParenthesizedExpression(node)) {
-    return staticStringValue(node.expression);
+    return staticStringValue(node.expression, bindings);
   }
   if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
-    const left = staticStringValue(node.left);
-    const right = staticStringValue(node.right);
+    const left = staticStringValue(node.left, bindings);
+    const right = staticStringValue(node.right, bindings);
     return left === undefined || right === undefined ? undefined : left + right;
   }
   return undefined;
@@ -99,6 +102,36 @@ function boundaryViolations(file, source) {
   );
   const violations = [];
   const namespaceImports = new Map();
+  const staticStrings = new Map();
+  const requireAliases = new Set(['require']);
+
+  let bindingsChanged;
+  do {
+    bindingsChanged = false;
+    function collectBindings(node) {
+      if (
+        ts.isVariableDeclaration(node) &&
+        ts.isIdentifier(node.name) &&
+        node.initializer !== undefined
+      ) {
+        const value = staticStringValue(node.initializer, staticStrings);
+        if (value !== undefined && !staticStrings.has(node.name.text)) {
+          staticStrings.set(node.name.text, value);
+          bindingsChanged = true;
+        }
+        if (
+          ts.isIdentifier(node.initializer) &&
+          requireAliases.has(node.initializer.text) &&
+          !requireAliases.has(node.name.text)
+        ) {
+          requireAliases.add(node.name.text);
+          bindingsChanged = true;
+        }
+      }
+      ts.forEachChild(node, collectBindings);
+    }
+    collectBindings(parsed);
+  } while (bindingsChanged);
 
   for (const statement of parsed.statements) {
     if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) {
@@ -136,12 +169,14 @@ function boundaryViolations(file, source) {
     if (ts.isCallExpression(node)) {
       const callee = node.expression;
       const [specifier] = node.arguments;
-      const moduleName = specifier === undefined ? undefined : staticStringValue(specifier);
+      const moduleName = specifier === undefined
+        ? undefined
+        : staticStringValue(specifier, staticStrings);
       if (
         moduleName !== undefined &&
         kernelModuleFor(file, moduleName) !== undefined
       ) {
-        if (ts.isIdentifier(callee) && callee.text === 'require') {
+        if (ts.isIdentifier(callee) && requireAliases.has(callee.text)) {
           violations.push(`${file}: CommonJS load from ${moduleName}`);
         }
         if (callee.kind === ts.SyntaxKind.ImportKeyword) {
@@ -236,5 +271,22 @@ test('boundary rejects normalized and statically composed kernel specifiers', ()
     'src/fixture.ts: value import approvePlan from ./planner/../planner.js',
     'src/fixture.ts: CommonJS load from ./applier.js',
     'src/fixture.ts: dynamic import from ./verify.js'
+  ]);
+});
+
+test('boundary follows static module and CommonJS loader aliases', () => {
+  const source = `
+    const applyKernel = "./applier";
+    const { applyPlan: rawApply } = require(applyKernel);
+    const load = require;
+    const { verifyPlan: rawVerify } = load("./verify");
+    const plannerKernel = "./planner";
+    import(plannerKernel).then((planner) => planner.approvePlan(plan));
+  `;
+
+  assert.deepEqual(boundaryViolations('src/fixture.ts', source), [
+    'src/fixture.ts: CommonJS load from ./applier',
+    'src/fixture.ts: CommonJS load from ./verify',
+    'src/fixture.ts: dynamic import from ./planner'
   ]);
 });
