@@ -24,7 +24,7 @@ run_step() {
   "$@"
 }
 
-echo "Planfile Public-Launch End-to-End Demo"
+echo "Gatefile Public-Launch End-to-End Demo"
 echo "Repo: $ROOT_DIR"
 echo "Disposable state: $DEMO_STATE_HOME"
 

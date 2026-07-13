@@ -10,6 +10,7 @@ const addFormats = require('ajv-formats').default;
 
 const {
   GatefileConfigError,
+  loadGatefileConfig,
   normalizeGatefileConfig
 } = require('../dist/config');
 const {
@@ -92,6 +93,21 @@ test('schema and runtime reject unknown config keys instead of failing policy op
       `runtime accepted ${JSON.stringify(config)}`
     );
   }
+});
+
+test('config discovery rejects symlink and oversized config artifacts', (t) => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'gatefile-config-artifacts-')));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const configPath = path.join(root, 'gatefile.config.json');
+  const victim = path.join(root, 'victim.json');
+  fs.writeFileSync(victim, '{}\n');
+  fs.symlinkSync(victim, configPath);
+
+  assert.throws(() => loadGatefileConfig(root), /symbolic link/i);
+
+  fs.unlinkSync(configPath);
+  fs.writeFileSync(configPath, Buffer.alloc(16 * 1024 * 1024 + 1, 0x20));
+  assert.throws(() => loadGatefileConfig(root), /16777216-byte read limit/i);
 });
 
 test('schema and runtime enforce policy, signer, and notification shapes consistently', () => {

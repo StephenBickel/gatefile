@@ -50,6 +50,10 @@ function blockingPolicyCommand(exitCode) {
   return `${JSON.stringify(process.execPath)} -e ${JSON.stringify(`process.exit(${exitCode})`)}`;
 }
 
+function shellCommandForTest(scriptPath) {
+  return `${JSON.stringify(process.execPath)} ${JSON.stringify(scriptPath)}`;
+}
+
 const baseDraft = {
   source: 'sdk-test',
   summary: 'SDK test plan',
@@ -77,6 +81,22 @@ test('createPlan returns a valid PlanFile and optionally writes to disk', async 
 
   const onDisk = JSON.parse(fs.readFileSync(outPath, 'utf-8'));
   assert.equal(onDisk.id, plan.id);
+});
+
+test('createPlan output is create-only and never follows a symlink', async (t) => {
+  const dir = tmpDir();
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const existing = path.join(dir, 'existing-plan.json');
+  const victim = path.join(dir, 'victim.json');
+  const symlink = path.join(dir, 'plan.json');
+  fs.writeFileSync(existing, 'keep-existing\n');
+  fs.writeFileSync(victim, 'keep-victim\n');
+  fs.symlinkSync(victim, symlink);
+
+  await assert.rejects(createPlan(baseDraft, { outPath: existing }), /create-only/i);
+  await assert.rejects(createPlan(baseDraft, { outPath: symlink }), /symbolic link|create-only/i);
+  assert.equal(fs.readFileSync(existing, 'utf8'), 'keep-existing\n');
+  assert.equal(fs.readFileSync(victim, 'utf8'), 'keep-victim\n');
 });
 
 test('inspectPlan returns structured report', async () => {
@@ -124,6 +144,53 @@ test('approvePlanFile + verifyPlanFile lifecycle', async () => {
   // After approval: ready
   const post = await verifyPlanFile(outPath);
   assert.equal(post.status, 'ready');
+});
+
+test('SDK plan readers reject symlinks and oversized artifacts', async (t) => {
+  const f = sdkFileFixture(t, 'gatefile-sdk-bounded-read-');
+  const victim = path.join(f.repoRoot, 'victim.json');
+  fs.writeFileSync(victim, '{}\n');
+  fs.symlinkSync(victim, f.planPath);
+
+  await assert.rejects(inspectPlan(f.planPath, { repoRoot: f.repoRoot }), /symbolic link/i);
+
+  fs.unlinkSync(f.planPath);
+  fs.writeFileSync(f.planPath, Buffer.alloc(16 * 1024 * 1024 + 1, 0x20));
+  await assert.rejects(
+    inspectPlan(f.planPath, { repoRoot: f.repoRoot }),
+    /16777216-byte read limit/i
+  );
+});
+
+test('approvePlanFile refuses a beforeApprove symlink swap without clobbering its target', async (t) => {
+  const f = sdkFileFixture(t, 'gatefile-sdk-approval-swap-');
+  const victim = path.join(f.repoRoot, 'victim.json');
+  const swapScript = path.join(f.repoRoot, 'swap-plan.cjs');
+  await createPlan(sdkFileDraft(f.targetPath), {
+    outPath: f.planPath,
+    repoRoot: f.repoRoot
+  });
+  fs.writeFileSync(victim, '{"keep":true}\n');
+  fs.writeFileSync(
+    swapScript,
+    `require('node:fs').unlinkSync(${JSON.stringify(f.planPath)});\n` +
+      `require('node:fs').symlinkSync(${JSON.stringify(victim)}, ${JSON.stringify(f.planPath)});\n`
+  );
+
+  await assert.rejects(
+    approvePlanFile(f.planPath, {
+      approvedBy: 'sdk-swap-reviewer',
+      repoRoot: f.repoRoot,
+      config: {
+        hooks: {
+          beforeApprove: { command: shellCommandForTest(swapScript) }
+        }
+      }
+    }),
+    /symbolic link|changed since it was read/i
+  );
+  assert.equal(fs.readFileSync(victim, 'utf8'), '{"keep":true}\n');
+  assert.equal(fs.lstatSync(f.planPath).isSymbolicLink(), true);
 });
 
 test('approvePlanFile validates malformed input before reading repository context', async (t) => {

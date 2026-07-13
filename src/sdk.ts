@@ -1,4 +1,3 @@
-import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { GatefileEngine } from "./engine";
 import type { InspectReport } from "./inspect";
@@ -12,6 +11,11 @@ import type {
   RollbackReport,
   VerifyPlanReport
 } from "./types";
+import {
+  readJsonArtifact,
+  writeJsonArtifactAtomic
+} from "./artifact-io";
+import type { JsonArtifactReadResult } from "./artifact-io";
 
 // ── Option types ──────────────────────────────────────────────
 
@@ -77,14 +81,12 @@ export type { ApplyReport, DryRunReport };
 
 // ── Helpers ───────────────────────────────────────────────────
 
-function readPlan(planPath: string): PlanFile {
-  const full = resolve(planPath);
-  return JSON.parse(readFileSync(full, "utf-8")) as PlanFile;
+function readPlan(planPath: string): JsonArtifactReadResult<PlanFile> {
+  return readJsonArtifact<PlanFile>(planPath, { label: "Plan file" });
 }
 
-function writePlan(planPath: string, plan: PlanFile): void {
-  const full = resolve(planPath);
-  writeFileSync(full, JSON.stringify(plan, null, 2) + "\n", "utf-8");
+function writeNewPlan(planPath: string, plan: PlanFile): void {
+  writeJsonArtifactAtomic(planPath, plan, { label: "Plan output" });
 }
 
 // ── Public API ────────────────────────────────────────────────
@@ -103,7 +105,7 @@ export async function createPlan(
   });
   const plan = engine.createPlan(draft);
   if (options?.outPath) {
-    writePlan(options.outPath, plan);
+    writeNewPlan(options.outPath, plan);
   }
   return plan;
 }
@@ -115,7 +117,7 @@ export async function inspectPlan(
   planPath: string,
   options?: InspectOptions
 ): Promise<InspectResult> {
-  const plan = readPlan(planPath);
+  const plan = readPlan(planPath).value;
   const engine = new GatefileEngine({
     repoRoot: options?.repoRoot,
     repositoryId: options?.repositoryId,
@@ -132,7 +134,8 @@ export async function approvePlan(
   planPath: string,
   options?: ApproveOptions
 ): Promise<ApprovalResult> {
-  const plan = readPlan(planPath);
+  const planRead = readPlan(planPath);
+  const plan = planRead.value;
   validatePlanFile(plan);
   const engine = new GatefileEngine({
     repoRoot: options?.repoRoot,
@@ -144,7 +147,10 @@ export async function approvePlan(
     signingPrivateKeyPem: options?.signingPrivateKeyPem,
     signingKeyId: options?.signingKeyId
   });
-  writePlan(planPath, approved);
+  writeJsonArtifactAtomic(planPath, approved, {
+    expectedRevision: planRead.revision,
+    label: "Plan file"
+  });
   return {
     plan: approved,
     approvedPlanHash: approved.integrity.planHash
@@ -158,7 +164,7 @@ export async function verifyPlan(
   planPath: string,
   options?: VerifyOptions
 ): Promise<VerifyResult> {
-  const plan = readPlan(planPath);
+  const plan = readPlan(planPath).value;
   const engine = new GatefileEngine({
     repoRoot: options?.repoRoot,
     repositoryId: options?.repositoryId,
@@ -174,7 +180,7 @@ export async function applyPlan(
   planPath: string,
   options?: ApplyOptions
 ): Promise<SdkApplyReport | DryRunReport> {
-  const plan = readPlan(planPath);
+  const plan = readPlan(planPath).value;
   const engine = new GatefileEngine({
     repoRoot: options?.repoRoot,
     repositoryId: options?.repositoryId,

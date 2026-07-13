@@ -193,7 +193,7 @@ operators must use a fresh state home because immediate same-path inode reuse is
 indistinguishable from the original checkout.
 
 Gatefile's portable Node implementation is symlink-resistant on local POSIX
-filesystems, but Node 18 does not expose descriptor-relative `openat2`,
+filesystems, but portable Node.js does not expose descriptor-relative `openat2`,
 `renameat`, or `unlinkat` operations. An actor with permission to mutate the
 directory namespace can still race an ancestor-directory swap between the final
 identity check and a path-based mutation. Gatefile rejects group/world-writable

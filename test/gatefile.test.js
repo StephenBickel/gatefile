@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { generateKeyPairSync } = require('node:crypto');
-const { execFileSync } = require('node:child_process');
+const { execFileSync, spawnSync } = require('node:child_process');
 
 const {
   createPlanFromDraft,
@@ -514,6 +514,50 @@ test('CLI verify-plan enforces signer trust policy from gatefile.config.json', (
   assert.equal(report.status, 'not-ready');
   assert.equal(report.signerTrust.status, 'unsigned');
   assert.match(report.blockers.join('\n'), /Signer trust policy is configured/);
+});
+
+test('CLI plan commands reject symlink and oversized plan artifacts', (t) => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'gatefile-cli-artifacts-')));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const victim = path.join(root, 'victim.json');
+  const planPath = path.join(root, 'plan.json');
+  const pending = createPlanFromDraft(makeDraft(), { repoRoot: root });
+  const victimBytes = `${JSON.stringify(pending, null, 2)}\n`;
+  fs.writeFileSync(victim, victimBytes);
+  fs.symlinkSync(victim, planPath);
+
+  const symlinkResult = spawnSync(
+    process.execPath,
+    [CLI_PATH, 'approve-plan', planPath, '--by', 'cli-reviewer'],
+    { cwd: root, encoding: 'utf8' }
+  );
+  assert.equal(symlinkResult.status, 1);
+  assert.match(symlinkResult.stderr, /symbolic link/i);
+  assert.equal(fs.readFileSync(victim, 'utf8'), victimBytes);
+
+  fs.unlinkSync(planPath);
+  fs.writeFileSync(planPath, Buffer.alloc(16 * 1024 * 1024 + 1, 0x20));
+  const oversizedResult = spawnSync(
+    process.execPath,
+    [CLI_PATH, 'inspect-plan', planPath],
+    { cwd: root, encoding: 'utf8' }
+  );
+  assert.equal(oversizedResult.status, 1);
+  assert.match(oversizedResult.stderr, /16777216-byte read limit/i);
+
+  const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'gatefile-cli-parent-link-')));
+  t.after(() => fs.rmSync(outside, { recursive: true, force: true }));
+  const draftPath = path.join(root, 'draft.json');
+  fs.writeFileSync(draftPath, `${JSON.stringify(makeDraft(), null, 2)}\n`);
+  fs.symlinkSync(outside, path.join(root, '.plan'));
+  const ancestorResult = spawnSync(
+    process.execPath,
+    [CLI_PATH, 'create-plan', '--from', draftPath, '--out', '.plan/created.json'],
+    { cwd: root, encoding: 'utf8' }
+  );
+  assert.equal(ancestorResult.status, 1);
+  assert.match(ancestorResult.stderr, /parent contains a symbolic link/i);
+  assert.equal(fs.existsSync(path.join(outside, 'created.json')), false);
 });
 
 test('CLI lint-config reports trust policy state', (t) => {

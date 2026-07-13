@@ -81,8 +81,8 @@ test('root roadmap does not advertise deferred features as near-term work', () =
     [
       '**Status: Experimental alpha — not production-ready.**',
       'Feature expansion is frozen',
-      '## Deferred: Public Launch (MVP)',
-      '## Deferred post-alpha backlog'
+      '## 0.3 Alpha Release Boundary',
+      '## Deferred Post-Alpha Work'
     ],
     'root roadmap'
   );
@@ -92,7 +92,7 @@ test('freeze language uses the exact release stabilization category', () => {
   for (const relativePath of ['README.md', 'TODO.md', 'docs/product-roadmap.md']) {
     const contents = read(relativePath);
 
-    assert.match(contents, /release stabilization/i, `${relativePath} must name release stabilization`);
+    assert.match(contents, /release\s+stabilization/i, `${relativePath} must name release stabilization`);
     assert.doesNotMatch(contents, /\brelease work\b/i, `${relativePath} must not use generic release work`);
   }
 });

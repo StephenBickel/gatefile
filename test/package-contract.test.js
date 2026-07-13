@@ -16,12 +16,17 @@ const PACKED_DOCUMENTATION_FILES = [
   'docs/examples/github-native-signed-approval-fork-sign.yml',
   'docs/examples/github-pr-gate.inlined.yml',
   'docs/examples/github-pr-gate.yml',
-  'docs/examples/github-pr-review-comment.yml',
   'docs/github-pr-gate-example.md',
+  'docs/migrating-to-0.3.md',
   'docs/product-roadmap.md',
   'docs/signed-approvals.md',
   'docs/use-cases.md'
 ];
+
+const PACKED_EXAMPLE_FILES = fs.readdirSync(path.join(packageRoot, 'examples'))
+  .filter((name) => name.endsWith('.json'))
+  .map((name) => `examples/${name}`)
+  .sort();
 
 const PUBLIC_RUNTIME_EXPORTS = [
   'APPLY_RECEIPT_WORST_CASE_BUDGET_BYTES',
@@ -108,8 +113,10 @@ function createPackedConsumer(t) {
   for (const entry of [
     'LICENSE',
     'README.md',
-    'demo.gif',
+    'CHANGELOG.md',
+    'SECURITY.md',
     'docs',
+    'examples',
     'package.json',
     'schema',
     'src',
@@ -133,8 +140,10 @@ function createPackedConsumer(t) {
   const expectedPackedFiles = [
     'LICENSE',
     'README.md',
-    'demo.gif',
+    'CHANGELOG.md',
+    'SECURITY.md',
     ...PACKED_DOCUMENTATION_FILES,
+    ...PACKED_EXAMPLE_FILES,
     'package.json',
     'schema/gatefile.config.schema.json',
     'schema/gatefile.schema.json',
@@ -144,6 +153,10 @@ function createPackedConsumer(t) {
     metadata.files.map((file) => file.path).sort(),
     expectedPackedFiles,
     'the tarball must contain only reviewed runtime artifacts'
+  );
+  assert.ok(
+    metadata.size < 250_000,
+    `compressed package grew beyond the 250 kB budget: ${metadata.size} bytes`
   );
 
   const consumer = path.join(root, 'consumer');
@@ -257,6 +270,30 @@ test('the installed tarball enforces the reviewed package-specifier contract', (
   const cli = run(path.join(consumer, 'node_modules', '.bin', 'gatefile'), [], { cwd: consumer });
   assert.equal(cli.status, 1, cli.stderr);
   assert.match(cli.stdout, /gatefile commands:/);
+
+  const planDir = path.join(consumer, '.plan');
+  fs.mkdirSync(planDir);
+  fs.copyFileSync(
+    path.join(installedPackageRoot, 'examples', 'coding-agent-plan.json'),
+    path.join(planDir, 'coding-agent-plan.json')
+  );
+  const documentedFlow = run(
+    path.join(consumer, 'node_modules', '.bin', 'gatefile'),
+    [
+      'create-plan',
+      '--from',
+      path.join(planDir, 'coding-agent-plan.json'),
+      '--out',
+      path.join(planDir, 'agent-demo.json')
+    ],
+    { cwd: consumer }
+  );
+  assert.equal(documentedFlow.status, 0, documentedFlow.stderr);
+  const documentedPlan = JSON.parse(
+    fs.readFileSync(path.join(planDir, 'agent-demo.json'), 'utf8')
+  );
+  assert.equal(documentedPlan.version, '2');
+  assert.equal(documentedPlan.approval.status, 'pending');
 
   const initialize = {
     jsonrpc: '2.0',
