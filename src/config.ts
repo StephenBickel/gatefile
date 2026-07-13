@@ -338,7 +338,8 @@ export function normalizeGatefileConfig(rawConfig: unknown, sourceLabel?: string
         } catch {
           issues.push({
             path: `signers.trustedPublicKeys[${i}]`,
-            message: "must be a canonical Ed25519 SPKI public PEM"
+            message:
+              "must be a valid PEM-encoded public key in canonical Ed25519 SPKI form"
           });
         }
       });
