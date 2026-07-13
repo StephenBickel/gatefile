@@ -69,6 +69,7 @@ import type {
   SafeFsContext,
   SignedPathMetadata
 } from "./safe-fs";
+import { sanitizedGitEnvironment } from "./git-environment";
 
 export interface StateRuntimeOptions {
   repoRoot?: string;
@@ -124,6 +125,7 @@ export function getRepoRoot(repoRoot?: string): string {
 function gitOutput(repoRoot: string, args: string[]): string | undefined {
   const result = spawnSync("git", ["-C", repoRoot, ...args], {
     encoding: "utf8",
+    env: sanitizedGitEnvironment(),
     shell: false,
     timeout: 5_000
   });

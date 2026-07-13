@@ -1,5 +1,6 @@
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { Precondition } from "./types";
+import { sanitizedGitEnvironment } from "./git-environment";
 
 export interface PreconditionResult {
   ok: boolean;
@@ -7,28 +8,43 @@ export interface PreconditionResult {
   failed?: Precondition;
 }
 
-function getCurrentBranch(): string {
-  return execSync("git rev-parse --abbrev-ref HEAD", { encoding: "utf-8" }).trim();
+export interface PreconditionOptions {
+  cwd?: string;
 }
 
-function isGitClean(): boolean {
-  const out = execSync("git status --porcelain -- . ':(exclude).gatefile/state'", {
-    encoding: "utf-8"
+function getCurrentBranch(cwd?: string): string {
+  return execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
+    cwd,
+    encoding: "utf8",
+    env: sanitizedGitEnvironment(),
+    shell: false
+  }).trim();
+}
+
+function isGitClean(cwd?: string): boolean {
+  const out = execFileSync("git", ["status", "--porcelain", "--", ".", ":(exclude).gatefile/state"], {
+    cwd,
+    encoding: "utf8",
+    env: sanitizedGitEnvironment(),
+    shell: false
   }).trim();
   return out.length === 0;
 }
 
-export function checkPreconditions(preconditions: Precondition[]): PreconditionResult {
+export function checkPreconditions(
+  preconditions: Precondition[],
+  options: PreconditionOptions = {}
+): PreconditionResult {
   for (const p of preconditions) {
     if (p.kind === "git_clean") {
-      if (!isGitClean()) {
+      if (!isGitClean(options.cwd)) {
         return { ok: false, message: "Git working tree is not clean", failed: p };
       }
     }
 
     if (p.kind === "branch_is") {
       const expected = p.value ?? "";
-      const actual = getCurrentBranch();
+      const actual = getCurrentBranch(options.cwd);
       if (actual !== expected) {
         return {
           ok: false,

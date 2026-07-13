@@ -168,9 +168,12 @@ export function runPolicyHook(
   const hookConfig = config?.hooks?.[event];
   if (!hookConfig?.command) return;
 
+  const cwd = hookConfig.cwd
+    ? resolve(context.repoRoot, hookConfig.cwd)
+    : context.repoRoot;
   const { execSync } = require("node:child_process") as typeof import("node:child_process");
   try {
-    execSync(hookConfig.command, { stdio: "pipe" });
+    execSync(hookConfig.command, { cwd, stdio: "pipe" });
   } catch {
     throw new Error(`Policy hook ${event} blocked execution`);
   }

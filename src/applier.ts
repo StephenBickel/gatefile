@@ -959,12 +959,13 @@ export function applyPlan(plan: PlanFile, options: PlanRuntimeOptions = {}): App
     throw new Error(`Plan failed verification: ${verification.blockers.join("; ")}`);
   }
 
-  const preflight = checkPreconditions(plan.preconditions);
+  const repoRoot = getRepoRoot(options.repoRoot);
+  const preflight = checkPreconditions(plan.preconditions, { cwd: repoRoot });
   if (!preflight.ok) {
     throw new Error(`Preconditions failed: ${preflight.message}`);
   }
 
-  return applyCore(plan, options);
+  return applyCore(plan, { ...options, repoRoot });
 }
 
 export function rollbackApply(receiptId: string, options: PlanRuntimeOptions = {}): RollbackReport {

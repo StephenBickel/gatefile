@@ -20,6 +20,46 @@ function makeFixture(t, prefix) {
   return { repoRoot, otherRepoRoot, stateHome };
 }
 
+function commitOnBranch(repoRoot, branch) {
+  execFileSync('git', ['-C', repoRoot, 'checkout', '-q', '-b', branch]);
+  execFileSync('git', [
+    '-C',
+    repoRoot,
+    '-c',
+    'user.name=Gatefile Tests',
+    '-c',
+    'user.email=gatefile-tests@example.invalid',
+    'commit',
+    '--allow-empty',
+    '-q',
+    '-m',
+    'initial commit'
+  ]);
+}
+
+function runWithProcessContext(cwd, environment, action) {
+  const originalCwd = process.cwd();
+  const originalEnvironment = new Map(
+    Object.keys(environment).map((key) => [key, process.env[key]])
+  );
+  process.chdir(cwd);
+  try {
+    for (const [key, value] of Object.entries(environment)) {
+      process.env[key] = value;
+    }
+    return action();
+  } finally {
+    for (const [key, value] of originalEnvironment) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+    process.chdir(originalCwd);
+  }
+}
+
 function makeDraft(summary = 'Exercise the policy-aware engine') {
   return {
     source: 'engine-test',
@@ -92,6 +132,81 @@ test('GatefileEngine context binding cannot be replaced to redirect authority', 
 
   assert.equal(engine.context, originalContext);
   assert.equal(engine.createPlan(makeDraft('Preserve authority')).context.repositoryId, 'repo:engine-test');
+});
+
+test('GatefileEngine pins branch preconditions despite ambient cwd and Git routing', (t) => {
+  const { repoRoot, otherRepoRoot, stateHome } = makeFixture(
+    t,
+    'gatefile-engine-branch-precondition-'
+  );
+  commitOnBranch(repoRoot, 'engine-branch');
+  commitOnBranch(otherRepoRoot, 'other-branch');
+  const engine = new GatefileEngine({
+    repoRoot,
+    repositoryId: 'repo:engine-branch-test',
+    stateHome
+  });
+  const plan = engine.approvePlan(
+    engine.createPlan({
+      ...makeDraft('Check the pinned branch'),
+      preconditions: [{ kind: 'branch_is', value: 'engine-branch' }]
+    }),
+    'reviewer'
+  );
+
+  const report = runWithProcessContext(
+    otherRepoRoot,
+    {
+      GIT_DIR: path.join(otherRepoRoot, '.git'),
+      GIT_WORK_TREE: otherRepoRoot
+    },
+    () => engine.applyPlan(plan)
+  );
+
+  assert.equal(report.success, true);
+  assert.equal(
+    fs.readFileSync(path.join(repoRoot, 'engine-output.txt'), 'utf8'),
+    'created by the engine test\n'
+  );
+  assert.equal(fs.existsSync(path.join(otherRepoRoot, 'engine-output.txt')), false);
+});
+
+test('GatefileEngine pins clean-tree preconditions despite ambient cwd and Git routing', (t) => {
+  const { repoRoot, otherRepoRoot, stateHome } = makeFixture(
+    t,
+    'gatefile-engine-clean-precondition-'
+  );
+  commitOnBranch(repoRoot, 'engine-branch');
+  commitOnBranch(otherRepoRoot, 'other-branch');
+  fs.writeFileSync(path.join(otherRepoRoot, 'dirty.txt'), 'ambient repository is dirty\n', 'utf8');
+  const engine = new GatefileEngine({
+    repoRoot,
+    repositoryId: 'repo:engine-clean-test',
+    stateHome
+  });
+  const plan = engine.approvePlan(
+    engine.createPlan({
+      ...makeDraft('Check the pinned working tree'),
+      preconditions: [{ kind: 'git_clean' }]
+    }),
+    'reviewer'
+  );
+
+  const report = runWithProcessContext(
+    otherRepoRoot,
+    {
+      GIT_DIR: path.join(otherRepoRoot, '.git'),
+      GIT_WORK_TREE: otherRepoRoot
+    },
+    () => engine.applyPlan(plan)
+  );
+
+  assert.equal(report.success, true);
+  assert.equal(
+    fs.readFileSync(path.join(repoRoot, 'engine-output.txt'), 'utf8'),
+    'created by the engine test\n'
+  );
+  assert.equal(fs.existsSync(path.join(otherRepoRoot, 'engine-output.txt')), false);
 });
 
 test('GatefileEngine reloads the default repository config for each operation', (t) => {
