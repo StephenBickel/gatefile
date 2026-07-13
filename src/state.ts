@@ -69,6 +69,14 @@ import type {
   SafeFsContext,
   SignedPathMetadata
 } from "./safe-fs";
+import {
+  sanitizedGitEnvironment,
+  TrustedGitEnvironmentOptions
+} from "./git-environment";
+import {
+  isRuntimeRepoRootPinned,
+  pinnedRepoRootState
+} from "./pinned-runtime";
 
 export interface StateRuntimeOptions {
   repoRoot?: string;
@@ -116,14 +124,52 @@ function normalizeStateOptions(input: StateRuntimeInput): StateRuntimeOptions {
   return input ?? {};
 }
 
-export function getRepoRoot(repoRoot?: string): string {
+export function getRepoRoot(
+  repoRoot?: string,
+  gitRuntime: TrustedGitEnvironmentOptions = {}
+): string {
   const requestedRoot = resolve(repoRoot ?? process.cwd());
-  return stateRepositoryRoot(requestedRoot);
+  return stateRepositoryRoot(requestedRoot, gitRuntime);
 }
 
-function gitOutput(repoRoot: string, args: string[]): string | undefined {
-  const result = spawnSync("git", ["-C", repoRoot, ...args], {
+/** Preserve an already-selected repository root without rediscovering Git topology. */
+export function getPinnedRepoRoot(repoRoot: string): string {
+  return realpathSync(resolve(repoRoot));
+}
+
+function runtimeRepoRoot(options: StateRuntimeOptions): string {
+  if (isRuntimeRepoRootPinned(options)) {
+    if (options.repoRoot === undefined) {
+      throw new Error("A canonical repository root must be provided explicitly");
+    }
+    return getPinnedRepoRoot(options.repoRoot);
+  }
+  return getRepoRoot(options.repoRoot, gitRuntimeFor(options));
+}
+
+function gitRuntimeFor(options: object): TrustedGitEnvironmentOptions {
+  const pinned = pinnedRepoRootState(options);
+  return pinned === undefined
+    ? {}
+    : {
+        gitExecutable: pinned.gitExecutable,
+        pathEnvironment: pinned.pathEnvironment
+      };
+}
+
+function gitOutput(
+  repoRoot: string,
+  args: string[],
+  pinnedRoot = false,
+  gitRuntime: TrustedGitEnvironmentOptions = {}
+): string | undefined {
+  const environment = sanitizedGitEnvironment(process.env, {
+    ...gitRuntime,
+    ...(pinnedRoot ? { ceilingDirectory: dirname(repoRoot) } : {})
+  });
+  const result = spawnSync(gitRuntime.gitExecutable ?? "git", ["-C", repoRoot, ...args], {
     encoding: "utf8",
+    env: environment,
     shell: false,
     timeout: 5_000
   });
@@ -151,14 +197,62 @@ function normalizedRemoteIdentity(remote: string): string {
 /** Stable, non-secret identity for binding a plan to its intended repository. */
 export function repositoryIdForRoot(repoRoot?: string): string {
   const requestedRoot = getRepoRoot(repoRoot);
-  const remote = gitOutput(requestedRoot, ["config", "--get", "remote.origin.url"]);
+  return repositoryIdForCanonicalRoot(requestedRoot, {});
+}
+
+/** Derive identity from an already-selected root without rediscovering Git topology. */
+export function repositoryIdForPinnedRoot(
+  repoRoot: string,
+  gitRuntime: TrustedGitEnvironmentOptions = {}
+): string {
+  return repositoryIdForCanonicalRoot(getPinnedRepoRoot(repoRoot), gitRuntime);
+}
+
+function repositoryIdForCanonicalRoot(
+  requestedRoot: string,
+  gitRuntime: TrustedGitEnvironmentOptions
+): string {
+  const remote = gitOutput(
+    requestedRoot,
+    ["config", "--local", "--get", "remote.origin.url"],
+    true,
+    gitRuntime
+  );
   return remote
     ? `git:${normalizedRemoteIdentity(remote)}`
     : `file:${requestedRoot}`;
 }
 
-function stateRepositoryRoot(requestedRoot: string): string {
-  const gitRoot = gitOutput(requestedRoot, ["rev-parse", "--show-toplevel"]);
+/** Whether the selected root itself is a Git worktree root, without parent discovery. */
+export function isGitRepositoryRoot(
+  repoRoot: string,
+  gitRuntime: TrustedGitEnvironmentOptions = {}
+): boolean {
+  const pinnedRoot = getPinnedRepoRoot(repoRoot);
+  const discovered = gitOutput(
+    pinnedRoot,
+    ["rev-parse", "--show-toplevel"],
+    true,
+    gitRuntime
+  );
+  if (discovered === undefined) return false;
+  try {
+    return realpathSync(discovered) === pinnedRoot;
+  } catch {
+    return false;
+  }
+}
+
+function stateRepositoryRoot(
+  requestedRoot: string,
+  gitRuntime: TrustedGitEnvironmentOptions = {}
+): string {
+  const gitRoot = gitOutput(
+    requestedRoot,
+    ["rev-parse", "--show-toplevel"],
+    false,
+    gitRuntime
+  );
   return gitRoot ? realpathSync(gitRoot) : realpathSync(requestedRoot);
 }
 
@@ -171,9 +265,12 @@ function recordRepository(binding: StateRepositoryBinding): StateRecordRepositor
 
 export function getStateLayout(input: StateRuntimeInput = {}): StateLayout {
   const options = normalizeStateOptions(input);
-  const requestedRoot = getRepoRoot(options.repoRoot);
-  const repositoryId = options.repositoryId ?? repositoryIdForRoot(requestedRoot);
-  const binding = createStateRepositoryBinding(stateRepositoryRoot(requestedRoot), repositoryId);
+  const requestedRoot = runtimeRepoRoot(options);
+  const repositoryId = options.repositoryId ?? repositoryIdForCanonicalRoot(
+    requestedRoot,
+    gitRuntimeFor(options)
+  );
+  const binding = createStateRepositoryBinding(requestedRoot, repositoryId);
   const stateHome = resolveStateHome(options.stateHome);
   const recordsRoot = stateRecordsRoot(binding, stateHome);
   return {
@@ -777,7 +874,7 @@ export function rollbackByReceipt(
 
   const roots = [...new Set(chain.receipt.rollbackEntries.map((entry) => entry.allowedRoot))];
   const context = roots.length > 0
-    ? createSafeFsContext(getRepoRoot(options.repoRoot), roots, [chain.layout.stateHome])
+    ? createSafeFsContext(runtimeRepoRoot(options), roots, [chain.layout.stateHome])
     : undefined;
 
   const rollbackDecisions = context

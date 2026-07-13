@@ -3,8 +3,9 @@ import { PLAN_VERSION, PlanContext, PlanFile } from "./types";
 import { scoreRisk } from "./risk";
 import { computePlanHash, withComputedIntegrity } from "./hash";
 import { createApprovalAttestation } from "./attestation";
-import { riskProfilesEqual, validatePlanDraft, validatePlanFile } from "./validation";
+import { validatePlanDraft, validatePlanFile } from "./validation";
 import { repositoryIdForRoot } from "./state";
+import { validatePlanForApproval } from "./approval-validation";
 
 export type PlanDraft = Omit<
   PlanFile,
@@ -65,11 +66,7 @@ export function approvePlan(
   approvedBy: string,
   options: ApprovePlanOptions = {}
 ): PlanFile {
-  validatePlanFile(plan);
-  const recomputedRisk = scoreRisk(plan.operations);
-  if (!riskProfilesEqual(plan.risk, recomputedRisk)) {
-    throw new Error("Cannot approve plan: stored risk does not match risk recomputed from operations");
-  }
+  validatePlanForApproval(plan, approvedBy, options);
   const currentHash = computePlanHash(plan);
   const shouldSign = Boolean(options.signingPrivateKeyPem);
   if (

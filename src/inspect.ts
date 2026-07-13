@@ -2,8 +2,9 @@ import { computePlanHash } from "./hash";
 import { GatefileConfig, PlanFile } from "./types";
 import { verifyPlan } from "./verify";
 import { dependencyStatus } from "./state";
+import { inheritPinnedRepoRoot } from "./pinned-runtime";
 
-interface InspectOptions {
+export interface InspectOptions {
   repoRoot?: string;
   repositoryId?: string;
   stateHome?: string;
@@ -40,11 +41,11 @@ export function buildInspectReport(plan: PlanFile, options: InspectOptions = {})
   const approvalBound =
     plan.approval.status === "approved" &&
     plan.approval.approvedPlanHash === currentHash;
-  const dependencies = dependencyStatus(plan, {
+  const dependencies = dependencyStatus(plan, inheritPinnedRepoRoot(options, {
     repoRoot: options.repoRoot,
     repositoryId: options.repositoryId ?? plan.context?.repositoryId,
     stateHome: options.stateHome
-  });
+  }));
 
   return {
     id: plan.id,

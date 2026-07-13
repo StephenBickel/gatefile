@@ -1,10 +1,9 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { approvePlan } from "./planner";
-import { buildInspectReport, formatInspectSummary } from "./inspect";
+import { GatefileEngine } from "./engine";
 import { scoreRisk } from "./risk";
 import { formatCommandInvocation, validatePlanCommandContract } from "./command";
-import { CommandOperation, FileOperation, PlanFile } from "./types";
+import type { CommandOperation, FileOperation, PlanFile } from "./types";
 
 // ── ANSI helpers ──────────────────────────────────────────────────────
 
@@ -296,15 +295,23 @@ function jumpToNextOfKind(state: TUIState, kind: "file" | "command"): void {
 
 // ── Main entry point ─────────────────────────────────────────────────
 
-export async function reviewPlan(planPath: string): Promise<void> {
+export interface ReviewPlanOptions {
+  engine?: GatefileEngine;
+}
+
+export async function reviewPlan(
+  planPath: string,
+  options: ReviewPlanOptions = {}
+): Promise<void> {
   const fullPath = resolve(planPath);
   const plan: PlanFile = JSON.parse(readFileSync(fullPath, "utf-8"));
   validatePlanCommandContract(plan);
+  const engine = options.engine ?? new GatefileEngine();
 
   // Non-TTY fallback: print inspect output and exit
   if (!process.stdin.isTTY) {
-    const report = buildInspectReport(plan);
-    console.log(formatInspectSummary(plan, report));
+    const report = engine.inspectPlan(plan);
+    console.log(engine.formatInspectPlan(plan, report));
     return;
   }
 
@@ -407,7 +414,9 @@ export async function reviewPlan(planPath: string): Promise<void> {
         cleanup();
         stdout.removeListener("resize", onResize);
         try {
-          const approved = approvePlan(state.plan, process.env.USER ?? "reviewer");
+          const approved = engine.approvePlan(state.plan, process.env.USER ?? "reviewer", {
+            planPath: state.planPath
+          });
           writeFileSync(state.planPath, JSON.stringify(approved, null, 2) + "\n", "utf-8");
           const hash = approved.approval.approvedPlanHash;
           console.log(`${GREEN}${BOLD}Plan approved.${RESET}`);

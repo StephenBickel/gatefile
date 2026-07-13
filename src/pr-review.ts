@@ -1,6 +1,6 @@
-import { buildInspectReport, InspectReport } from "./inspect";
-import { DryRunReport, GatefileConfig, PlanFile, VerifyPlanReport } from "./types";
-import { verifyPlan } from "./verify";
+import { GatefileEngine } from "./engine";
+import type { InspectReport } from "./inspect";
+import type { DryRunReport, GatefileConfig, PlanFile, VerifyPlanReport } from "./types";
 
 export interface PRReviewCommentInputs {
   plan: PlanFile;
@@ -8,6 +8,10 @@ export interface PRReviewCommentInputs {
   verifyReport?: VerifyPlanReport;
   dryRunReport?: DryRunReport;
   config?: GatefileConfig;
+  engine?: GatefileEngine;
+  repoRoot?: string;
+  repositoryId?: string;
+  stateHome?: string;
 }
 
 function trunc(value: string, max: number): string {
@@ -68,8 +72,18 @@ function renderDryRunHighlights(dryRun: DryRunReport): string[] {
 }
 
 export function renderPRReviewComment(inputs: PRReviewCommentInputs): string {
-  const inspect = inputs.inspectReport ?? buildInspectReport(inputs.plan);
-  const verify = inputs.verifyReport ?? verifyPlan(inputs.plan, { config: inputs.config });
+  let engine = inputs.engine;
+  if (!inputs.inspectReport || !inputs.verifyReport) {
+    engine ??= new GatefileEngine({
+      repoRoot: inputs.repoRoot,
+      repositoryId: inputs.repositoryId,
+      stateHome: inputs.stateHome,
+      config: inputs.config
+    });
+  }
+
+  const inspect = inputs.inspectReport ?? engine!.inspectPlan(inputs.plan);
+  const verify = inputs.verifyReport ?? engine!.verifyPlan(inputs.plan);
   const dryRun = inputs.dryRunReport;
 
   const lines = [

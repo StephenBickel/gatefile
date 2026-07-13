@@ -1,5 +1,5 @@
 import { CommandOperation, ExecutionConfig, FileAction, FileOperation, PLAN_VERSION, Precondition } from "./types";
-import { PlanDraft } from "./planner";
+import type { PlanDraft } from "./planner";
 import { validateCommandOperationValue } from "./command";
 import { validatePlanDraft } from "./validation";
 

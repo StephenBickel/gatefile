@@ -2,9 +2,10 @@ import { exec } from "node:child_process";
 import { request as httpsRequest } from "node:https";
 import { request as httpRequest } from "node:http";
 import { readFileSync, existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { URL } from "node:url";
 import { PlanFile, GatefileConfig } from "./types";
+import { sanitizedGitEnvironment } from "./git-environment";
 
 // ── Config types ──────────────────────────────────────────────
 
@@ -163,14 +164,31 @@ export function runPolicyHook(
   config: GatefileConfig | undefined,
   event: "beforeApply" | "beforeApprove",
   plan: PlanFile,
-  context: { repoRoot: string; planPath?: string }
+  context: {
+    repoRoot: string;
+    planPath?: string;
+    gitExecutable?: string;
+    pathEnvironment?: string;
+  }
 ): void {
   const hookConfig = config?.hooks?.[event];
   if (!hookConfig?.command) return;
 
+  const cwd = hookConfig.cwd
+    ? resolve(context.repoRoot, hookConfig.cwd)
+    : context.repoRoot;
+  const environment = sanitizedGitEnvironment(process.env, {
+    ceilingDirectory: dirname(context.repoRoot),
+    gitExecutable: context.gitExecutable,
+    pathEnvironment: context.pathEnvironment
+  });
   const { execSync } = require("node:child_process") as typeof import("node:child_process");
   try {
-    execSync(hookConfig.command, { stdio: "pipe" });
+    execSync(hookConfig.command, {
+      cwd,
+      env: environment,
+      stdio: "pipe"
+    });
   } catch {
     throw new Error(`Policy hook ${event} blocked execution`);
   }

@@ -21,9 +21,11 @@ export {
   inspectPlan,
   approvePlan as approvePlanFile,
   verifyPlan as verifyPlanFile,
-  applyPlan as applyPlanFile
+  applyPlan as applyPlanFile,
+  rollbackApply as rollbackApplyFile
 } from "./sdk";
 export type {
+  SdkEngineOptions,
   CreateOptions,
   InspectOptions,
   ApproveOptions,
@@ -38,6 +40,22 @@ export type {
 export { generateApprovalAttestationKeyPair, createApprovalAttestation, verifyApprovalAttestation } from "./attestation";
 export { normalizeGatefileConfig } from "./config";
 export { startMcpServer } from "./mcp";
+export { GatefileEngine } from "./engine";
+export type {
+  GatefileEngineOptions,
+  GatefileEngineContext,
+  EnginePlanOptions,
+  EngineApproveOptions
+} from "./engine";
+export {
+  createPlanFromDraft,
+  approvePlan,
+  verifyPlan,
+  buildInspectReport,
+  previewPlan,
+  applyPlan,
+  rollbackApply
+} from "./engine-api";
 
 import { repositoryIdForRoot as resolveRepositoryIdForRoot } from "./state";
 

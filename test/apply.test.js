@@ -146,6 +146,62 @@ function commandSleep(ms) {
   };
 }
 
+test('applyPlan resolves configured beforeApply hook cwd from the repository root', (t) => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'gatefile-hook-cwd-')));
+  const repoRoot = path.join(root, 'repo');
+  const ambientCwd = path.join(root, 'ambient');
+  const policyWorkdir = path.join(repoRoot, 'policy-workdir');
+  const stateHome = path.join(root, 'state');
+  fs.mkdirSync(ambientCwd, { recursive: true });
+  fs.mkdirSync(policyWorkdir, { recursive: true });
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+
+  const plan = approvePlan(
+    createPlanFromDraft(
+      {
+        source: 'test-agent',
+        summary: 'Repository-relative policy hook cwd',
+        operations: [
+          {
+            id: 'op_hook_cwd',
+            type: 'file',
+            action: 'create',
+            path: 'hook-apply.txt',
+            after: 'applied\n'
+          }
+        ],
+        preconditions: []
+      },
+      { repoRoot }
+    ),
+    'ci-user'
+  );
+  const config = {
+    hooks: {
+      beforeApply: {
+        command: `node -e "require('node:fs').writeFileSync('hook-cwd.txt','ok')"`,
+        cwd: 'policy-workdir'
+      }
+    }
+  };
+
+  const originalCwd = process.cwd();
+  let report;
+  process.chdir(ambientCwd);
+  try {
+    report = applyPlan(plan, { repoRoot, stateHome, config });
+  } finally {
+    process.chdir(originalCwd);
+  }
+
+  const repositoryMarker = path.join(policyWorkdir, 'hook-cwd.txt');
+  const ambientMarker = path.join(ambientCwd, 'hook-cwd.txt');
+  assert.equal(report.success, true);
+  assert.equal(fs.existsSync(repositoryMarker), true);
+  assert.equal(fs.readFileSync(repositoryMarker, 'utf8'), 'ok');
+  assert.equal(fs.existsSync(ambientMarker), false);
+});
+
 test('previewPlan shows file and command actions without executing side effects', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gatefile-preview-'));
   try {

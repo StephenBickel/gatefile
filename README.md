@@ -257,23 +257,46 @@ Add to your `claude_desktop_config.json`:
 
 ## Programmatic API
 
-Use gatefile as a library in your own tools:
+`GatefileEngine` is the primary supported in-memory policy boundary. Construct an
+engine for one repository/runtime context, then reuse it for the plan lifecycle:
 
 ```typescript
-import { createPlan, inspectPlan, approvePlanFile, verifyPlanFile, applyPlanFile } from "gatefile";
+import { GatefileEngine } from "gatefile";
 
-// Create a plan from a draft
-const plan = await createPlan(draft, { outPath: ".plan/plan.json" });
+const engine = new GatefileEngine({ repoRoot: process.cwd() });
 
-// Inspect, approve, verify, apply
-const report = await inspectPlan(".plan/plan.json");
-await approvePlanFile(".plan/plan.json", { approvedBy: "ci-bot" });
-const status = await verifyPlanFile(".plan/plan.json");
-const result = await applyPlanFile(".plan/plan.json");          // real apply
-const preview = await applyPlanFile(".plan/plan.json", { dryRun: true }); // dry-run
+const pending = engine.createPlan(draft);
+const report = engine.inspectPlan(pending);
+const approved = engine.approvePlan(pending, "ci-bot");
+const status = engine.verifyPlan(approved);
+const preview = engine.previewPlan(approved); // no execution
+const result = engine.applyPlan(approved);     // real execution
 ```
 
-The low-level in-memory functions (`createPlanFromDraft`, `approvePlan`, `verifyPlan`, `applyPlan`, `previewPlan`) are also exported for advanced use cases.
+At construction, the engine pins an immutable context: the canonical Git
+top-level (or canonical selected directory outside Git), its derived or explicit
+repository ID, and the resolved explicit/environment/platform-default state
+home. Later working-directory or environment changes cannot redirect that
+engine. If `config` is omitted, `gatefile.config.json` is reloaded from the
+pinned repository once at the start of each policy-sensitive method, and that
+method uses one normalized snapshot for all of its checks. Rollback deliberately
+does not load repository policy: authenticated recovery remains available even
+when the repository config is malformed. Passing `config` instead pins a
+normalized, defensively copied snapshot at construction.
+
+The package-root lifecycle names `createPlanFromDraft`, `approvePlan`,
+`verifyPlan`, `buildInspectReport`, `previewPlan`, `applyPlan`, and
+`rollbackApply` remain supported as alpha compatibility wrappers; they construct
+and delegate to `GatefileEngine`. The Promise-returning file helpers
+(`createPlan`, `inspectPlan`, `approvePlanFile`, `verifyPlanFile`,
+`applyPlanFile`, and `rollbackApplyFile`) remain available when the adapter
+should own plan JSON I/O.
+
+Raw lifecycle kernels and deep imports such as `gatefile/dist/applier` are not
+supported APIs. The current alpha package has no `exports` map and still ships
+the full `dist` tree, so those paths remain physically reachable; PR7 will add
+the explicit installed-package export contract. Do not rely on physical reachability
+as a policy or compatibility guarantee.
 
 ## GitHub PR Gate
 

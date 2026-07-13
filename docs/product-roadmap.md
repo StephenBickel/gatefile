@@ -26,6 +26,29 @@ New product surface and feature work are deferred until the stabilization freeze
 - Policy hooks (`beforeApprove`, `beforeApply`)
 - Plan dependency sequencing (`dependsOn`)
 - GitHub PR review surfaces and adapter ingestion
+- `GatefileEngine` as the primary supported in-memory policy boundary, with an
+  immutable pinned repository/state context and per-method policy snapshots
+- Engine-backed package-root lifecycle compatibility functions
+- Engine delegation across the CLI, SDK, pipeline, interactive review, PR review,
+  and MCP first-party adapters
+
+## Current stabilization boundary
+
+When an engine is constructed without explicit config, it reloads the pinned
+repository's `gatefile.config.json` once for each policy-sensitive method so
+long-running processes observe policy changes. Supplying `config` instead pins a
+normalized, defensively copied snapshot. Every policy check within one engine
+method receives the same snapshot, canonical repository root, repository ID,
+and state home. Rollback does not reload repository config, preserving
+authenticated recovery when policy is malformed.
+
+This engine migration does not finish the installed-package stabilization work.
+Raw lifecycle kernels and deep `dist/*` imports are unsupported, but the files
+remain physically reachable because the alpha package still ships its full
+`dist` tree without an `exports` map. PR7 will add the explicit package export
+contract. Legacy audit storage and the split best-effort notification-hook config
+also retain their existing contracts pending that separate audit/config/package
+repair; they are not fixed by the engine migration.
 
 ## Deferred feature roadmap
 

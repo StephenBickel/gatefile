@@ -1,18 +1,18 @@
 #!/usr/bin/env node
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { applyPlan, previewPlan, rollbackApply } from "./applier";
 import { formatApplySummary, formatDryRunSummary, formatRollbackSummary } from "./apply-format";
-import { adaptAgentInputToDraft, AgentAdapterInput } from "./adapter";
-import { approvePlan, createPlanFromDraft, PlanDraft } from "./planner";
-import { DryRunReport, PlanFile, VerifyPlanReport } from "./types";
-import { buildInspectReport, formatInspectSummary, InspectReport } from "./inspect";
-import { verifyPlan } from "./verify";
+import { adaptAgentInputToDraft } from "./adapter";
+import type { AgentAdapterInput } from "./adapter";
+import type { PlanDraft } from "./planner";
+import type { DryRunReport, PlanFile, VerifyPlanReport } from "./types";
+import type { InspectReport } from "./inspect";
+import { GatefileEngine } from "./engine";
 import { renderPRReviewComment } from "./pr-review";
 import { reviewPlan } from "./review";
 import { runPipeline, formatPipelineSummary } from "./pipeline";
 import { audit, formatAuditTable } from "./audit";
-import { fireOnPlanCreated, fireOnApprovalNeeded, runPolicyHook } from "./hooks";
+import { fireOnPlanCreated, fireOnApprovalNeeded } from "./hooks";
 import { configPath, loadGatefileConfig } from "./config";
 import { getRepoRoot } from "./state";
 import { generateApprovalAttestationKeyPair } from "./attestation";
@@ -78,14 +78,14 @@ function usage(): void {
 
 }
 
-function inspect(plan: PlanFile, jsonMode: boolean, config = loadGatefileConfig(getRepoRoot())): void {
-  const report = buildInspectReport(plan, { repoRoot: getRepoRoot() });
+function inspect(plan: PlanFile, jsonMode: boolean, engine: GatefileEngine): void {
+  const report = engine.inspectPlan(plan);
   if (jsonMode) {
     console.log(JSON.stringify(report, null, 2));
     return;
   }
 
-  console.log(formatInspectSummary(plan, report, { config }));
+  console.log(engine.formatInspectPlan(plan, report));
 }
 
 async function main(): Promise<void> {
@@ -102,7 +102,8 @@ async function main(): Promise<void> {
     if (!from || !out) throw new Error("create-plan requires --from and --out");
 
     const draft = readJson<PlanDraft>(from);
-    const plan = createPlanFromDraft(draft, { repoRoot: getRepoRoot() });
+    const engine = new GatefileEngine({ repoRoot: getRepoRoot() });
+    const plan = engine.createPlan(draft);
     writeJson(out, plan);
     console.log(`Plan created: ${out}`);
     await fireOnPlanCreated(plan);
@@ -113,7 +114,8 @@ async function main(): Promise<void> {
     const args = process.argv.slice(3);
     const planPath = positionalPath(args);
     if (!planPath) throw new Error("review requires a plan path");
-    await reviewPlan(planPath);
+    const engine = new GatefileEngine({ repoRoot: getRepoRoot() });
+    await reviewPlan(planPath, { engine });
     return;
   }
 
@@ -135,7 +137,8 @@ async function main(): Promise<void> {
     const planPath = positionalPath(args);
     if (!planPath) throw new Error("inspect-plan requires a plan path");
     const plan = readJson<PlanFile>(planPath);
-    inspect(plan, hasFlag(args, "--json"), loadGatefileConfig(getRepoRoot()));
+    const engine = new GatefileEngine({ repoRoot: getRepoRoot() });
+    inspect(plan, hasFlag(args, "--json"), engine);
     return;
   }
 
@@ -168,15 +171,15 @@ async function main(): Promise<void> {
 
     const plan = readJson<PlanFile>(planPath);
     validatePlanFile(plan);
-    const config = loadGatefileConfig(getRepoRoot());
-    runPolicyHook(config, "beforeApprove", plan, {
-      repoRoot: getRepoRoot(),
-      planPath: resolve(planPath)
-    });
+    const engine = new GatefileEngine({ repoRoot: getRepoRoot() });
     const signingPrivateKeyPem = signingKeyPath
       ? readFileSync(resolve(signingKeyPath), "utf-8")
       : undefined;
-    const next = approvePlan(plan, by, { signingPrivateKeyPem, signingKeyId });
+    const next = engine.approvePlan(plan, by, {
+      planPath: resolve(planPath),
+      signingPrivateKeyPem,
+      signingKeyId
+    });
     writeJson(planPath, next);
     console.log(`Plan approved by ${by}: ${planPath}`);
     await fireOnApprovalNeeded(next);
@@ -211,8 +214,8 @@ async function main(): Promise<void> {
     const planPath = positionalPath(args);
     if (!planPath) throw new Error("verify-plan requires a plan path");
     const plan = readJson<PlanFile>(planPath);
-    const config = loadGatefileConfig(getRepoRoot());
-    console.log(JSON.stringify(verifyPlan(plan, { config }), null, 2));
+    const engine = new GatefileEngine({ repoRoot: getRepoRoot() });
+    console.log(JSON.stringify(engine.verifyPlan(plan), null, 2));
     return;
   }
 
@@ -226,16 +229,16 @@ async function main(): Promise<void> {
 
     const plan = readJson<PlanFile>(planPath);
     const repoRoot = getRepoRoot();
-    const config = loadGatefileConfig(repoRoot);
+    const engine = new GatefileEngine({ repoRoot });
     if (dryRun) {
-      const preview = previewPlan(plan, { repoRoot, planPath: resolve(planPath), config });
+      const preview = engine.previewPlan(plan, { planPath: resolve(planPath) });
       console.log(human ? formatDryRunSummary(preview) : JSON.stringify(preview, null, 2));
       return;
     }
 
     if (!yes) throw new Error("Refusing to apply without --yes");
 
-    const report = applyPlan(plan, { repoRoot, planPath: resolve(planPath), config });
+    const report = engine.applyPlan(plan, { planPath: resolve(planPath) });
     console.log(human ? formatApplySummary(report) : JSON.stringify(report, null, 2));
     if (!report.success) process.exitCode = 1;
     return;
@@ -249,11 +252,12 @@ async function main(): Promise<void> {
     if (!receiptId) throw new Error("rollback-apply requires a receipt id");
     if (!yes) throw new Error("Refusing to rollback without --yes");
 
-    const report = rollbackApply(receiptId, {
+    const engine = new GatefileEngine({
       repoRoot: getRepoRoot(arg(args, "--repo-root")),
       repositoryId: arg(args, "--repository-id"),
       stateHome: arg(args, "--state-home")
     });
+    const report = engine.rollbackApply(receiptId);
     console.log(human ? formatRollbackSummary(report) : JSON.stringify(report, null, 2));
     if (!report.success) process.exitCode = 1;
     return;
@@ -275,7 +279,7 @@ async function main(): Promise<void> {
       inspectReport: inspectPath ? readJson<InspectReport>(inspectPath) : undefined,
       verifyReport: verifyPath ? readJson<VerifyPlanReport>(verifyPath) : undefined,
       dryRunReport: dryRunPath ? readJson<DryRunReport>(dryRunPath) : undefined,
-      config: loadGatefileConfig(getRepoRoot())
+      repoRoot: getRepoRoot()
     });
 
     if (outPath) {

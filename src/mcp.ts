@@ -13,13 +13,11 @@
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { createInterface } from "node:readline";
-import { createPlanFromDraft, approvePlan, PlanDraft } from "./planner";
-import { applyPlan, previewPlan, rollbackApply } from "./applier";
-import { buildInspectReport, formatInspectSummary } from "./inspect";
-import { verifyPlan } from "./verify";
-import { loadGatefileConfig } from "./config";
+import { GatefileEngine } from "./engine";
+import type { PlanDraft } from "./planner";
 import { getRepoRoot } from "./state";
-import { PlanFile } from "./types";
+import type { PlanFile } from "./types";
+import { validatePlanFile } from "./validation";
 
 /* ------------------------------------------------------------------ */
 /*  JSON-RPC helpers                                                   */
@@ -157,6 +155,14 @@ const TOOLS = [
         key_id: {
           type: "string",
           description: "Optional key ID (requires signing_key)"
+        },
+        repo_root: {
+          type: "string",
+          description: "Repository root used for approval policy and repository identity"
+        },
+        repository_id: {
+          type: "string",
+          description: "Explicit repository identity override"
         }
       },
       required: ["path", "by"]
@@ -298,27 +304,18 @@ function handleTool(name: string, args: Record<string, unknown>): { content: { t
     switch (name) {
       case "inspect_plan": {
         const plan = readPlan(args.path as string);
-        const runtime = runtimeContext(args);
-        const report = buildInspectReport(plan, runtime);
+        const engine = new GatefileEngine(runtimeContext(args));
+        const report = engine.inspectPlan(plan);
         if (args.json) {
           return toolResult(JSON.stringify(report, null, 2));
         }
-        const config = loadGatefileConfig(runtime.repoRoot);
-        return toolResult(formatInspectSummary(plan, report, {
-          config,
-          repoRoot: runtime.repoRoot,
-          repositoryId: runtime.repositoryId
-        }));
+        return toolResult(engine.formatInspectPlan(plan, report));
       }
 
       case "create_plan": {
         const draft = args.draft as PlanDraft;
-        const repoRoot = getRepoRoot(optionalStringArg(args, "repo_root"));
-        const repositoryId = optionalStringArg(args, "repository_id");
-        const plan = createPlanFromDraft(draft, {
-          repoRoot,
-          ...(repositoryId ? { context: { repositoryId } } : {})
-        });
+        const engine = new GatefileEngine(runtimeContext(args));
+        const plan = engine.createPlan(draft);
         const outPath = args.out as string;
         writePlan(outPath, plan);
         return toolResult(
@@ -329,10 +326,13 @@ function handleTool(name: string, args: Record<string, unknown>): { content: { t
       case "approve_plan": {
         const planPath = args.path as string;
         const plan = readPlan(planPath);
+        validatePlanFile(plan);
+        const engine = new GatefileEngine(runtimeContext(args));
         const signingKeyPem = args.signing_key
           ? readFileSync(resolve(args.signing_key as string), "utf-8")
           : undefined;
-        const approved = approvePlan(plan, args.by as string, {
+        const approved = engine.approvePlan(plan, args.by as string, {
+          planPath: resolve(planPath),
           signingPrivateKeyPem: signingKeyPem,
           signingKeyId: args.key_id as string | undefined
         });
@@ -342,43 +342,29 @@ function handleTool(name: string, args: Record<string, unknown>): { content: { t
 
       case "verify_plan": {
         const plan = readPlan(args.path as string);
-        const runtime = runtimeContext(args);
-        const config = loadGatefileConfig(runtime.repoRoot);
-        const report = verifyPlan(plan, {
-          config,
-          repoRoot: runtime.repoRoot,
-          repositoryId: runtime.repositoryId
-        });
+        const engine = new GatefileEngine(runtimeContext(args));
+        const report = engine.verifyPlan(plan);
         return toolResult(JSON.stringify(report, null, 2));
       }
 
       case "dry_run_plan": {
         const plan = readPlan(args.path as string);
-        const runtime = runtimeContext(args);
-        const config = loadGatefileConfig(runtime.repoRoot);
-        const preview = previewPlan(plan, {
-          ...runtime,
-          planPath: resolve(args.path as string),
-          config
-        });
+        const engine = new GatefileEngine(runtimeContext(args));
+        const preview = engine.previewPlan(plan, { planPath: resolve(args.path as string) });
         return toolResult(JSON.stringify(preview, null, 2));
       }
 
       case "apply_plan": {
         const planPath = args.path as string;
         const plan = readPlan(planPath);
-        const runtime = runtimeContext(args);
-        const config = loadGatefileConfig(runtime.repoRoot);
-        const report = applyPlan(plan, {
-          ...runtime,
-          planPath: resolve(planPath),
-          config
-        });
+        const engine = new GatefileEngine(runtimeContext(args));
+        const report = engine.applyPlan(plan, { planPath: resolve(planPath) });
         return toolResult(JSON.stringify(report, null, 2), !report.success);
       }
 
       case "rollback_apply": {
-        const report = rollbackApply(args.receipt_id as string, runtimeContext(args));
+        const engine = new GatefileEngine(runtimeContext(args));
+        const report = engine.rollbackApply(args.receipt_id as string);
         return toolResult(JSON.stringify(report, null, 2), !report.success);
       }
 

@@ -1,51 +1,56 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { createPlanFromDraft, approvePlan as approveInMemory, PlanDraft } from "./planner";
-import { applyPlan as applyInMemory, previewPlan } from "./applier";
-import { verifyPlan as verifyInMemory } from "./verify";
-import { buildInspectReport, InspectReport } from "./inspect";
-import { PlanFile, ApplyReport, DryRunReport, VerifyPlanReport } from "./types";
+import { GatefileEngine } from "./engine";
+import type { InspectReport } from "./inspect";
+import type { PlanDraft } from "./planner";
+import { validatePlanFile } from "./validation";
+import type {
+  PlanFile,
+  ApplyReport,
+  DryRunReport,
+  GatefileConfig,
+  RollbackReport,
+  VerifyPlanReport
+} from "./types";
 
 // ── Option types ──────────────────────────────────────────────
 
-export interface CreateOptions {
+export interface SdkEngineOptions {
+  /** Repository root used to bind plans and resolve repository policy. */
+  repoRoot?: string;
+  /** Explicit repository identity override for non-filesystem integrations. */
+  repositoryId?: string;
+  /** Trusted operator override for external authenticated state. */
+  stateHome?: string;
+  /** Explicit policy configuration instead of repository config discovery. */
+  config?: GatefileConfig;
+}
+
+export interface CreateOptions
+  extends Pick<SdkEngineOptions, "repoRoot" | "repositoryId" | "config"> {
   /** Output path for the plan JSON. If omitted the plan is returned but not written. */
   outPath?: string;
-  /** Repository root used to bind the plan to its intended repository. */
-  repoRoot?: string;
 }
 
-export interface InspectOptions {
-  /** Repository root used to resolve dependency state. */
-  repoRoot?: string;
-  /** Explicit repository identity override for non-filesystem integrations. */
-  repositoryId?: string;
-  /** Trusted operator override for external authenticated state. */
-  stateHome?: string;
-}
+export interface InspectOptions extends SdkEngineOptions {}
 
-export interface ApproveOptions {
+export interface ApproveOptions
+  extends Pick<SdkEngineOptions, "repoRoot" | "repositoryId" | "config"> {
   /** Who is approving (defaults to "sdk"). */
   approvedBy?: string;
+  /** Optional Ed25519 private key used to attest the approval. */
+  signingPrivateKeyPem?: string;
+  /** Optional signing key identity. */
+  signingKeyId?: string;
 }
 
-export interface ApplyOptions {
+export interface ApplyOptions extends SdkEngineOptions {
   /** If true, preview only — no side effects (default: false). */
   dryRun?: boolean;
-  /** Repository root whose identity must match the plan context. */
-  repoRoot?: string;
-  /** Explicit repository identity override for non-filesystem integrations. */
-  repositoryId?: string;
-  /** Trusted operator override for external authenticated state. */
-  stateHome?: string;
 }
 
-export interface VerifyOptions {
-  /** Repository root whose identity must match the plan context. */
-  repoRoot?: string;
-  /** Explicit repository identity override for non-filesystem integrations. */
-  repositoryId?: string;
-}
+export interface VerifyOptions
+  extends Pick<SdkEngineOptions, "repoRoot" | "repositoryId" | "config"> {}
 
 /** Complete, reusable runtime binding for rolling back an SDK apply receipt. */
 export interface RollbackContext {
@@ -91,7 +96,12 @@ export async function createPlan(
   draft: PlanDraft,
   options?: CreateOptions
 ): Promise<PlanFile> {
-  const plan = createPlanFromDraft(draft, { repoRoot: options?.repoRoot });
+  const engine = new GatefileEngine({
+    repoRoot: options?.repoRoot,
+    repositoryId: options?.repositoryId,
+    config: options?.config
+  });
+  const plan = engine.createPlan(draft);
   if (options?.outPath) {
     writePlan(options.outPath, plan);
   }
@@ -106,11 +116,13 @@ export async function inspectPlan(
   options?: InspectOptions
 ): Promise<InspectResult> {
   const plan = readPlan(planPath);
-  return buildInspectReport(plan, {
+  const engine = new GatefileEngine({
     repoRoot: options?.repoRoot,
-    repositoryId: options?.repositoryId,
-    stateHome: options?.stateHome
+    repositoryId: options?.repositoryId ?? plan.context?.repositoryId,
+    stateHome: options?.stateHome,
+    config: options?.config
   });
+  return engine.inspectPlan(plan);
 }
 
 /**
@@ -121,7 +133,17 @@ export async function approvePlan(
   options?: ApproveOptions
 ): Promise<ApprovalResult> {
   const plan = readPlan(planPath);
-  const approved = approveInMemory(plan, options?.approvedBy ?? "sdk");
+  validatePlanFile(plan);
+  const engine = new GatefileEngine({
+    repoRoot: options?.repoRoot,
+    repositoryId: options?.repositoryId ?? plan.context.repositoryId,
+    config: options?.config
+  });
+  const approved = engine.approvePlan(plan, options?.approvedBy ?? "sdk", {
+    planPath: resolve(planPath),
+    signingPrivateKeyPem: options?.signingPrivateKeyPem,
+    signingKeyId: options?.signingKeyId
+  });
   writePlan(planPath, approved);
   return {
     plan: approved,
@@ -137,10 +159,12 @@ export async function verifyPlan(
   options?: VerifyOptions
 ): Promise<VerifyResult> {
   const plan = readPlan(planPath);
-  return verifyInMemory(plan, {
+  const engine = new GatefileEngine({
     repoRoot: options?.repoRoot,
-    repositoryId: options?.repositoryId
+    repositoryId: options?.repositoryId,
+    config: options?.config
   });
+  return engine.verifyPlan(plan);
 }
 
 /**
@@ -151,16 +175,25 @@ export async function applyPlan(
   options?: ApplyOptions
 ): Promise<SdkApplyReport | DryRunReport> {
   const plan = readPlan(planPath);
-  if (options?.dryRun) {
-    return previewPlan(plan, {
-      repoRoot: options.repoRoot,
-      repositoryId: options.repositoryId,
-      stateHome: options.stateHome
-    });
-  }
-  return applyInMemory(plan, {
+  const engine = new GatefileEngine({
     repoRoot: options?.repoRoot,
     repositoryId: options?.repositoryId,
-    stateHome: options?.stateHome
+    stateHome: options?.stateHome,
+    config: options?.config
   });
+  if (options?.dryRun) {
+    return engine.previewPlan(plan, { planPath: resolve(planPath) });
+  }
+  return engine.applyPlan(plan, { planPath: resolve(planPath) });
+}
+
+/**
+ * Roll back an SDK apply using the complete runtime context returned by applyPlan.
+ */
+export async function rollbackApply(
+  receiptId: string,
+  options: SdkEngineOptions
+): Promise<RollbackReport> {
+  const engine = new GatefileEngine(options);
+  return engine.rollbackApply(receiptId);
 }
