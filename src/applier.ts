@@ -86,6 +86,29 @@ export interface PlanRuntimeOptions {
   stateHome?: string;
   planPath?: string;
   config?: GatefileConfig;
+  commandOutput?:
+    | { mode: "inherit" }
+    | { mode: "capture"; maxBytes: number };
+}
+
+const MAX_COMMAND_CAPTURE_BYTES = 65_536;
+const MAX_COMMAND_SPAWN_BUFFER_BYTES = 1_048_576;
+
+function normalizeCommandOutput(
+  value: PlanRuntimeOptions["commandOutput"]
+): NonNullable<PlanRuntimeOptions["commandOutput"]> {
+  if (value === undefined || value.mode === "inherit") return { mode: "inherit" };
+  if (
+    value.mode !== "capture" ||
+    !Number.isSafeInteger(value.maxBytes) ||
+    value.maxBytes < 1 ||
+    value.maxBytes > MAX_COMMAND_CAPTURE_BYTES
+  ) {
+    throw new Error(
+      `commandOutput capture maxBytes must be an integer from 1 to ${MAX_COMMAND_CAPTURE_BYTES}`
+    );
+  }
+  return { mode: "capture", maxBytes: value.maxBytes };
 }
 
 function runtimeRepoRoot(options: PlanRuntimeOptions): string {
@@ -270,7 +293,8 @@ function formatCommandFailureMessage(error: unknown, timeoutMs: number): string 
 function applyCommandOperation(
   plan: PlanFile,
   op: Extract<PlanFile["operations"][number], { type: "command" }>,
-  repoRoot: string
+  repoRoot: string,
+  commandOutput: NonNullable<PlanRuntimeOptions["commandOutput"]>
 ): PendingApplyOperationResult {
   const timeoutMs = commandTimeoutMs(plan, op);
   const invocation = formatCommandInvocation(op);
@@ -284,21 +308,36 @@ function applyCommandOperation(
   }
 
   try {
-    const result = spawnSync(op.executable, op.args, {
-      cwd: resolve(repoRoot, op.cwd ?? "."),
-      stdio: "inherit",
-      timeout: timeoutMs,
-      shell: false
-    });
-    if (result.error) throw result.error;
+    const result = commandOutput.mode === "capture"
+      ? spawnSync(op.executable, op.args, {
+          cwd: resolve(repoRoot, op.cwd ?? "."),
+          stdio: "pipe",
+          timeout: timeoutMs,
+          shell: false,
+          maxBuffer: MAX_COMMAND_SPAWN_BUFFER_BYTES
+        })
+      : spawnSync(op.executable, op.args, {
+          cwd: resolve(repoRoot, op.cwd ?? "."),
+          stdio: "inherit",
+          timeout: timeoutMs,
+          shell: false
+        });
+    const captured = commandOutput.mode === "capture"
+      ? formatCapturedCommandOutput(result.stdout, result.stderr, commandOutput.maxBytes)
+      : "";
+    if (result.error) {
+      throw new Error(`${result.error.message}${captured}`);
+    }
     if (result.status !== 0) {
       const signal = result.signal ? `, signal ${result.signal}` : "";
-      throw new Error(`process exited with status ${result.status ?? "unknown"}${signal}`);
+      throw new Error(
+        `process exited with status ${result.status ?? "unknown"}${signal}${captured}`
+      );
     }
     return {
       operationId: op.id,
       success: true,
-      message: `command ok: ${invocation} (timeout ${timeoutMs}ms)`
+      message: `command ok: ${invocation} (timeout ${timeoutMs}ms)${captured}`
     };
   } catch (error) {
     const failureMessage = formatCommandFailureMessage(error, timeoutMs);
@@ -316,6 +355,29 @@ function applyCommandOperation(
       message: failureMessage
     };
   }
+}
+
+function formatCapturedStream(
+  label: "stdout" | "stderr",
+  value: Buffer | null,
+  maxBytes: number
+): string | undefined {
+  if (!value || value.length === 0) return undefined;
+  const truncated = value.length > maxBytes;
+  const visible = value.subarray(0, maxBytes).toString("utf8");
+  return `${label}=${JSON.stringify(visible)}${truncated ? ` [truncated at ${maxBytes} bytes]` : ""}`;
+}
+
+function formatCapturedCommandOutput(
+  stdout: Buffer | null,
+  stderr: Buffer | null,
+  maxBytes: number
+): string {
+  const streams = [
+    formatCapturedStream("stdout", stdout, maxBytes),
+    formatCapturedStream("stderr", stderr, maxBytes)
+  ].filter((value): value is string => value !== undefined);
+  return streams.length === 0 ? "" : `; captured ${streams.join(", ")}`;
 }
 
 function lineCount(value: string): number {
@@ -729,6 +791,7 @@ function receiptBodyForApply(
 }
 
 function applyCore(plan: PlanFile, options: PlanRuntimeOptions): ApplyReport {
+  const commandOutput = normalizeCommandOutput(options.commandOutput);
   const repoRoot = runtimeRepoRoot(options);
   const stateOptions = stateOptionsForPlan(plan, options, repoRoot);
   const layout = getStateLayout(stateOptions);
@@ -884,7 +947,7 @@ function applyCore(plan: PlanFile, options: PlanRuntimeOptions): ApplyReport {
           }
         }
       } else if (op.type === "command") {
-        result = applyCommandOperation(plan, op, repoRoot);
+        result = applyCommandOperation(plan, op, repoRoot, commandOutput);
       } else {
         const unsupported = op as unknown as { id?: unknown; type?: unknown };
         result = {

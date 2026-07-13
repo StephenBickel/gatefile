@@ -55,6 +55,9 @@ export interface GatefileEngineContext {
 
 export interface EnginePlanOptions {
   planPath?: string;
+  commandOutput?:
+    | { mode: "inherit" }
+    | { mode: "capture"; maxBytes: number };
 }
 
 export interface EngineApproveOptions extends ApprovePlanOptions {
@@ -192,6 +195,7 @@ export class GatefileEngine {
       repositoryId: this.context.repositoryId,
       stateHome: this.context.stateHome,
       planPath: options.planPath,
+      commandOutput: options.commandOutput,
       config
     }));
   }

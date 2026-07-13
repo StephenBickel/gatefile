@@ -87,7 +87,10 @@ export function applyPlan(
     repositoryId: options.repositoryId,
     stateHome: options.stateHome,
     config: options.config
-  }).applyPlan(plan, { planPath: options.planPath });
+  }).applyPlan(plan, {
+    planPath: options.planPath,
+    commandOutput: options.commandOutput
+  });
 }
 
 export function rollbackApply(
