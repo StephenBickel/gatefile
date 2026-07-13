@@ -1,34 +1,146 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://example.com/gatefile.config.schema.json",
-  "title": "gatefile configuration",
+  "$id": "https://github.com/StephenBickel/gatefile/blob/main/schema/gatefile.config.schema.json",
+  "title": "Gatefile configuration",
   "type": "object",
   "properties": {
-    "hooks": {
-      "type": "object",
-      "description": "Webhook and shell hooks fired on lifecycle events.",
-      "properties": {
-        "onPlanCreated": { "$ref": "#/$defs/hookAction" },
-        "onApprovalNeeded": { "$ref": "#/$defs/hookAction" }
-      },
-      "additionalProperties": false
-    }
+    "signers": { "$ref": "#/$defs/signers" },
+    "hooks": { "$ref": "#/$defs/hooks" },
+    "notifications": { "$ref": "#/$defs/notifications" }
   },
   "additionalProperties": false,
-  "$defs": {
-    "hookAction": {
-      "type": "object",
-      "description": "One or both of webhook URL and shell command to execute.",
-      "properties": {
-        "webhook": {
-          "type": "string",
-          "format": "uri",
-          "description": "URL to POST the plan summary JSON to."
-        },
-        "shell": {
-          "type": "string",
-          "description": "Shell command to execute."
+  "allOf": [
+    {
+      "not": {
+        "required": ["hooks", "notifications"],
+        "properties": {
+          "hooks": {
+            "type": "object",
+            "required": ["onPlanCreated"],
+            "properties": { "onPlanCreated": {} }
+          },
+          "notifications": {
+            "type": "object",
+            "required": ["onPlanCreated"],
+            "properties": { "onPlanCreated": {} }
+          }
         }
+      }
+    },
+    {
+      "not": {
+        "required": ["hooks", "notifications"],
+        "properties": {
+          "hooks": {
+            "type": "object",
+            "required": ["onApprovalNeeded"],
+            "properties": { "onApprovalNeeded": {} }
+          },
+          "notifications": {
+            "type": "object",
+            "required": ["onPlanApproved"],
+            "properties": { "onPlanApproved": {} }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?=[\\s\\S]*\\S)[^\\u0000]+$"
+    },
+    "httpUrl": {
+      "type": "string",
+      "format": "uri",
+      "pattern": "^https?://"
+    },
+    "publicKeyPem": {
+      "type": "string",
+      "pattern": "^-----BEGIN PUBLIC KEY-----\\r?\\n[A-Za-z0-9+/=\\r\\n]+\\r?\\n-----END PUBLIC KEY-----\\s*$"
+    },
+    "signers": {
+      "type": "object",
+      "properties": {
+        "trustedKeyIds": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        },
+        "trustedPublicKeys": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/publicKeyPem" }
+        }
+      },
+      "additionalProperties": false,
+      "anyOf": [
+        {
+          "type": "object",
+          "required": ["trustedKeyIds"],
+          "properties": { "trustedKeyIds": {} }
+        },
+        {
+          "type": "object",
+          "required": ["trustedPublicKeys"],
+          "properties": { "trustedPublicKeys": {} }
+        }
+      ]
+    },
+    "policyHook": {
+      "type": "object",
+      "properties": {
+        "command": { "$ref": "#/$defs/nonEmptyString" },
+        "cwd": { "$ref": "#/$defs/nonEmptyString" }
+      },
+      "required": ["command"],
+      "additionalProperties": false
+    },
+    "notificationAction": {
+      "type": "object",
+      "description": "One or both of an HTTP(S) webhook URL and shell command.",
+      "properties": {
+        "webhook": { "$ref": "#/$defs/httpUrl" },
+        "shell": { "$ref": "#/$defs/nonEmptyString" }
+      },
+      "additionalProperties": false,
+      "anyOf": [
+        {
+          "type": "object",
+          "required": ["webhook"],
+          "properties": { "webhook": {} }
+        },
+        {
+          "type": "object",
+          "required": ["shell"],
+          "properties": { "shell": {} }
+        }
+      ]
+    },
+    "hooks": {
+      "type": "object",
+      "description": "Blocking policy hooks. Deprecated lifecycle notification keys remain readable for migration.",
+      "properties": {
+        "beforeApprove": { "$ref": "#/$defs/policyHook" },
+        "beforeApply": { "$ref": "#/$defs/policyHook" },
+        "onPlanCreated": {
+          "$ref": "#/$defs/notificationAction",
+          "deprecated": true
+        },
+        "onApprovalNeeded": {
+          "$ref": "#/$defs/notificationAction",
+          "deprecated": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "notifications": {
+      "type": "object",
+      "description": "Best-effort lifecycle notifications dispatched after durable adapter writes.",
+      "properties": {
+        "onPlanCreated": { "$ref": "#/$defs/notificationAction" },
+        "onPlanApproved": { "$ref": "#/$defs/notificationAction" }
       },
       "additionalProperties": false
     }

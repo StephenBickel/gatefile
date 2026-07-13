@@ -12,5 +12,13 @@
     "beforeApply": {
       "command": "node ./scripts/before-apply.js"
     }
+  },
+  "notifications": {
+    "onPlanCreated": {
+      "webhook": "https://example.com/gatefile/plan-created"
+    },
+    "onPlanApproved": {
+      "shell": "node ./scripts/plan-approved.js"
+    }
   }
 }

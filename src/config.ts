@@ -1,7 +1,12 @@
 import { existsSync, readFileSync } from "node:fs";
 import { createPublicKey } from "node:crypto";
 import { resolve } from "node:path";
-import { GatefileConfig } from "./types";
+import type {
+  GatefileConfig,
+  HookCommandConfig,
+  NotificationActionConfig,
+  NotificationsConfig
+} from "./types";
 import { getPinnedRepoRoot, getRepoRoot } from "./state";
 
 export const DEFAULT_CONFIG_FILE = "gatefile.config.json";
@@ -60,57 +65,239 @@ function normalizeStringArray(
       issues.push({ path: `${path}[${i}]`, message: "must not be empty" });
       continue;
     }
+    if (entry.includes("\0")) {
+      issues.push({ path: `${path}[${i}]`, message: "must not contain NUL" });
+      continue;
+    }
     out.push(trimmed);
   }
   return out;
 }
 
+function objectValue(
+  value: unknown,
+  path: string,
+  issues: ConfigValidationIssue[]
+): Record<string, unknown> | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    issues.push({ path, message: "must be an object" });
+    return undefined;
+  }
+  return value as Record<string, unknown>;
+}
+
+function rejectUnknownKeys(
+  value: Record<string, unknown>,
+  allowed: readonly string[],
+  path: string,
+  issues: ConfigValidationIssue[]
+): void {
+  const allowedKeys = new Set(allowed);
+  for (const key of Object.keys(value)) {
+    if (!allowedKeys.has(key)) {
+      issues.push({
+        path: path === "$" ? key : `${path}.${key}`,
+        message: "unknown field"
+      });
+    }
+  }
+}
+
+function normalizePolicyHook(
+  value: unknown,
+  path: string,
+  issues: ConfigValidationIssue[]
+): HookCommandConfig | undefined {
+  const startIssueCount = issues.length;
+  const hook = objectValue(value, path, issues);
+  if (!hook) return undefined;
+  rejectUnknownKeys(hook, ["command", "cwd"], path, issues);
+
+  const command = hook.command;
+  const cwd = hook.cwd;
+  if (
+    typeof command !== "string" ||
+    command.trim().length === 0 ||
+    command.includes("\0")
+  ) {
+    issues.push({ path: `${path}.command`, message: "must be a non-empty string" });
+  }
+  if (
+    cwd !== undefined &&
+    (typeof cwd !== "string" || cwd.trim().length === 0 || cwd.includes("\0"))
+  ) {
+    issues.push({ path: `${path}.cwd`, message: "must be a non-empty string when provided" });
+  }
+  if (issues.length !== startIssueCount) return undefined;
+
+  return {
+    command: (command as string).trim(),
+    ...(cwd === undefined ? {} : { cwd: (cwd as string).trim() })
+  };
+}
+
+function normalizeNotificationAction(
+  value: unknown,
+  path: string,
+  issues: ConfigValidationIssue[]
+): NotificationActionConfig | undefined {
+  const startIssueCount = issues.length;
+  const action = objectValue(value, path, issues);
+  if (!action) return undefined;
+  rejectUnknownKeys(action, ["webhook", "shell"], path, issues);
+
+  let webhook: string | undefined;
+  if (action.webhook !== undefined) {
+    if (typeof action.webhook !== "string" || action.webhook.trim().length === 0) {
+      issues.push({ path: `${path}.webhook`, message: "must be a non-empty HTTP(S) URL" });
+    } else {
+      const candidate = action.webhook.trim();
+      if (candidate !== action.webhook) {
+        issues.push({
+          path: `${path}.webhook`,
+          message: "must not contain leading or trailing whitespace"
+        });
+      }
+      try {
+        const parsed = new URL(candidate);
+        if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+          issues.push({ path: `${path}.webhook`, message: "must use http or https" });
+        } else {
+          webhook = parsed.toString();
+        }
+      } catch {
+        issues.push({ path: `${path}.webhook`, message: "must be a valid HTTP(S) URL" });
+      }
+    }
+  }
+
+  let shell: string | undefined;
+  if (action.shell !== undefined) {
+    if (
+      typeof action.shell !== "string" ||
+      action.shell.trim().length === 0 ||
+      action.shell.includes("\0")
+    ) {
+      issues.push({ path: `${path}.shell`, message: "must be a non-empty string" });
+    } else {
+      shell = action.shell.trim();
+    }
+  }
+
+  if (action.webhook === undefined && action.shell === undefined) {
+    issues.push({ path, message: "must configure at least one of webhook or shell" });
+  }
+  if (issues.length !== startIssueCount) return undefined;
+  return {
+    ...(webhook === undefined ? {} : { webhook }),
+    ...(shell === undefined ? {} : { shell })
+  };
+}
+
 export function normalizeGatefileConfig(rawConfig: unknown, sourceLabel?: string): GatefileConfig {
   const issues: ConfigValidationIssue[] = [];
-  if (rawConfig === undefined || rawConfig === null) return {};
-  if (typeof rawConfig !== "object" || Array.isArray(rawConfig)) {
+  if (rawConfig === undefined) return {};
+  if (typeof rawConfig !== "object" || rawConfig === null || Array.isArray(rawConfig)) {
     throw new GatefileConfigError([{ path: "$", message: "must be a JSON object" }], sourceLabel);
   }
 
   const config = rawConfig as Record<string, unknown>;
   const normalized: GatefileConfig = {};
+  rejectUnknownKeys(config, ["signers", "hooks", "notifications"], "$", issues);
+
+  let legacyOnPlanCreated: NotificationActionConfig | undefined;
+  let legacyOnPlanApproved: NotificationActionConfig | undefined;
 
   if (config.hooks !== undefined) {
-    if (typeof config.hooks !== "object" || config.hooks === null || Array.isArray(config.hooks)) {
-      issues.push({ path: "hooks", message: "must be an object" });
-    } else {
-      const hooksRaw = config.hooks as Record<string, unknown>;
+    const hooksRaw = objectValue(config.hooks, "hooks", issues);
+    if (hooksRaw) {
+      rejectUnknownKeys(
+        hooksRaw,
+        ["beforeApprove", "beforeApply", "onPlanCreated", "onApprovalNeeded"],
+        "hooks",
+        issues
+      );
       const hooks: NonNullable<GatefileConfig["hooks"]> = {};
       for (const hookName of ["beforeApprove", "beforeApply"] as const) {
         const hookRaw = hooksRaw[hookName];
         if (hookRaw === undefined) continue;
-        if (typeof hookRaw !== "object" || hookRaw === null || Array.isArray(hookRaw)) {
-          issues.push({ path: `hooks.${hookName}`, message: "must be an object with a command" });
-          continue;
-        }
-        const command = (hookRaw as Record<string, unknown>).command;
-        const cwd = (hookRaw as Record<string, unknown>).cwd;
-        if (typeof command !== "string" || command.trim().length === 0) {
-          issues.push({ path: `hooks.${hookName}.command`, message: "must be a non-empty string" });
-          continue;
-        }
-        if (cwd !== undefined && (typeof cwd !== "string" || cwd.trim().length === 0)) {
-          issues.push({ path: `hooks.${hookName}.cwd`, message: "must be a non-empty string when provided" });
-          continue;
-        }
-        hooks[hookName] = { command: command.trim(), ...(cwd ? { cwd: cwd.trim() } : {}) };
+        const hook = normalizePolicyHook(hookRaw, `hooks.${hookName}`, issues);
+        if (hook) hooks[hookName] = hook;
       }
       if (Object.keys(hooks).length > 0) {
         normalized.hooks = hooks;
       }
+
+      if (hooksRaw.onPlanCreated !== undefined) {
+        legacyOnPlanCreated = normalizeNotificationAction(
+          hooksRaw.onPlanCreated,
+          "hooks.onPlanCreated",
+          issues
+        );
+      }
+      if (hooksRaw.onApprovalNeeded !== undefined) {
+        legacyOnPlanApproved = normalizeNotificationAction(
+          hooksRaw.onApprovalNeeded,
+          "hooks.onApprovalNeeded",
+          issues
+        );
+      }
     }
   }
 
+  let canonicalNotifications: NotificationsConfig | undefined;
+  if (config.notifications !== undefined) {
+    const notificationsRaw = objectValue(config.notifications, "notifications", issues);
+    if (notificationsRaw) {
+      rejectUnknownKeys(
+        notificationsRaw,
+        ["onPlanCreated", "onPlanApproved"],
+        "notifications",
+        issues
+      );
+      canonicalNotifications = {};
+      for (const eventName of ["onPlanCreated", "onPlanApproved"] as const) {
+        if (notificationsRaw[eventName] === undefined) continue;
+        const action = normalizeNotificationAction(
+          notificationsRaw[eventName],
+          `notifications.${eventName}`,
+          issues
+        );
+        if (action) canonicalNotifications[eventName] = action;
+      }
+    }
+  }
+
+  if (legacyOnPlanCreated && canonicalNotifications?.onPlanCreated) {
+    issues.push({
+      path: "notifications.onPlanCreated",
+      message: "event is configured twice through canonical and deprecated keys"
+    });
+  }
+  if (legacyOnPlanApproved && canonicalNotifications?.onPlanApproved) {
+    issues.push({
+      path: "notifications.onPlanApproved",
+      message: "event is configured twice through canonical and deprecated keys"
+    });
+  }
+
+  const notifications: NotificationsConfig = {
+    onPlanCreated: canonicalNotifications?.onPlanCreated ?? legacyOnPlanCreated,
+    onPlanApproved: canonicalNotifications?.onPlanApproved ?? legacyOnPlanApproved
+  };
+  if (notifications.onPlanCreated || notifications.onPlanApproved) {
+    normalized.notifications = notifications;
+  }
+
   if (config.signers !== undefined) {
-    if (typeof config.signers !== "object" || config.signers === null || Array.isArray(config.signers)) {
-      issues.push({ path: "signers", message: "must be an object" });
-    } else {
-      const signersRaw = config.signers as Record<string, unknown>;
+    const signersRaw = objectValue(config.signers, "signers", issues);
+    if (signersRaw) {
+      rejectUnknownKeys(
+        signersRaw,
+        ["trustedKeyIds", "trustedPublicKeys"],
+        "signers",
+        issues
+      );
       const trustedKeyIdsRaw = normalizeStringArray(
         signersRaw.trustedKeyIds,
         "signers.trustedKeyIds",
