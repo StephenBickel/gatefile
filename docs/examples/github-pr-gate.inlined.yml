@@ -1,8 +1,11 @@
-name: PR Planfile Gate (Inlined Example)
+name: Gatefile PR Gate (Expanded Evidence Flow)
 
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
 
 jobs:
   gatefile-gate:
@@ -11,35 +14,57 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
 
       - name: Setup Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 22
-          cache: npm
 
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build gatefile CLI
-        run: npm run build
-
-      - name: Verify plan artifact exists
-        run: test -f .plan/plan.json
-
-      - name: Inspect plan artifact (machine output)
-        run: node dist/cli.js inspect-plan .plan/plan.json --json
-
-      - name: Verify plan ready state
+      - name: Checkout pinned Action-owned Gatefile code
+        id: gatefile_action
         shell: bash
         run: |
-          node -e 'const fs=require("fs");const {execFileSync}=require("node:child_process");const out=execFileSync(process.execPath,["dist/cli.js","verify-plan",".plan/plan.json"],{encoding:"utf8"});const r=JSON.parse(out);fs.writeFileSync("verify-report.json",JSON.stringify(r,null,2)+"\n","utf8");if(r.status!=="ready"){console.error("Planfile gate failed:",r.blockers.join("; "),"signerTrust="+(r.signerTrust?.status||"unknown"));process.exit(1);}console.log("Planfile gate passed:",r.planId,"signerTrust="+(r.signerTrust?.status||"not-configured"));'
+          set -euo pipefail
+          action_checkout="$(mktemp -d "${RUNNER_TEMP}/gatefile-action.XXXXXX")"
+          action_sha=57689dd2ddc2e8a6bc1c3cb5b46d5239f2d0ced0
+          git -C "${action_checkout}" init -q
+          git -C "${action_checkout}" remote add origin https://github.com/StephenBickel/gatefile.git
+          git -C "${action_checkout}" fetch --depth 1 origin "${action_sha}"
+          git -C "${action_checkout}" -c advice.detachedHead=false checkout --detach FETCH_HEAD
+          test "$(git -C "${action_checkout}" rev-parse HEAD)" = "${action_sha}"
+          action_path="${action_checkout}/.github/actions/gatefile-pr-gate"
+          test -f "${action_path}/run.sh"
+          printf 'path=%s\n' "${action_path}" >> "${GITHUB_OUTPUT}"
 
-      - name: Upload plan and verify artifacts
-        uses: actions/upload-artifact@v5
+      - name: Generate Gatefile evidence
+        id: gate
+        shell: bash
+        env:
+          INPUT_PLAN_PATH: .plan/plan.json
+          INPUT_TRUSTED_POLICY_REF: ${{ github.event.pull_request.base.sha }}
+          INPUT_TRUSTED_POLICY_PATH: gatefile.config.json
+          INPUT_TRUSTED_POLICY_SHA256: ${{ vars.GATEFILE_POLICY_SHA256 }}
+          INPUT_ALLOW_UNSIGNED_NO_POLICY: "false"
+        run: |
+          GITHUB_ACTION_PATH="${{ steps.gatefile_action.outputs.path }}" \
+            bash "${{ steps.gatefile_action.outputs.path }}/run.sh"
+
+      # Keep this before enforcement so failed/not-ready evidence survives.
+      - name: Upload Gatefile evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
           name: gatefile-artifacts
-          path: |
-            .plan/plan.json
-            verify-report.json
+          if-no-files-found: error
+          path: ${{ steps.gate.outputs.evidence-directory }}
+
+      - name: Enforce Gatefile readiness
+        if: ${{ always() }}
+        shell: bash
+        run: >-
+          node "${{ steps.gatefile_action.outputs.path }}/enforce.js"
+          "${{ steps.gate.outputs.evidence-directory }}"

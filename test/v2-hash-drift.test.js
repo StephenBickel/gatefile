@@ -37,6 +37,10 @@ function createFilePlan(root, operation) {
   );
 }
 
+function approveFilePlan(root, operation) {
+  return approvePlan(createFilePlan(root, operation), 'reviewer', { repoRoot: root });
+}
+
 test('new plans use the v2 plan and hash-envelope discriminators', () => {
   const plan = createPlanFromDraft(
     createDraft([
@@ -91,7 +95,7 @@ test('every execution-relevant v2 field is hash and approval bound', () => {
     },
     { context: { repositoryId: 'repo:hash-test' } }
   );
-  const approved = approvePlan(pending, 'reviewer');
+  const approved = approvePlan(pending, 'reviewer', { repositoryId: 'repo:hash-test' });
   const mutations = [
     ['id', (plan) => { plan.id = `${plan.id}_changed`; }],
     ['createdAt', (plan) => { plan.createdAt = '2030-01-01T00:00:00.000Z'; }],
@@ -245,7 +249,8 @@ test('runtime repository context mismatch blocks readiness', () => {
         args: ['--version']
       }
     ]), { context: { repositoryId: 'repo:expected' } }),
-    'reviewer'
+    'reviewer',
+    { repositoryId: 'repo:expected' }
   );
 
   assert.equal(verifyPlan(approved, { repositoryId: 'repo:expected' }).status, 'ready');
@@ -272,7 +277,8 @@ test('repository context is derived fail-closed across verify and apply', () => 
         ]),
         { repoRoot: intendedRoot }
       ),
-      'reviewer'
+      'reviewer',
+      { repoRoot: intendedRoot }
     );
 
     assert.equal(verifyPlan(approved, { repoRoot: intendedRoot }).status, 'ready');
@@ -321,13 +327,13 @@ test('create refuses every existing destination without overwriting it', () => {
   try {
     const file = path.join(root, 'existing.txt');
     fs.writeFileSync(file, 'existing\n');
-    const plan = approvePlan(createFilePlan(root, {
+    const plan = approveFilePlan(root, {
       id: 'create',
       type: 'file',
       action: 'create',
       path: file,
       after: 'replacement\n'
-    }), 'reviewer');
+    });
     const report = applyPlan(plan, { repoRoot: root });
     assert.equal(report.success, false);
     assert.equal(report.snapshot.fileCount, 0);
@@ -336,25 +342,25 @@ test('create refuses every existing destination without overwriting it', () => {
 
     const directory = path.join(root, 'directory');
     fs.mkdirSync(directory);
-    const directoryPlan = approvePlan(createFilePlan(root, {
+    const directoryPlan = approveFilePlan(root, {
       id: 'create-directory',
       type: 'file',
       action: 'create',
       path: directory,
       after: 'no\n'
-    }), 'reviewer');
+    });
     assert.equal(applyPlan(directoryPlan, { repoRoot: root }).success, false);
 
     const danglingTarget = path.join(root, 'missing-target');
     const symlink = path.join(root, 'dangling-link');
     fs.symlinkSync(danglingTarget, symlink);
-    const symlinkPlan = approvePlan(createFilePlan(root, {
+    const symlinkPlan = approveFilePlan(root, {
       id: 'create-symlink',
       type: 'file',
       action: 'create',
       path: symlink,
       after: 'no\n'
-    }), 'reviewer');
+    });
     assert.equal(applyPlan(symlinkPlan, { repoRoot: root }).success, false);
     assert.equal(fs.lstatSync(symlink).isSymbolicLink(), true);
   } finally {
@@ -376,7 +382,7 @@ test('update and delete reject missing, non-regular, and drifted targets', () =>
       }
     ];
     for (const entry of cases) {
-      const report = applyPlan(approvePlan(createFilePlan(root, entry.operation), 'reviewer'), {
+      const report = applyPlan(approveFilePlan(root, entry.operation), {
         repoRoot: root
       });
       assert.equal(report.success, false, entry.name);
@@ -385,52 +391,52 @@ test('update and delete reject missing, non-regular, and drifted targets', () =>
 
     const updatePath = path.join(root, 'update.txt');
     fs.writeFileSync(updatePath, 'unreviewed\r\n');
-    const updatePlan = approvePlan(createFilePlan(root, {
+    const updatePlan = approveFilePlan(root, {
       id: 'update-drift',
       type: 'file',
       action: 'update',
       path: updatePath,
       before: 'reviewed\n',
       after: 'new\n'
-    }), 'reviewer');
+    });
     assert.equal(applyPlan(updatePlan, { repoRoot: root }).success, false);
     assert.equal(fs.readFileSync(updatePath, 'utf8'), 'unreviewed\r\n');
 
     const deletePath = path.join(root, 'delete.txt');
     fs.writeFileSync(deletePath, 'unreviewed\n');
-    const deletePlan = approvePlan(createFilePlan(root, {
+    const deletePlan = approveFilePlan(root, {
       id: 'delete-drift',
       type: 'file',
       action: 'delete',
       path: deletePath,
       before: 'reviewed\n'
-    }), 'reviewer');
+    });
     assert.equal(applyPlan(deletePlan, { repoRoot: root }).success, false);
     assert.equal(fs.readFileSync(deletePath, 'utf8'), 'unreviewed\n');
 
     const directory = path.join(root, 'not-regular');
     fs.mkdirSync(directory);
-    const directoryPlan = approvePlan(createFilePlan(root, {
+    const directoryPlan = approveFilePlan(root, {
       id: 'delete-directory',
       type: 'file',
       action: 'delete',
       path: directory,
       before: ''
-    }), 'reviewer');
+    });
     assert.equal(applyPlan(directoryPlan, { repoRoot: root }).success, false);
 
     const real = path.join(root, 'real.txt');
     const link = path.join(root, 'link.txt');
     fs.writeFileSync(real, 'reviewed\n');
     fs.symlinkSync(real, link);
-    const linkPlan = approvePlan(createFilePlan(root, {
+    const linkPlan = approveFilePlan(root, {
       id: 'update-link',
       type: 'file',
       action: 'update',
       path: link,
       before: 'reviewed\n',
       after: 'changed\n'
-    }), 'reviewer');
+    });
     const linkReport = applyPlan(linkPlan, { repoRoot: root });
     assert.equal(linkReport.success, false);
     assert.equal(linkReport.snapshot.fileCount, 0, 'snapshot followed a rejected symlink');
@@ -458,7 +464,8 @@ test('matching update/delete controls succeed and drift stops later commands', (
         ),
         { repoRoot: root }
       ),
-      'reviewer'
+      'reviewer',
+      { repoRoot: root }
     );
     const controlReport = applyPlan(control, { repoRoot: root });
     assert.equal(controlReport.success, true);
@@ -482,7 +489,8 @@ test('matching update/delete controls succeed and drift stops later commands', (
         ),
         { repoRoot: root }
       ),
-      'reviewer'
+      'reviewer',
+      { repoRoot: root }
     );
     const driftReport = applyPlan(drifted, { repoRoot: root });
     assert.equal(driftReport.success, false);

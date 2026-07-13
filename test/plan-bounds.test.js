@@ -58,7 +58,8 @@ function approvedPlanWithOperations(repoRoot, operations) {
       },
       { repoRoot }
     ),
-    'bounds-reviewer'
+    'bounds-reviewer',
+    { repoRoot }
   );
   const mutated = {
     ...seed,
@@ -157,6 +158,21 @@ test('JSON schema rejects plans exceeding the operation-count receipt budget', (
 
 const receiptBoundMutations = [
   [
+    'source metadata',
+    (plan) => { plan.source = 's'.repeat(16001); },
+    /source.*16000/i
+  ],
+  [
+    'summary metadata',
+    (plan) => { plan.summary = 's'.repeat(16001); },
+    /summary.*16000/i
+  ],
+  [
+    'approval actor metadata',
+    (plan) => { plan.approval.approvedBy = 'a'.repeat(16001); },
+    /approval\.approvedBy.*16000/i
+  ],
+  [
     'plan ID',
     (plan) => { plan.id = 'p'.repeat(MAX_STATE_BOUND_ID_LENGTH + 1); },
     /id.*1024/i
@@ -195,12 +211,41 @@ const receiptBoundMutations = [
 ];
 
 for (const [label, mutate, expected] of receiptBoundMutations) {
-  test(`runtime validation bounds receipt-derived ${label}`, () => {
+  test(`runtime and schema validation bound receipt-derived ${label}`, () => {
     const plan = validCommandPlan();
     mutate(plan);
     assert.throws(() => validatePlanFile(plan), expected);
+    const validateSchema = schemaValidator();
+    assert.equal(validateSchema(plan), false, `schema accepted oversized ${label}`);
   });
 }
+
+test('runtime and schema accept receipt audit metadata at their exact boundaries', () => {
+  const plan = validCommandPlan();
+  plan.source = 's'.repeat(16000);
+  plan.summary = 'm'.repeat(16000);
+  plan.approval.approvedBy = 'a'.repeat(16000);
+
+  assert.doesNotThrow(() => validatePlanFile(plan));
+  const validateSchema = schemaValidator();
+  assert.equal(validateSchema(plan), true, JSON.stringify(validateSchema.errors));
+});
+
+test('apply rejects invalid receipt audit metadata before commands or authenticated state artifacts', (t) => {
+  const f = fixture(t, 'gatefile-audit-metadata-preflight');
+  const marker = path.join(f.repoRoot, 'must-not-execute.txt');
+  const plan = approvedPlanWithOperations(f.repoRoot, [
+    nodeCommand('metadata-preflight', marker, true)
+  ]);
+  plan.approval.approvedBy = 'a'.repeat(16001);
+
+  assert.throws(
+    () => applyPlan(plan, { repoRoot: f.repoRoot, stateHome: f.stateHome }),
+    /approval\.approvedBy.*16000/i
+  );
+  assert.equal(fs.existsSync(marker), false);
+  assert.equal(fs.existsSync(f.stateHome), false);
+});
 
 test('runtime and schema accept the operation-ID and count boundaries', () => {
   const validateSchema = schemaValidator();
@@ -296,7 +341,7 @@ test('excessive directory chains are rejected before the target mutation', (t) =
     }],
     preconditions: [],
     execution: { filePolicy: { allowedRoots: [f.repoRoot] } }
-  }, { repoRoot: f.repoRoot }), 'bounds-reviewer');
+  }, { repoRoot: f.repoRoot }), 'bounds-reviewer', { repoRoot: f.repoRoot });
 
   const report = applyPlan(plan, { repoRoot: f.repoRoot, stateHome: f.stateHome });
   assert.equal(report.success, false);

@@ -53,7 +53,8 @@ function writeApprovedPolicyPlan(fixture, filename = 'policy.json') {
       ],
       preconditions: []
     }, { repoRoot: fixture.repoRoot }),
-    'pipeline-policy-reviewer'
+    'pipeline-policy-reviewer',
+    { repoRoot: fixture.repoRoot }
   );
   fs.writeFileSync(
     path.join(fixture.plansDir, filename),
@@ -76,7 +77,8 @@ function writeApprovedFilePlan(fixture, operation) {
       preconditions: [],
       execution: { filePolicy: { allowedRoots: [fixture.repoRoot] } }
     }, { repoRoot: fixture.repoRoot }),
-    'pipeline-recovery-reviewer'
+    'pipeline-recovery-reviewer',
+    { repoRoot: fixture.repoRoot }
   );
   fs.writeFileSync(
     path.join(fixture.plansDir, 'recovery.json'),
@@ -102,22 +104,29 @@ const baseDraft = (id) => ({
   preconditions: []
 });
 
-test('run-pipeline on empty directory returns success', () => {
+test('run-pipeline on empty directory fails closed with a structured input error', () => {
   const dir = tmpDir();
   const result = runPipeline(dir);
-  assert.equal(result.success, true);
+  assert.equal(result.success, false);
   assert.equal(result.results.length, 0);
+  assert.deepEqual(result.inputErrors, [{
+    file: '.',
+    code: 'no-plans',
+    message: 'Pipeline directory contains no recognizable Gatefile v2 plans'
+  }]);
 });
 
-test('run-pipeline dry-run previews all plans', () => {
+test('run-pipeline dry-run reports pending plans as failed static gates', () => {
   const dir = tmpDir();
   writePlan(dir, 'a.json', baseDraft('a'));
   writePlan(dir, 'b.json', baseDraft('b'));
 
   const result = runPipeline(dir, { dryRun: true });
-  assert.equal(result.success, true);
+  assert.equal(result.success, false);
   assert.equal(result.results.length, 2);
-  assert.ok(result.results.every(r => r.status === 'passed'));
+  assert.equal(result.results[0].status, 'failed');
+  assert.equal(result.results[1].status, 'skipped');
+  assert.equal(result.results[0].previewReport.staticGate.passed, false);
 });
 
 test('run-pipeline respects dependency order via dependsOn', () => {
@@ -126,7 +135,7 @@ test('run-pipeline respects dependency order via dependsOn', () => {
   writePlan(dir, 'b.json', baseDraft('b'), { dependsOn: [planA.id] });
 
   const result = runPipeline(dir, { dryRun: true });
-  assert.equal(result.success, true);
+  assert.equal(result.success, false);
   // A should come before B in order
   const idxA = result.order.indexOf(planA.id);
   const idxB = result.order.findIndex(id => id !== planA.id);
@@ -201,8 +210,8 @@ test('formatPipelineSummary produces readable output', () => {
   const result = runPipeline(dir, { dryRun: true });
   const summary = formatPipelineSummary(result);
   assert.ok(summary.includes('Pipeline Summary'));
-  assert.ok(summary.includes('[PASS]'));
-  assert.ok(summary.includes('1 passed'));
+  assert.ok(summary.includes('[FAIL]'));
+  assert.ok(summary.includes('1 failed'));
 });
 
 test('run-pipeline skips non-plan JSON files', () => {
@@ -212,7 +221,7 @@ test('run-pipeline skips non-plan JSON files', () => {
 
   const result = runPipeline(dir, { dryRun: true });
   assert.equal(result.results.length, 1);
-  assert.equal(result.success, true);
+  assert.equal(result.success, false);
 });
 
 test('pipeline rejects unsigned approvals under trusted-signer policy without mutation', (t) => {
@@ -222,7 +231,7 @@ test('pipeline rejects unsigned approvals under trusted-signer policy without mu
   const result = runPipeline(f.plansDir, {
     repoRoot: f.repoRoot,
     stateHome: f.stateHome,
-    config: { signers: { trustedKeyIds: ['required-pipeline-signer'] } }
+    config: { signers: { trustedKeyIds: ['gfk1_4444444444444444'] } }
   });
 
   assert.equal(result.success, false, JSON.stringify(result, null, 2));
@@ -260,14 +269,38 @@ test('pipeline reports beforeApply denial without target mutation', (t) => {
 
 test('pipeline constructs one engine and delegates each real plan directly to applyPlan', (t) => {
   const f = policyFixture(t, 'gatefile-pipeline-one-engine-');
+  const planA = createPlanFromDraft({
+    source: 'pipeline-engine-probe',
+    summary: 'Pipeline engine probe A',
+    operations: [{
+      id: 'op_pipeline_probe_a',
+      type: 'file',
+      action: 'create',
+      path: path.join(f.repoRoot, 'probe-a.txt'),
+      after: 'a\n'
+    }],
+    preconditions: []
+  }, { repoRoot: f.repoRoot });
+  const planB = createPlanFromDraft({
+    source: 'pipeline-engine-probe',
+    summary: 'Pipeline engine probe B',
+    operations: [{
+      id: 'op_pipeline_probe_b',
+      type: 'file',
+      action: 'create',
+      path: path.join(f.repoRoot, 'probe-b.txt'),
+      after: 'b\n'
+    }],
+    preconditions: []
+  }, { repoRoot: f.repoRoot });
   fs.writeFileSync(
     path.join(f.plansDir, 'a.json'),
-    JSON.stringify({ id: 'plan_pipeline_a', operations: [] }),
+    JSON.stringify(planA),
     'utf8'
   );
   fs.writeFileSync(
     path.join(f.plansDir, 'b.json'),
-    JSON.stringify({ id: 'plan_pipeline_b', operations: [] }),
+    JSON.stringify(planB),
     'utf8'
   );
 
@@ -326,7 +359,7 @@ test('pipeline constructs one engine and delegates each real plan directly to ap
   };
   delete require.cache[pipelinePath];
 
-  const config = { signers: { trustedKeyIds: ['pipeline-probe-key'] } };
+  const config = { signers: { trustedKeyIds: ['gfk1_5555555555555555'] } };
   try {
     const isolatedPipeline = require(pipelinePath);
     const result = isolatedPipeline.runPipeline(f.plansDir, {

@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { generateKeyPairSync } = require('node:crypto');
 const { execFileSync } = require('node:child_process');
 
 const { GatefileEngine } = require('../dist');
@@ -83,7 +84,7 @@ test('GatefileEngine pins repository context and enforces its signer policy', (t
     repoRoot,
     repositoryId: 'repo:engine-test',
     stateHome,
-    config: { signers: { trustedKeyIds: ['trusted-key'] } }
+    config: { signers: { trustedKeyIds: ['gfk1_7777777777777777'] } }
   });
   const otherEngine = new GatefileEngine({
     repoRoot: otherRepoRoot,
@@ -255,7 +256,7 @@ test('GatefileEngine keeps a selected non-Git root pinned after repository topol
 
 test('GatefileEngine keeps explicit policy in runtime-private pinned state', (t) => {
   const { repoRoot, stateHome } = makeFixture(t, 'gatefile-engine-private-policy-');
-  const suppliedConfig = { signers: { trustedKeyIds: ['trusted-key'] } };
+  const suppliedConfig = { signers: { trustedKeyIds: ['gfk1_7777777777777777'] } };
   const engine = new GatefileEngine({
     repoRoot,
     repositoryId: 'repo:private-policy-test',
@@ -284,7 +285,7 @@ test('GatefileEngine policy resolution cannot be shadowed through JavaScript pro
     repoRoot,
     repositoryId: 'repo:private-resolver-test',
     stateHome,
-    config: { signers: { trustedKeyIds: ['trusted-key'] } }
+    config: { signers: { trustedKeyIds: ['gfk1_7777777777777777'] } }
   });
   const unsignedPlan = engine.approvePlan(
     engine.createPlan(makeDraft('Preserve private policy resolution')),
@@ -371,6 +372,18 @@ test('GatefileEngine validates approval input before running policy hooks', (t) 
       signingKeyId: 'key-without-private-material'
     }),
     /signingKeyId requires signingPrivateKeyPem/i
+  );
+  assert.equal(fs.existsSync(markerPath), false);
+
+  const signingKey = generateKeyPairSync('ed25519').privateKey
+    .export({ format: 'pem', type: 'pkcs8' })
+    .toString();
+  assert.throws(
+    () => engine.approvePlan(validPlan, 'reviewer', {
+      signingPrivateKeyPem: signingKey,
+      signingKeyId: 'gfk1_0000000000000000'
+    }),
+    /key ID must match the signing key/i
   );
   assert.equal(fs.existsSync(markerPath), false);
 });
@@ -680,7 +693,7 @@ test('GatefileEngine reloads the default repository config for each operation', 
 
   fs.writeFileSync(
     path.join(repoRoot, 'gatefile.config.json'),
-    JSON.stringify({ signers: { trustedKeyIds: ['trusted-key'] } }, null, 2),
+    JSON.stringify({ signers: { trustedKeyIds: ['gfk1_7777777777777777'] } }, null, 2),
     'utf8'
   );
 

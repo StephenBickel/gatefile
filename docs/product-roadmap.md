@@ -31,6 +31,22 @@ New product surface and feature work are deferred until the stabilization freeze
 - Engine-backed package-root lifecycle compatibility functions
 - Engine delegation across the CLI, SDK, pipeline, interactive review, PR review,
   and MCP first-party adapters
+- Strict runtime/JSON Schema parity for signer trust, blocking policy hooks, and
+  best-effort lifecycle notifications, including fail-closed unknown-key checks
+- Complete inspect verification snapshots plus dry-run `staticGate` evidence for
+  verification, dependencies, and per-operation policy decisions
+- Deterministic, validate-before-mutate pipelines with structured malformed-input,
+  duplicate-ID, and dependency-cycle errors
+- Audit projected only from authenticated external receipt/snapshot chains;
+  repository-local legacy audit files are not trusted
+- An explicit installed-package export allowlist for the root API, both JSON
+  schemas, and package metadata, with unsupported `dist/*` package specifiers
+  blocked (a compatibility boundary, not a same-process filesystem sandbox)
+- A startup-pinned MCP authority model with confined I/O, strict JSON-RPC
+  validation, bounded command output capture, and capability-gated mutations
+- A reusable GitHub Action that executes action-owned Gatefile code, requires a
+  tracked plan plus trusted policy or an explicit unsigned opt-in, and preserves
+  a runner-staged, manifest-bound evidence bundle before enforcing readiness
 
 ## Current stabilization boundary
 
@@ -42,13 +58,21 @@ method receives the same snapshot, canonical repository root, repository ID,
 and state home. Rollback does not reload repository config, preserving
 authenticated recovery when policy is malformed.
 
-This engine migration does not finish the installed-package stabilization work.
-Raw lifecycle kernels and deep `dist/*` imports are unsupported, but the files
-remain physically reachable because the alpha package still ships its full
-`dist` tree without an `exports` map. PR7 will add the explicit package export
-contract. Legacy audit storage and the split best-effort notification-hook config
-also retain their existing contracts pending that separate audit/config/package
-repair; they are not fixed by the engine migration.
+The machine-facing stabilization contracts are now explicit. The installed
+package exposes only its allowlisted root API, both schemas, and package
+metadata. Runtime config and the published schema share one strict shape;
+canonical notifications are best-effort and cannot change authorization.
+Audit reads only authenticated external receipts. Dry-run and pipeline reports
+carry machine-readable gate and input-error evidence rather than relying on
+process exit alone.
+
+Long-running MCP authority is fixed at startup. Requests cannot substitute a
+repository, state home, or signing key, and mutation tools do not exist unless
+their startup capabilities are enabled. The reusable Action similarly runs its
+own Gatefile checkout and produces commit-, policy-, and plan-bound evidence
+before its final enforcement step. These are alpha contracts backed by
+conformance tests, not a claim that arbitrary command side effects are sandboxed
+or automatically reversible.
 
 ## Deferred feature roadmap
 
@@ -67,7 +91,9 @@ Rationale: trust bottleneck is approval identity, and GitHub PR is the dominant 
 
 Rationale: reduce friction between plan review and repo review.
 
-- Official GitHub Action + check-run package with first-party maintained status signals
+- Reusable first-party GitHub Action for trusted-policy verification and bound
+  evidence artifacts (alpha implemented)
+- First-party check-run integration with maintained status signals
 - Structured PR comment renderer with re-run safe updates and blocker classification
 - Optional required-status policy templates for branch protection
 - Approval UX that can sign from CI-safe contexts without exposing raw secret material in logs

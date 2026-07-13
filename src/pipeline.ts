@@ -1,7 +1,8 @@
-import { readFileSync, readdirSync } from "node:fs";
+import { lstatSync, readFileSync, readdirSync } from "node:fs";
 import { resolve, join } from "node:path";
-import type { ApplyReport, PlanFile } from "./types";
+import { PLAN_VERSION, type ApplyReport, type DryRunReport, type PlanFile } from "./types";
 import { GatefileEngine, type GatefileEngineOptions } from "./engine";
+import { validatePlanFile } from "./validation";
 
 // ── Types ─────────────────────────────────────────────────────
 
@@ -19,12 +20,29 @@ export interface PipelinePlanResult {
   message: string;
   /** Complete apply outcome, including authenticated rollback authority. */
   applyReport?: ApplyReport;
+  /** Complete non-mutating evidence when the pipeline is run in dry-run mode. */
+  previewReport?: DryRunReport;
+}
+
+export type PipelineInputErrorCode =
+  | "invalid-json"
+  | "invalid-plan"
+  | "unsafe-entry"
+  | "duplicate-plan-id"
+  | "dependency-cycle"
+  | "no-plans";
+
+export interface PipelineInputError {
+  file: string;
+  code: PipelineInputErrorCode;
+  message: string;
 }
 
 export interface PipelineResult {
   success: boolean;
   order: string[];
   results: PipelinePlanResult[];
+  inputErrors: PipelineInputError[];
 }
 
 // ── Helpers ───────────────────────────────────────────────────
@@ -35,27 +53,99 @@ interface PlanEntry {
   dependsOn: string[];
 }
 
-function readPlanEntries(dir: string): PlanEntry[] {
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isPlanLike(value: unknown): value is Record<string, unknown> {
+  if (!isPlainObject(value)) return false;
+  if (value.version === PLAN_VERSION) return true;
+  const hasPlanId = typeof value.id === "string" && value.id.trim().length > 0;
+  const hasOperations = Array.isArray(value.operations);
+  const hasContext = isPlainObject(value.context) &&
+    typeof value.context.repositoryId === "string";
+  const hasIntegrity = isPlainObject(value.integrity) && (
+    Object.prototype.hasOwnProperty.call(value.integrity, "planHash") ||
+    Object.prototype.hasOwnProperty.call(value.integrity, "algorithm")
+  );
+  const hasApproval = isPlainObject(value.approval) &&
+    ["pending", "approved", "rejected"].includes(String(value.approval.status));
+  const strongShapeCount = [hasContext, hasIntegrity, hasApproval]
+    .filter(Boolean).length;
+  if (hasOperations) return hasPlanId || strongShapeCount > 0;
+  if (hasPlanId) return strongShapeCount >= 2;
+  return hasContext && hasIntegrity && hasApproval;
+}
+
+function readPlanEntries(dir: string): { entries: PlanEntry[]; inputErrors: PipelineInputError[] } {
   const absDir = resolve(dir);
-  const files = readdirSync(absDir).filter((f) => f.endsWith(".json"));
+  const files = readdirSync(absDir).filter((f) => f.endsWith(".json")).sort();
   const entries: PlanEntry[] = [];
+  const inputErrors: PipelineInputError[] = [];
 
   for (const file of files) {
     const fullPath = join(absDir, file);
+    const stat = lstatSync(fullPath);
+    if (!stat.isFile()) {
+      inputErrors.push({
+        file,
+        code: "unsafe-entry",
+        message: `Pipeline JSON entry must be a regular file, not a symlink or special file: ${file}`
+      });
+      continue;
+    }
+
+    let raw: unknown;
     try {
-      const raw = JSON.parse(readFileSync(fullPath, "utf-8"));
-      if (!raw.id || !raw.operations) continue; // skip non-plan JSON
-      const plan = raw as PlanFile;
-      const dependsOn: string[] = Array.isArray((raw as Record<string, unknown>).dependsOn)
-        ? ((raw as Record<string, unknown>).dependsOn as string[])
-        : [];
-      entries.push({ file, plan, dependsOn });
-    } catch {
-      // skip files that aren't valid JSON
+      raw = JSON.parse(readFileSync(fullPath, "utf-8")) as unknown;
+    } catch (error) {
+      inputErrors.push({
+        file,
+        code: "invalid-json",
+        message: `Invalid JSON in ${file}: ${(error as Error).message}`
+      });
+      continue;
+    }
+
+    if (!isPlanLike(raw)) continue;
+    try {
+      const plan = validatePlanFile(raw) as PlanFile;
+      entries.push({ file, plan, dependsOn: plan.dependsOn ?? [] });
+    } catch (error) {
+      inputErrors.push({
+        file,
+        code: "invalid-plan",
+        message: `Invalid plan in ${file}: ${(error as Error).message}`
+      });
     }
   }
 
-  return entries;
+  const entriesById = new Map<string, PlanEntry[]>();
+  for (const entry of entries) {
+    const matches = entriesById.get(entry.plan.id) ?? [];
+    matches.push(entry);
+    entriesById.set(entry.plan.id, matches);
+  }
+  for (const [planId, matches] of entriesById) {
+    if (matches.length < 2) continue;
+    const filenames = matches.map((entry) => entry.file).join(", ");
+    for (const entry of matches) {
+      inputErrors.push({
+        file: entry.file,
+        code: "duplicate-plan-id",
+        message: `Duplicate plan ID ${planId} appears in: ${filenames}`
+      });
+    }
+  }
+
+  return { entries, inputErrors };
+}
+
+class PipelineDependencyCycleError extends Error {
+  constructor(readonly file: string, planId: string) {
+    super(`Circular dependency detected involving plan ${planId}`);
+    this.name = "PipelineDependencyCycleError";
+  }
 }
 
 function topologicalSort(entries: PlanEntry[]): PlanEntry[] {
@@ -71,7 +161,7 @@ function topologicalSort(entries: PlanEntry[]): PlanEntry[] {
   function visit(entry: PlanEntry): void {
     if (visited.has(entry.plan.id)) return;
     if (visiting.has(entry.plan.id)) {
-      throw new Error(`Circular dependency detected involving plan ${entry.plan.id}`);
+      throw new PipelineDependencyCycleError(entry.file, entry.plan.id);
     }
 
     visiting.add(entry.plan.id);
@@ -99,13 +189,44 @@ function topologicalSort(entries: PlanEntry[]): PlanEntry[] {
 // ── Public API ────────────────────────────────────────────────
 
 export function runPipeline(dir: string, options?: PipelineOptions): PipelineResult {
-  const entries = readPlanEntries(dir);
+  const discovered = readPlanEntries(dir);
+  const { entries, inputErrors } = discovered;
 
-  if (entries.length === 0) {
-    return { success: true, order: [], results: [] };
+  if (inputErrors.length > 0) {
+    return { success: false, order: [], results: [], inputErrors };
   }
 
-  const sorted = topologicalSort(entries);
+  if (entries.length === 0) {
+    return {
+      success: false,
+      order: [],
+      results: [],
+      inputErrors: [{
+        file: ".",
+        code: "no-plans",
+        message: "Pipeline directory contains no recognizable Gatefile v2 plans"
+      }]
+    };
+  }
+
+  let sorted: PlanEntry[];
+  try {
+    sorted = topologicalSort(entries);
+  } catch (error) {
+    if (error instanceof PipelineDependencyCycleError) {
+      return {
+        success: false,
+        order: [],
+        results: [],
+        inputErrors: [{
+          file: error.file,
+          code: "dependency-cycle",
+          message: error.message
+        }]
+      };
+    }
+    throw error;
+  }
   const order = sorted.map((e) => e.plan.id);
   let engine: GatefileEngine;
   try {
@@ -135,7 +256,7 @@ export function runPipeline(dir: string, options?: PipelineOptions): PipelineRes
         message
       };
     });
-    return { success: false, order, results };
+    return { success: false, order, results, inputErrors: [] };
   }
   const results: PipelinePlanResult[] = [];
   let failed = false;
@@ -153,15 +274,36 @@ export function runPipeline(dir: string, options?: PipelineOptions): PipelineRes
 
     if (options?.dryRun) {
       try {
-        engine.previewPlan(entry.plan, {
+        const previewReport = engine.previewPlan(entry.plan, {
           planPath: join(resolve(dir), entry.file)
         });
-        results.push({
-          planId: entry.plan.id,
-          file: entry.file,
-          status: "passed",
-          message: "Dry-run preview completed"
-        });
+        if (previewReport.staticGate.passed) {
+          results.push({
+            planId: entry.plan.id,
+            file: entry.file,
+            status: "passed",
+            message: "Dry-run static gate passed (runtime preconditions not checked)",
+            previewReport
+          });
+        } else {
+          failed = true;
+          const blockers = [
+            ...previewReport.verification.blockers,
+            ...(previewReport.dependencies.allSatisfied
+              ? []
+              : [`missing dependencies: ${previewReport.dependencies.missingPlanIds.join(", ")}`]),
+            ...previewReport.results
+              .filter((result) => !result.allowed)
+              .map((result) => `operation ${result.operationId} denied by static policy`)
+          ];
+          results.push({
+            planId: entry.plan.id,
+            file: entry.file,
+            status: "failed",
+            message: `Dry-run static gate blocked: ${blockers.join("; ") || "unknown blocker"}`,
+            previewReport
+          });
+        }
       } catch (err) {
         failed = true;
         results.push({
@@ -215,12 +357,21 @@ export function runPipeline(dir: string, options?: PipelineOptions): PipelineRes
   return {
     success: !results.some((r) => r.status === "failed"),
     order,
-    results
+    results,
+    inputErrors: []
   };
 }
 
 export function formatPipelineSummary(result: PipelineResult): string {
   const lines: string[] = ["Pipeline Summary", ""];
+
+  if (result.inputErrors.length > 0) {
+    lines.push(`Input errors: ${result.inputErrors.length}`);
+    for (const error of result.inputErrors) {
+      lines.push(`[INPUT FAIL] ${error.file}: ${error.message}`);
+    }
+    return lines.join("\n");
+  }
 
   if (result.results.length === 0) {
     lines.push("No plan files found.");

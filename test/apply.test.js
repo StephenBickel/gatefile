@@ -5,7 +5,13 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
-const { applyPlan, createPlanFromDraft, approvePlan, previewPlan } = require('../dist');
+const {
+  applyPlan,
+  approvePlan,
+  createPlanFromDraft,
+  formatDryRunSummary,
+  previewPlan
+} = require('../dist');
 
 const CLI_PATH = path.join(__dirname, '..', 'dist', 'cli.js');
 
@@ -174,7 +180,8 @@ test('applyPlan resolves configured beforeApply hook cwd from the repository roo
       },
       { repoRoot }
     ),
-    'ci-user'
+    'ci-user',
+    { repoRoot }
   );
   const config = {
     hooks: {
@@ -210,7 +217,16 @@ test('previewPlan shows file and command actions without executing side effects'
 
     assert.equal(report.success, true);
     assert.equal(report.preconditionsChecked, false);
+    assert.deepEqual(report.staticGate, {
+      passed: false,
+      verificationReady: true,
+      dependenciesSatisfied: true,
+      operationsAllowed: false,
+      preconditionsChecked: false
+    });
     assert.equal(report.results.length, 4);
+    assert.equal(report.results[0].allowed, true);
+    assert.ok(report.results.some((result) => !result.allowed));
     assert.match(report.results[0].message, /would create/);
     assert.match(report.results[0].details, /path safety: allowed/);
     assert.match(report.results[1].message, /would update/);
@@ -241,7 +257,7 @@ test('previewPlan reports untrusted signer when trust policy is configured', () 
     const report = previewPlan(plan, {
       config: {
         signers: {
-          trustedKeyIds: ['trusted-signer-1']
+          trustedKeyIds: ['gfk1_1111111111111111']
         }
       }
     });
@@ -265,7 +281,7 @@ test('applyPlan refuses unsigned approvals when signer trust policy is configure
         applyPlan(plan, {
           config: {
             signers: {
-              trustedKeyIds: ['trusted-signer-1']
+              trustedKeyIds: ['gfk1_1111111111111111']
             }
           }
         }),
@@ -284,6 +300,8 @@ test('previewPlan on pending plans is allowed and reports not-ready verification
 
     assert.equal(report.success, true);
     assert.equal(report.results.length, 4);
+    assert.equal(report.staticGate.passed, false);
+    assert.equal(report.staticGate.verificationReady, false);
     assertDryRunVerification(report, {
       status: 'not-ready',
       approvalStatus: 'pending',
@@ -619,11 +637,44 @@ test('previewPlan marks file operations denied when path is outside default work
 
     assert.equal(report.success, true);
     assert.equal(report.results.length, 1);
+    assert.equal(report.results[0].allowed, false);
+    assert.equal(report.staticGate.operationsAllowed, false);
+    assert.equal(report.staticGate.passed, false);
     assert.match(report.results[0].message, /\[DENIED by file policy\]/);
     assert.match(report.results[0].details, /path safety: denied/);
     assert.match(report.results[0].details, /allowedRoots:/);
     assertRecoveryShape(report.recovery);
     assert.equal(fs.existsSync(outsidePath), false);
+  } finally {
+    fs.rmSync(outsideRoot, { recursive: true, force: true });
+  }
+});
+
+test('formatDryRunSummary surfaces the static gate and each denied operation', () => {
+  const outsideRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gatefile-preview-human-denied-'));
+  try {
+    const outsidePath = path.join(outsideRoot, 'outside.txt');
+    const plan = approvePlan(createPlanFromDraft({
+      source: 'test-agent',
+      summary: 'Human preview must expose policy denial',
+      operations: [{
+        id: 'op_denied_human',
+        type: 'file',
+        action: 'create',
+        path: outsidePath,
+        after: 'denied\n'
+      }],
+      preconditions: []
+    }), 'ci-user');
+    const report = previewPlan(plan);
+    const summary = formatDryRunSummary(report);
+
+    assert.match(summary, /Static Gate: failed/);
+    assert.match(summary, /Operation Policy: denied/);
+    assert.match(summary, /Preconditions Checked: no/);
+    assert.match(summary, /Denied Operations: 1/);
+    assert.match(summary, /op_denied_human/);
+    assert.match(summary, /DENIED by file policy/);
   } finally {
     fs.rmSync(outsideRoot, { recursive: true, force: true });
   }

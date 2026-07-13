@@ -40,7 +40,7 @@ export interface ApproveOptions
   approvedBy?: string;
   /** Optional Ed25519 private key used to attest the approval. */
   signingPrivateKeyPem?: string;
-  /** Optional signing key identity. */
+  /** Optional key ID assertion; it must equal the ID derived from the signing key. */
   signingKeyId?: string;
 }
 
@@ -118,7 +118,7 @@ export async function inspectPlan(
   const plan = readPlan(planPath);
   const engine = new GatefileEngine({
     repoRoot: options?.repoRoot,
-    repositoryId: options?.repositoryId ?? plan.context?.repositoryId,
+    repositoryId: options?.repositoryId,
     stateHome: options?.stateHome,
     config: options?.config
   });
@@ -136,7 +136,7 @@ export async function approvePlan(
   validatePlanFile(plan);
   const engine = new GatefileEngine({
     repoRoot: options?.repoRoot,
-    repositoryId: options?.repositoryId ?? plan.context.repositoryId,
+    repositoryId: options?.repositoryId,
     config: options?.config
   });
   const approved = engine.approvePlan(plan, options?.approvedBy ?? "sdk", {

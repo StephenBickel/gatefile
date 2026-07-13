@@ -13,6 +13,11 @@ import {
 } from "./types";
 import { DEFAULT_MAX_PRIVATE_STATE_FILE_BYTES } from "./state-auth";
 import { unicodeScalarLength } from "./unicode";
+import {
+  canonicalizeApprovalPublicKeyPem,
+  isApprovalKeyId,
+  isCanonicalApprovalSignature
+} from "./approval-key";
 
 /** Limits shared by plan validation and the authenticated state-record contract. */
 export const STATE_RECORD_BOUND_ID_MAX_LENGTH = 1_024;
@@ -115,6 +120,22 @@ function requireBoundId(value: unknown, path: string, issues: ValidationIssue[])
     STATE_RECORD_BOUND_ID_MAX_LENGTH,
     issues
   );
+}
+
+function requireApprovalKeyId(
+  value: unknown,
+  path: string,
+  issues: ValidationIssue[]
+): value is string {
+  if (!requireNonEmptyString(value, path, issues)) return false;
+  if (!isApprovalKeyId(value)) {
+    issues.push({
+      path,
+      message: "must be gfk1_ followed by 16 lowercase hexadecimal characters"
+    });
+    return false;
+  }
+  return true;
 }
 
 function requireReceiptTextInput(
@@ -392,8 +413,8 @@ function validateDraftFields(draft: JsonObject, issues: ValidationIssue[]): void
   if (draft.version !== undefined && draft.version !== PLAN_VERSION) {
     issues.push({ path: "version", message: `must be ${PLAN_VERSION}` });
   }
-  requireNonEmptyString(draft.source, "source", issues);
-  requireNonEmptyString(draft.summary, "summary", issues);
+  requireReceiptTextInput(draft.source, "source", issues);
+  requireReceiptTextInput(draft.summary, "summary", issues);
   if (draft.dependsOn !== undefined) {
     validateStringArray(draft.dependsOn, "dependsOn", issues, {
       unique: true,
@@ -465,9 +486,26 @@ function validateAttestation(value: unknown, path: string, issues: ValidationIss
   if (attestation.scheme !== "ed25519-sha256") {
     issues.push({ path: `${path}.scheme`, message: "must be ed25519-sha256" });
   }
-  requireNonEmptyString(attestation.keyId, `${path}.keyId`, issues);
-  requireNonEmptyString(attestation.publicKeyPem, `${path}.publicKeyPem`, issues);
-  requireNonEmptyString(attestation.signature, `${path}.signature`, issues);
+  requireApprovalKeyId(attestation.keyId, `${path}.keyId`, issues);
+  if (requireNonEmptyString(attestation.publicKeyPem, `${path}.publicKeyPem`, issues)) {
+    try {
+      canonicalizeApprovalPublicKeyPem(attestation.publicKeyPem);
+    } catch {
+      issues.push({
+        path: `${path}.publicKeyPem`,
+        message: "must be a canonical Ed25519 SPKI public PEM"
+      });
+    }
+  }
+  if (
+    typeof attestation.signature !== "string" ||
+    !isCanonicalApprovalSignature(attestation.signature)
+  ) {
+    issues.push({
+      path: `${path}.signature`,
+      message: "must be canonical base64 for one 64-byte Ed25519 signature"
+    });
+  }
   const payloadPath = `${path}.payload`;
   const payload = objectAt(attestation.payload, payloadPath, issues);
   if (!payload) return;
@@ -481,7 +519,7 @@ function validateAttestation(value: unknown, path: string, issues: ValidationIss
     issues.push({ path: `${payloadPath}.type`, message: "must be gatefile-approval-v1" });
   }
   requireBoundId(payload.planId, `${payloadPath}.planId`, issues);
-  requireNonEmptyString(payload.approvedBy, `${payloadPath}.approvedBy`, issues);
+  requireReceiptTextInput(payload.approvedBy, `${payloadPath}.approvedBy`, issues);
   requireRfc3339DateTime(payload.approvedAt, `${payloadPath}.approvedAt`, issues);
   if (typeof payload.approvedPlanHash !== "string" || !/^[a-f0-9]{64}$/.test(payload.approvedPlanHash)) {
     issues.push({ path: `${payloadPath}.approvedPlanHash`, message: "must be a SHA-256 hex digest" });
@@ -501,7 +539,7 @@ function validateApproval(value: unknown, path: string, issues: ValidationIssue[
     issues.push({ path: `${path}.status`, message: "must be pending, approved, or rejected" });
   }
   if (approval.approvedBy !== undefined) {
-    requireNonEmptyString(approval.approvedBy, `${path}.approvedBy`, issues);
+    requireReceiptTextInput(approval.approvedBy, `${path}.approvedBy`, issues);
   }
   if (approval.approvedAt !== undefined) {
     requireRfc3339DateTime(approval.approvedAt, `${path}.approvedAt`, issues);
@@ -557,8 +595,8 @@ export function validatePlanFile(value: unknown): PlanFile {
     }
     requireBoundId(plan.id, "id", issues);
     requireRfc3339DateTime(plan.createdAt, "createdAt", issues);
-    requireNonEmptyString(plan.source, "source", issues);
-    requireNonEmptyString(plan.summary, "summary", issues);
+    requireReceiptTextInput(plan.source, "source", issues);
+    requireReceiptTextInput(plan.summary, "summary", issues);
     validateContext(plan.context, "context", issues);
     if (plan.dependsOn !== undefined) {
       validateStringArray(plan.dependsOn, "dependsOn", issues, {

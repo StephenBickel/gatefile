@@ -42,7 +42,8 @@ function approvedCommandPlan(operation, execution, repoRoot) {
       preconditions: [],
       ...(execution ? { execution } : {})
     }, { repoRoot }),
-    'reviewer'
+    'reviewer',
+    { repoRoot }
   );
 }
 
@@ -58,6 +59,47 @@ test('shell metacharacters in arguments remain literal data', () => {
     assert.equal(report.success, true);
     assert.equal(fs.readFileSync(marker, 'utf8'), payload);
     assert.equal(fs.existsSync(injected), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('captured command mode keeps bounded stdout and stderr in the operation report', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gatefile-structured-capture-'));
+  try {
+    const operation = {
+      id: 'captured-output',
+      type: 'command',
+      executable: process.execPath,
+      args: [
+        '-e',
+        'process.stdout.write(Buffer.from("Q0FQVFVSRUQtU1RET1VU","base64"));' +
+          'process.stderr.write(Buffer.from("Q0FQVFVSRUQtU1RERVJS","base64"))'
+      ]
+    };
+    const report = applyPlan(approvedCommandPlan(operation, undefined, root), {
+      repoRoot: root,
+      commandOutput: { mode: 'capture', maxBytes: 4096 }
+    });
+
+    assert.equal(report.success, true, JSON.stringify(report, null, 2));
+    assert.match(report.results[0].message, /CAPTURED-STDOUT/);
+    assert.match(report.results[0].message, /CAPTURED-STDERR/);
+    assert.ok(report.results[0].message.length < 16_384);
+
+    const longOutput = {
+      id: 'captured-output-truncated',
+      type: 'command',
+      executable: process.execPath,
+      args: ['-e', 'process.stdout.write("X".repeat(100))']
+    };
+    const truncated = applyPlan(approvedCommandPlan(longOutput, undefined, root), {
+      repoRoot: root,
+      commandOutput: { mode: 'capture', maxBytes: 16 }
+    });
+    assert.equal(truncated.success, true);
+    assert.match(truncated.results[0].message, /stdout="XXXXXXXXXXXXXXXX"/);
+    assert.match(truncated.results[0].message, /truncated at 16 bytes/);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -109,7 +151,8 @@ test('nonzero exits stop apply unless allowFailure explicitly permits continuati
         preconditions: [],
         execution: { filePolicy: { allowedRoots: [root] } }
       }, { repoRoot: root }),
-      'reviewer'
+      'reviewer',
+      { repoRoot: root }
     );
     const failed = applyPlan(failingPlan, { repoRoot: root });
     assert.equal(failed.success, false);
@@ -141,7 +184,8 @@ test('nonzero exits stop apply unless allowFailure explicitly permits continuati
         preconditions: [],
         execution: { filePolicy: { allowedRoots: [root] } }
       }, { repoRoot: root }),
-      'reviewer'
+      'reviewer',
+      { repoRoot: root }
     );
     const continued = applyPlan(allowedPlan, { repoRoot: root });
     assert.equal(continued.success, true);
@@ -619,7 +663,7 @@ test('all command policies are preflighted before an earlier file mutation', () 
           rules: [{ executable: denied.executable, args: denied.args }]
         }
       }
-    }, { repoRoot: root }), 'reviewer');
+    }, { repoRoot: root }), 'reviewer', { repoRoot: root });
 
     const report = applyPlan(plan, { repoRoot: root });
     assert.equal(report.success, false);
@@ -657,7 +701,7 @@ test('git top-level is the stable base for relative files and command cwd', () =
         }
       ],
       preconditions: []
-    }, { repoRoot: root }), 'reviewer');
+    }, { repoRoot: root }), 'reviewer', { repoRoot: root });
 
     const report = applyPlan(plan, { repoRoot: subdir });
     assert.equal(report.success, true);

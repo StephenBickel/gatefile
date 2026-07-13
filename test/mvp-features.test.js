@@ -65,7 +65,11 @@ function makeApprovedFilePlan(root, options = {}) {
   };
 
   return {
-    plan: approvePlan(createPlanFromDraft(draft, { repoRoot: root }), 'ci-user'),
+    plan: approvePlan(
+      createPlanFromDraft(draft, { repoRoot: root }),
+      'ci-user',
+      { repoRoot: root }
+    ),
     files: { updatePath, deletePath, createPath }
   };
 }

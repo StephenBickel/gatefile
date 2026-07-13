@@ -41,7 +41,7 @@ const engine = new GatefileEngine({
   repoRoot,
   repositoryId: 'repo:engine-test',
   stateHome,
-  config: { signers: { trustedKeyIds: ['trusted-key'] } }
+  config: { signers: { trustedKeyIds: ['gfk1_7777777777777777'] } }
 });
 
 assert.equal(engine.context.repoRoot, fs.realpathSync(repoRoot));

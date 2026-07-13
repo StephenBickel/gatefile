@@ -84,3 +84,40 @@ test('package-root approvePlan enforces beforeApprove policy from canonical cwd'
     process.chdir(originalCwd);
   }
 });
+
+test('package-root approvePlan never adopts repository authority asserted by the plan', (t) => {
+  const repoA = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'gatefile-engine-api-a-')));
+  const repoB = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'gatefile-engine-api-b-')));
+  t.after(() => {
+    fs.rmSync(repoA, { recursive: true, force: true });
+    fs.rmSync(repoB, { recursive: true, force: true });
+  });
+  const plan = createPlanFromDraft({
+    source: 'engine-api-test',
+    summary: 'Reject foreign plan authority',
+    operations: [{
+      id: 'op_foreign_context',
+      type: 'file',
+      action: 'create',
+      path: 'foreign.txt',
+      after: 'never implicitly approved\n'
+    }],
+    preconditions: []
+  }, { repoRoot: repoA });
+  const before = JSON.stringify(plan);
+  const originalCwd = process.cwd();
+
+  process.chdir(repoB);
+  try {
+    assert.throws(
+      () => approvePlan(plan, 'reviewer'),
+      /repository context.*does not match engine repository context/i
+    );
+    assert.equal(JSON.stringify(plan), before);
+  } finally {
+    process.chdir(originalCwd);
+  }
+
+  const explicitlyBound = approvePlan(plan, 'reviewer', { repoRoot: repoA });
+  assert.equal(explicitlyBound.approval.status, 'approved');
+});

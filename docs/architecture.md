@@ -11,6 +11,8 @@
 - Delegate policy-sensitive lifecycle decisions to the engine
 - Retain adapter-owned plan JSON I/O, presentation, audit calls, and outbound
   notification delivery
+- Pin MCP repository, state, approval, and mutation authority at server startup;
+  request payloads cannot replace that authority
 
 2. Policy engine (`src/engine.ts`)
 - `GatefileEngine` is the primary supported in-memory lifecycle boundary
@@ -18,6 +20,8 @@
   home when constructed
 - Reloads default repository config once per policy-sensitive method, or uses
   the normalized defensive snapshot supplied explicitly at construction
+- Enforces the same strict config shape as the published JSON Schema: signer
+  trust, blocking policy hooks, and best-effort lifecycle notifications
 - Passes one effective config snapshot and the pinned context through every
   policy check performed by that method
 - Keeps authenticated rollback independent of repository config parsing so
@@ -44,7 +48,9 @@
 - Returns structured readiness, blockers, and inspection data
 
 6. Applier and authenticated state (`src/applier.ts`, `src/state.ts`)
-- `previewPlan` returns side-effect-free operation previews and includes verification status/blockers
+- `previewPlan` returns side-effect-free operation previews with per-operation
+  policy decisions and a static gate covering verification, dependencies, and
+  operation policy; runtime preconditions are explicitly not evaluated
 - `applyPlan` executes approved operations in order
 - Executes structured executable/argument arrays with `shell: false`
 - Applies timeout defaults plus optional exact-tuple allow/deny policy matching
@@ -79,11 +85,71 @@ package-root lifecycle exports `createPlanFromDraft`, `approvePlan`, `verifyPlan
 engine-backed compatibility wrappers, not independent policy implementations.
 
 The planner, verifier, inspector, and applier kernels remain internal building
-blocks. Deep `dist/*` imports are unsupported, but they are not yet technically
-blocked: this alpha still ships the complete `dist` tree without a package
-`exports` map. PR7 will define that installed-package boundary. PR6 also does not
-redesign legacy audit storage or the split best-effort notification-hook config;
-those audit/config/package contracts remain separate PR7 work.
+blocks. The published package has an explicit `exports` map for the supported
+root API, both JSON schemas, and package metadata. Node package resolution rejects
+unsupported `dist/*` deep imports. The root API is an explicit allowlist and does
+not expose raw mutation kernels or the removed unauthenticated audit writers.
+This is a package-specifier compatibility boundary, not a filesystem or process
+sandbox; same-user code can still locate installed files and address them by
+absolute path.
+
+## Configuration and notification boundary
+
+Runtime normalization and `schema/gatefile.config.schema.json` accept the same
+strict contract. Unknown top-level and nested keys fail closed. `signers`
+configures trusted identities, `hooks.beforeApprove` and `hooks.beforeApply` are
+blocking policy checks, and `notifications.onPlanCreated` and
+`notifications.onPlanApproved` are best-effort delivery actions. Legacy
+notification names under `hooks` normalize to the canonical shape only when
+their replacements are absent. Adapters supply the engine-pinned repository and
+config snapshot, so notification delivery cannot switch policy through ambient
+working-directory configuration.
+
+## Machine-facing boundaries
+
+Dry-run reports separate successful preview generation from authorization. The
+`staticGate` records verification readiness, authenticated dependency state, and
+whether all operations are policy-allowed while stating that runtime
+preconditions were not checked. Pipeline dry-run treats a failed static gate as
+a failed item and preserves the full preview evidence.
+
+Pipeline discovery is deterministic and fail closed. It sorts inputs, validates
+every plan-like JSON document before any mutation, and reports malformed plans,
+unsafe entries, duplicate IDs, and dependency cycles as structured input errors.
+An input error prevents the entire run; unrelated non-plan JSON remains
+ignorable.
+
+The MCP server constructs one engine from trusted startup options. Confined plan
+creation plus inspect, verify, and preview tools are available by default;
+approve, apply, and rollback require explicit startup capabilities, and approval
+also requires out-of-band startup signer configuration. Tool arguments cannot
+choose repository, state, or signing authority. Confined plan I/O and bounded
+command output capture keep requests and child-process output away from protocol
+stdout.
+
+The reusable GitHub Action executes Gatefile from `GITHUB_ACTION_PATH`, never a
+consumer repository's build output. It requires a tracked, unchanged plan and
+either a caller-pinned trusted policy ref and digest or an explicit unsigned,
+no-policy opt-in. Inspect, verify, dry-run, and manifest artifacts are produced
+with a non-hidden copy of the committed plan in a fresh runner-owned staging
+directory before readiness is enforced. Upload receives only that directory,
+and enforcement rechecks the manifest digests and cross-report bindings. The
+manifest binds the plan hashes, Gatefile version, trusted policy, evidence
+digests, and checked-out commit.
+
+This boundary assumes the caller workflow is protected and no hostile same-user
+process is already running on the worker. Examples pin every dependency by full
+commit SHA and place the gate before consumer code execution; workflow
+protection and runner isolation remain deployment responsibilities.
+
+## Audit boundary
+
+Audit is a read-only projection of authenticated external apply receipts and
+their snapshot chains. New receipts carry strictly validated approval metadata;
+older authenticated records without that optional metadata remain readable.
+Repository-local `.gatefile` audit JSON is ignored, and legacy unauthenticated
+writer functions fail before I/O. Audit selection of repository root,
+repository identity, and state home is explicit.
 
 ## Adapter Data Flow
 
@@ -101,7 +167,8 @@ those audit/config/package contracts remain separate PR7 work.
 3. Reviewer runs `review` (interactive TUI) or `inspect-plan` (non-interactive)
 4. Reviewer/CI runs `verify-plan`
 5. Reviewer or policy system runs `approve-plan`
-6. Optional `apply-plan --dry-run` previews plan operations at any stage (pending/approved/tampered)
+6. Optional `apply-plan --dry-run` previews plan operations and reports the
+   non-mutating static gate at any stage (pending/approved/tampered)
 7. `verify-plan` confirms ready status
 8. `apply-plan` re-checks verification, validates preconditions, and applies operations
 9. Apply report includes receipt/snapshot IDs and rollback command guidance

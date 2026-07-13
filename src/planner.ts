@@ -29,6 +29,7 @@ export interface CreatePlanOptions {
 
 export interface ApprovePlanOptions {
   signingPrivateKeyPem?: string;
+  /** Optional key ID assertion; it must equal the ID derived from the signing key. */
   signingKeyId?: string;
 }
 

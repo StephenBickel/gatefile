@@ -35,7 +35,8 @@ function approvedPlan(repoRoot, operations, allowedRoots = [repoRoot]) {
       },
       { repoRoot }
     ),
-    'security-reviewer'
+    'security-reviewer',
+    { repoRoot }
   );
 }
 
@@ -154,7 +155,8 @@ test('default file root accepts the operator absolute spelling of a canonical ma
       }],
       preconditions: []
     }, { repoRoot: f.repoRoot }),
-    'security-reviewer'
+    'security-reviewer',
+    { repoRoot: f.repoRoot }
   );
 
   const report = applyPlan(plan, applyOptions(f));
@@ -509,7 +511,8 @@ test('a forged authenticated-plan-state cache cannot satisfy dependsOn', (t) => 
       preconditions: [],
       execution: { filePolicy: { allowedRoots: [f.repoRoot] } }
     }, { repoRoot: f.repoRoot }),
-    'security-reviewer'
+    'security-reviewer',
+    { repoRoot: f.repoRoot }
   );
 
   assert.throws(
@@ -672,7 +675,8 @@ test('a rollback invalidates direct and transitive dependency state', (t) => {
       preconditions: [],
       execution: { filePolicy: { allowedRoots: [f.repoRoot] } }
     }, { repoRoot: f.repoRoot }),
-    'security-reviewer'
+    'security-reviewer',
+    { repoRoot: f.repoRoot }
   );
 
   const planA = makePlan('a');
@@ -1225,7 +1229,8 @@ test('an undurable visible plan-state cache remains fail-closed for dependents',
       preconditions: [],
       execution: { filePolicy: { allowedRoots: [f.repoRoot] } }
     }, { repoRoot: f.repoRoot }),
-    'security-reviewer'
+    'security-reviewer',
+    { repoRoot: f.repoRoot }
   );
 
   const originalRename = fs.renameSync;
@@ -1309,7 +1314,8 @@ test('pending-marker unlink ambiguity reports success and remains crash-conserva
       preconditions: [],
       execution: { filePolicy: { allowedRoots: [f.repoRoot] } }
     }, { repoRoot: f.repoRoot }),
-    'security-reviewer'
+    'security-reviewer',
+    { repoRoot: f.repoRoot }
   );
 
   const originalUnlink = fs.unlinkSync;
@@ -1376,7 +1382,8 @@ test('rollback never clears a pending marker bound to a different durable receip
       }],
       preconditions: []
     }, { repoRoot: f.repoRoot }),
-    'security-reviewer'
+    'security-reviewer',
+    { repoRoot: f.repoRoot }
   );
   const dependent = approvePlan(
     createPlanFromDraft({
@@ -1391,7 +1398,8 @@ test('rollback never clears a pending marker bound to a different durable receip
       }],
       preconditions: []
     }, { repoRoot: f.repoRoot }),
-    'security-reviewer'
+    'security-reviewer',
+    { repoRoot: f.repoRoot }
   );
 
   const first = applyPlan(repeatable, applyOptions(f));

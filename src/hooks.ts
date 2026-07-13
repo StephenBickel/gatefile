@@ -1,38 +1,80 @@
 import { exec } from "node:child_process";
 import { request as httpsRequest } from "node:https";
 import { request as httpRequest } from "node:http";
-import { readFileSync, existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { URL } from "node:url";
-import { PlanFile, GatefileConfig } from "./types";
+import type {
+  GatefileConfig,
+  NotificationActionConfig,
+  PlanFile
+} from "./types";
 import { sanitizedGitEnvironment } from "./git-environment";
+import {
+  approvalNotificationEventName,
+  loadGatefileConfigFromPinnedRoot,
+  normalizeGatefileConfig
+} from "./config";
+import { getPinnedRepoRoot, getRepoRoot } from "./state";
 
 // ── Config types ──────────────────────────────────────────────
 
-export interface HookAction {
-  webhook?: string;
-  shell?: string;
-}
+export type HookAction = NotificationActionConfig;
 
 export interface HooksConfig {
   onPlanCreated?: HookAction;
+  onPlanApproved?: HookAction;
+  /** @deprecated Use onPlanApproved. */
   onApprovalNeeded?: HookAction;
 }
 
-// ── Config loading ────────────────────────────────────────────
+export interface NotificationDispatchContext {
+  /** Canonical repository root used for config loading and notification shell cwd. */
+  repoRoot?: string;
+  /** Explicit normalized snapshot source. When omitted, config is loaded from repoRoot. */
+  config?: GatefileConfig;
+}
 
-const CONFIG_FILENAME = "gatefile.config.json";
+interface ResolvedNotificationContext {
+  repoRoot: string;
+  hooks?: HooksConfig;
+  approvalEvent?: "plan_approved" | "approval_needed";
+}
 
-export function loadHooksConfig(): HooksConfig | undefined {
-  const configPath = resolve(CONFIG_FILENAME);
-  if (!existsSync(configPath)) return undefined;
+function resolveNotificationContext(
+  context: NotificationDispatchContext = {}
+): ResolvedNotificationContext {
+  const repoRoot = context.repoRoot === undefined
+    ? getRepoRoot()
+    : getPinnedRepoRoot(context.repoRoot);
+  const config = context.config === undefined
+    ? loadGatefileConfigFromPinnedRoot(repoRoot)
+    : normalizeGatefileConfig(context.config);
+  const onPlanCreated = config.notifications?.onPlanCreated;
+  const onPlanApproved = config.notifications?.onPlanApproved;
+  if (!onPlanCreated && !onPlanApproved) return { repoRoot };
+  return {
+    repoRoot,
+    ...(onPlanApproved
+      ? { approvalEvent: approvalNotificationEventName(config) }
+      : {}),
+    hooks: {
+      ...(onPlanCreated ? { onPlanCreated } : {}),
+      ...(onPlanApproved
+        ? {
+            onPlanApproved,
+            // Retain the read API used by the legacy notification name.
+            onApprovalNeeded: onPlanApproved
+          }
+        : {})
+    }
+  };
+}
 
-  try {
-    const raw = JSON.parse(readFileSync(configPath, "utf-8")) as { hooks?: HooksConfig };
-    return raw.hooks;
-  } catch {
-    return undefined;
-  }
+/** Load canonical lifecycle notifications from an explicit or repository-pinned config. */
+export function loadHooksConfig(
+  context: NotificationDispatchContext = {}
+): HooksConfig | undefined {
+  return resolveNotificationContext(context).hooks;
 }
 
 // ── Hook execution ────────────────────────────────────────────
@@ -98,9 +140,15 @@ function fireWebhook(url: string, payload: string): Promise<void> {
 // Note: exec() is used intentionally here — the shell string comes from the user's
 // own gatefile.config.json, not from untrusted input. This is analogous to npm scripts
 // or git hooks where the user defines the command to run.
-function fireShell(command: string): Promise<void> {
+function fireShell(command: string, repoRoot: string): Promise<void> {
   return new Promise((resolvePromise) => {
-    exec(command, { timeout: 30_000 }, (err, _stdout, stderr) => {
+    exec(command, {
+      cwd: repoRoot,
+      env: sanitizedGitEnvironment(process.env, {
+        ceilingDirectory: dirname(repoRoot)
+      }),
+      timeout: 30_000
+    }, (err, _stdout, stderr) => {
       if (err) {
         console.warn(`[gatefile hooks] shell error: ${err.message}`);
         if (stderr) console.warn(`[gatefile hooks] stderr: ${stderr}`);
@@ -110,7 +158,12 @@ function fireShell(command: string): Promise<void> {
   });
 }
 
-async function executeHookAction(action: HookAction | undefined, plan: PlanFile, event: string): Promise<void> {
+async function executeHookAction(
+  action: HookAction | undefined,
+  plan: PlanFile,
+  event: string,
+  repoRoot: string
+): Promise<void> {
   if (!action) return;
 
   const promises: Promise<void>[] = [];
@@ -121,7 +174,7 @@ async function executeHookAction(action: HookAction | undefined, plan: PlanFile,
   }
 
   if (action.shell) {
-    promises.push(fireShell(action.shell));
+    promises.push(fireShell(action.shell, repoRoot));
   }
 
   await Promise.all(promises);
@@ -133,26 +186,61 @@ async function executeHookAction(action: HookAction | undefined, plan: PlanFile,
  * Fire onPlanCreated hooks. Called after a plan is successfully created.
  * Errors are warned but never thrown.
  */
-export async function fireOnPlanCreated(plan: PlanFile): Promise<void> {
+export async function fireOnPlanCreated(
+  plan: PlanFile,
+  context: NotificationDispatchContext = {}
+): Promise<void> {
   try {
-    const hooks = loadHooksConfig();
-    if (!hooks?.onPlanCreated) return;
-    await executeHookAction(hooks.onPlanCreated, plan, "plan_created");
+    const resolved = resolveNotificationContext(context);
+    if (!resolved.hooks?.onPlanCreated) return;
+    await executeHookAction(
+      resolved.hooks.onPlanCreated,
+      plan,
+      "plan_created",
+      resolved.repoRoot
+    );
   } catch (err) {
     console.warn(`[gatefile hooks] onPlanCreated error: ${(err as Error).message}`);
   }
 }
 
 /**
- * Fire onApprovalNeeded hooks. Called after a plan is approved
- * (the approval is written first, then the hook fires).
+ * Fire the canonical onPlanApproved notification after the approved plan is durable.
  * Errors are warned but never thrown.
  */
-export async function fireOnApprovalNeeded(plan: PlanFile): Promise<void> {
+export async function fireOnPlanApproved(
+  plan: PlanFile,
+  context: NotificationDispatchContext = {}
+): Promise<void> {
   try {
-    const hooks = loadHooksConfig();
-    if (!hooks?.onApprovalNeeded) return;
-    await executeHookAction(hooks.onApprovalNeeded, plan, "approval_needed");
+    const resolved = resolveNotificationContext(context);
+    if (!resolved.hooks?.onPlanApproved) return;
+    await executeHookAction(
+      resolved.hooks.onPlanApproved,
+      plan,
+      resolved.approvalEvent ?? "plan_approved",
+      resolved.repoRoot
+    );
+  } catch (err) {
+    console.warn(`[gatefile hooks] onPlanApproved error: ${(err as Error).message}`);
+  }
+}
+
+/** @deprecated Use fireOnPlanApproved. */
+export async function fireOnApprovalNeeded(
+  plan: PlanFile,
+  context: NotificationDispatchContext = {}
+): Promise<void> {
+  try {
+    const resolved = resolveNotificationContext(context);
+    const action = resolved.hooks?.onApprovalNeeded ?? resolved.hooks?.onPlanApproved;
+    if (!action) return;
+    await executeHookAction(
+      action,
+      plan,
+      "approval_needed",
+      resolved.repoRoot
+    );
   } catch (err) {
     console.warn(`[gatefile hooks] onApprovalNeeded error: ${(err as Error).message}`);
   }

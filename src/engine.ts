@@ -55,6 +55,9 @@ export interface GatefileEngineContext {
 
 export interface EnginePlanOptions {
   planPath?: string;
+  commandOutput?:
+    | { mode: "inherit" }
+    | { mode: "capture"; maxBytes: number };
 }
 
 export interface EngineApproveOptions extends ApprovePlanOptions {
@@ -138,12 +141,8 @@ export class GatefileEngine {
   }
 
   formatInspectPlan(plan: PlanFile, report: InspectReport): string {
-    const config = policyConfigFor(this);
-    return formatInspectSummary(plan, report, {
-      repoRoot: this.context.repoRoot,
-      repositoryId: this.context.repositoryId,
-      config
-    });
+    privateStateFor(this);
+    return formatInspectSummary(plan, report);
   }
 
   approvePlan(
@@ -196,6 +195,7 @@ export class GatefileEngine {
       repositoryId: this.context.repositoryId,
       stateHome: this.context.stateHome,
       planPath: options.planPath,
+      commandOutput: options.commandOutput,
       config
     }));
   }

@@ -18,7 +18,7 @@ const failClosedWorkflowError = /reviewed workflow contract/;
 // After a conscious security re-review, recompute and deliberately repin this digest;
 // never derive or update the expected value automatically from the workflow under test.
 const reviewedForkSigningWorkflowSha256 =
-  '0470d20f847092906d2081ca2ba5ef9fd6d347dc688de00c0903635b63587253';
+  '8813762b8dd160565947ac0b48c940938a56558aa325dd44125c687b99302951';
 
 function documentationFiles(directory) {
   return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
@@ -139,7 +139,7 @@ function assertReviewedForkSigningWorkflow(workflow) {
 function assertForkSigningWorkflowSemantics(workflow) {
   const runScripts = workflowRunScripts(workflow);
   const checkoutUses = workflow.match(
-    /^[ \t]*uses:[ \t]*["']?actions\/checkout@[^\s#"']+["']?[ \t]*$/gm
+    /^[ \t]*uses:[ \t]*["']?actions\/checkout@[^\s#"']+["']?(?:[ \t]+#[^\n]*)?[ \t]*$/gm
   ) ?? [];
 
   assert.equal(
@@ -149,7 +149,7 @@ function assertForkSigningWorkflowSemantics(workflow) {
   );
   assert.match(
     workflow,
-    /^[ \t]*uses:[ \t]*actions\/checkout@v5[ \t]*\n[ \t]*with:[ \t]*\n[ \t]*ref:[ \t]*\$\{\{ github\.event\.repository\.default_branch \}\}[ \t]*$/m,
+    /^[ \t]*uses:[ \t]*actions\/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd(?:[ \t]+# v5)?[ \t]*\n[ \t]*with:[ \t]*\n[ \t]*ref:[ \t]*\$\{\{ github\.event\.repository\.default_branch \}\}[ \t]*$/m,
     'workflow_dispatch must not be allowed to select the code used for signing'
   );
   assert.doesNotMatch(

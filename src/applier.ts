@@ -55,6 +55,7 @@ import type {
 } from "./safe-fs";
 import { exactFileStateToStored } from "./state-records";
 import type {
+  ReceiptAuditMetadata,
   ReceiptRecordBody,
   RollbackRecordEntry,
   SnapshotRecordBody
@@ -85,6 +86,29 @@ export interface PlanRuntimeOptions {
   stateHome?: string;
   planPath?: string;
   config?: GatefileConfig;
+  commandOutput?:
+    | { mode: "inherit" }
+    | { mode: "capture"; maxBytes: number };
+}
+
+const MAX_COMMAND_CAPTURE_BYTES = 65_536;
+const MAX_COMMAND_SPAWN_BUFFER_BYTES = 1_048_576;
+
+function normalizeCommandOutput(
+  value: PlanRuntimeOptions["commandOutput"]
+): NonNullable<PlanRuntimeOptions["commandOutput"]> {
+  if (value === undefined || value.mode === "inherit") return { mode: "inherit" };
+  if (
+    value.mode !== "capture" ||
+    !Number.isSafeInteger(value.maxBytes) ||
+    value.maxBytes < 1 ||
+    value.maxBytes > MAX_COMMAND_CAPTURE_BYTES
+  ) {
+    throw new Error(
+      `commandOutput capture maxBytes must be an integer from 1 to ${MAX_COMMAND_CAPTURE_BYTES}`
+    );
+  }
+  return { mode: "capture", maxBytes: value.maxBytes };
 }
 
 function runtimeRepoRoot(options: PlanRuntimeOptions): string {
@@ -269,7 +293,8 @@ function formatCommandFailureMessage(error: unknown, timeoutMs: number): string 
 function applyCommandOperation(
   plan: PlanFile,
   op: Extract<PlanFile["operations"][number], { type: "command" }>,
-  repoRoot: string
+  repoRoot: string,
+  commandOutput: NonNullable<PlanRuntimeOptions["commandOutput"]>
 ): PendingApplyOperationResult {
   const timeoutMs = commandTimeoutMs(plan, op);
   const invocation = formatCommandInvocation(op);
@@ -283,21 +308,36 @@ function applyCommandOperation(
   }
 
   try {
-    const result = spawnSync(op.executable, op.args, {
-      cwd: resolve(repoRoot, op.cwd ?? "."),
-      stdio: "inherit",
-      timeout: timeoutMs,
-      shell: false
-    });
-    if (result.error) throw result.error;
+    const result = commandOutput.mode === "capture"
+      ? spawnSync(op.executable, op.args, {
+          cwd: resolve(repoRoot, op.cwd ?? "."),
+          stdio: "pipe",
+          timeout: timeoutMs,
+          shell: false,
+          maxBuffer: MAX_COMMAND_SPAWN_BUFFER_BYTES
+        })
+      : spawnSync(op.executable, op.args, {
+          cwd: resolve(repoRoot, op.cwd ?? "."),
+          stdio: "inherit",
+          timeout: timeoutMs,
+          shell: false
+        });
+    const captured = commandOutput.mode === "capture"
+      ? formatCapturedCommandOutput(result.stdout, result.stderr, commandOutput.maxBytes)
+      : "";
+    if (result.error) {
+      throw new Error(`${result.error.message}${captured}`);
+    }
     if (result.status !== 0) {
       const signal = result.signal ? `, signal ${result.signal}` : "";
-      throw new Error(`process exited with status ${result.status ?? "unknown"}${signal}`);
+      throw new Error(
+        `process exited with status ${result.status ?? "unknown"}${signal}${captured}`
+      );
     }
     return {
       operationId: op.id,
       success: true,
-      message: `command ok: ${invocation} (timeout ${timeoutMs}ms)`
+      message: `command ok: ${invocation} (timeout ${timeoutMs}ms)${captured}`
     };
   } catch (error) {
     const failureMessage = formatCommandFailureMessage(error, timeoutMs);
@@ -315,6 +355,29 @@ function applyCommandOperation(
       message: failureMessage
     };
   }
+}
+
+function formatCapturedStream(
+  label: "stdout" | "stderr",
+  value: Buffer | null,
+  maxBytes: number
+): string | undefined {
+  if (!value || value.length === 0) return undefined;
+  const truncated = value.length > maxBytes;
+  const visible = value.subarray(0, maxBytes).toString("utf8");
+  return `${label}=${JSON.stringify(visible)}${truncated ? ` [truncated at ${maxBytes} bytes]` : ""}`;
+}
+
+function formatCapturedCommandOutput(
+  stdout: Buffer | null,
+  stderr: Buffer | null,
+  maxBytes: number
+): string {
+  const streams = [
+    formatCapturedStream("stdout", stdout, maxBytes),
+    formatCapturedStream("stderr", stderr, maxBytes)
+  ].filter((value): value is string => value !== undefined);
+  return streams.length === 0 ? "" : `; captured ${streams.join(", ")}`;
 }
 
 function lineCount(value: string): number {
@@ -341,6 +404,7 @@ function describeFilePreview(
     const after = op.after ?? "";
     return {
       operationId: op.id,
+      allowed: pathSafety.allowed,
       message: `would create ${op.path}${deniedSuffix}`,
       details: `${pathSafetyDetails(pathSafety)}; after: ${after.length} chars, ${lineCount(after)} lines`
     };
@@ -353,6 +417,7 @@ function describeFilePreview(
     const deltaPrefix = delta >= 0 ? "+" : "";
     return {
       operationId: op.id,
+      allowed: pathSafety.allowed,
       message: `would update ${op.path}${deniedSuffix}`,
       details: `${pathSafetyDetails(pathSafety)}; before: ${before.length} chars, after: ${after.length} chars, delta: ${deltaPrefix}${delta}, lines: ${lineCount(before)} -> ${lineCount(after)}`
     };
@@ -361,6 +426,7 @@ function describeFilePreview(
   const before = op.before;
   return {
     operationId: op.id,
+    allowed: pathSafety.allowed,
     message: `would delete ${op.path}${deniedSuffix}`,
     details:
       `${pathSafetyDetails(pathSafety)}; ` +
@@ -383,6 +449,7 @@ function describeCommandPreview(
   const denialDetails = policyResult.allowed ? "" : `, reason: ${policyResult.message}`;
   return {
     operationId: op.id,
+    allowed: policyResult.allowed,
     message: `would run command: ${formatCommandInvocation(op)}${deniedSuffix}`,
     details: `cwd: ${cwd}, allowFailure: ${allowFailure}, timeoutMs: ${timeoutMs}${policyDetails}${denialDetails}`
   };
@@ -657,6 +724,7 @@ function assertPreparedReceiptFits(
     results: pessimisticResults,
     dependencies,
     rollbackEntries: pessimisticRollbackEntries,
+    audit: receiptAuditMetadata(plan),
     authentication: {
       scheme: "hmac-sha256",
       envelopeVersion: 1,
@@ -670,6 +738,26 @@ function assertPreparedReceiptFits(
       `Prepared authenticated receipt could require ${byteLength} bytes, exceeding the pre-mutation budget ${APPLY_RECEIPT_WORST_CASE_BUDGET_BYTES}`
     );
   }
+}
+
+function receiptAuditMetadata(plan: PlanFile): ReceiptAuditMetadata {
+  if (
+    plan.approval.status !== "approved" ||
+    !plan.approval.approvedBy ||
+    !plan.approval.approvedAt
+  ) {
+    throw new Error("An authenticated apply receipt requires complete approval metadata");
+  }
+  const signerKeyId = plan.approval.attestation?.keyId ?? null;
+  const audit = {
+    summary: plan.summary,
+    source: plan.source,
+    approvedBy: plan.approval.approvedBy,
+    approvedAt: plan.approval.approvedAt
+  };
+  return signerKeyId === null
+    ? { ...audit, approvalIdentity: "unsigned", signerKeyId: null }
+    : { ...audit, approvalIdentity: "signed", signerKeyId };
 }
 
 function receiptBodyForApply(
@@ -698,11 +786,13 @@ function receiptBodyForApply(
       mutationStatus: result.mutationStatus ?? "none"
     })),
     dependencies,
-    rollbackEntries: rollbackEntriesForApply(snapshot.record, mutations)
+    rollbackEntries: rollbackEntriesForApply(snapshot.record, mutations),
+    audit: receiptAuditMetadata(plan)
   };
 }
 
 function applyCore(plan: PlanFile, options: PlanRuntimeOptions): ApplyReport {
+  const commandOutput = normalizeCommandOutput(options.commandOutput);
   const repoRoot = runtimeRepoRoot(options);
   const stateOptions = stateOptionsForPlan(plan, options, repoRoot);
   const layout = getStateLayout(stateOptions);
@@ -858,7 +948,7 @@ function applyCore(plan: PlanFile, options: PlanRuntimeOptions): ApplyReport {
           }
         }
       } else if (op.type === "command") {
-        result = applyCommandOperation(plan, op, repoRoot);
+        result = applyCommandOperation(plan, op, repoRoot, commandOutput);
       } else {
         const unsupported = op as unknown as { id?: unknown; type?: unknown };
         result = {
@@ -952,6 +1042,9 @@ export function previewPlan(plan: PlanFile, options: PlanRuntimeOptions = {}): D
       ? describeFilePreview(plan, op, repoRoot, [layout.stateHome])
       : describeCommandPreview(plan, op, repoRoot)
   );
+  const verificationReady = verification.status === "ready";
+  const dependenciesSatisfied = dependencies.allSatisfied;
+  const operationsAllowed = results.every((result) => result.allowed);
 
   return {
     planId: plan.id,
@@ -967,6 +1060,13 @@ export function previewPlan(plan: PlanFile, options: PlanRuntimeOptions = {}): D
     },
     dependencies,
     results,
+    staticGate: {
+      passed: verificationReady && dependenciesSatisfied && operationsAllowed,
+      verificationReady,
+      dependenciesSatisfied,
+      operationsAllowed,
+      preconditionsChecked: false
+    },
     recovery: buildDryRunRecovery(plan)
   };
 }

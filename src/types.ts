@@ -211,6 +211,8 @@ export interface ApplyReport {
 
 export interface DryRunOperationPreview {
   operationId: string;
+  /** Whether the operation passes static file/command policy checks. */
+  allowed: boolean;
   message: string;
   details?: string;
 }
@@ -231,6 +233,13 @@ export interface DryRunReport {
   verification: DryRunVerificationSummary;
   dependencies: DependencyStatus;
   results: DryRunOperationPreview[];
+  staticGate: {
+    passed: boolean;
+    verificationReady: boolean;
+    dependenciesSatisfied: boolean;
+    operationsAllowed: boolean;
+    preconditionsChecked: false;
+  };
   recovery: RecoveryGuidance;
 }
 
@@ -239,16 +248,80 @@ export interface HookCommandConfig {
   cwd?: string;
 }
 
-export interface GatefileConfig {
-  signers?: {
-    trustedKeyIds?: string[];
-    trustedPublicKeys?: string[];
-  };
-  hooks?: {
-    beforeApprove?: HookCommandConfig;
-    beforeApply?: HookCommandConfig;
-  };
+export type NotificationActionConfig =
+  | { webhook: string; shell?: string }
+  | { webhook?: string; shell: string };
+
+export type NonEmptyStringArray = [string, ...string[]];
+
+export type SignerTrustConfig =
+  | {
+      trustedKeyIds: NonEmptyStringArray;
+      trustedPublicKeys?: string[];
+    }
+  | {
+      trustedKeyIds?: string[];
+      trustedPublicKeys: NonEmptyStringArray;
+    };
+
+export interface NotificationsConfig {
+  onPlanCreated?: NotificationActionConfig;
+  onPlanApproved?: NotificationActionConfig;
 }
+
+export interface PolicyHooksConfig {
+  beforeApprove?: HookCommandConfig;
+  beforeApply?: HookCommandConfig;
+}
+
+interface GatefileConfigBase {
+  signers?: SignerTrustConfig;
+}
+
+/** Canonical config plus mutually exclusive deprecated notification aliases. */
+export type GatefileConfig = GatefileConfigBase & (
+  | {
+      hooks?: PolicyHooksConfig & {
+        onPlanCreated?: never;
+        onApprovalNeeded?: never;
+      };
+      notifications?: NotificationsConfig;
+    }
+  | {
+      hooks: PolicyHooksConfig & {
+        /** @deprecated Use notifications.onPlanCreated. */
+        onPlanCreated: NotificationActionConfig;
+        onApprovalNeeded?: never;
+      };
+      notifications?: {
+        onPlanCreated?: never;
+        onPlanApproved?: NotificationActionConfig;
+      };
+    }
+  | {
+      hooks: PolicyHooksConfig & {
+        onPlanCreated?: never;
+        /** @deprecated Use notifications.onPlanApproved. */
+        onApprovalNeeded: NotificationActionConfig;
+      };
+      notifications?: {
+        onPlanCreated?: NotificationActionConfig;
+        onPlanApproved?: never;
+      };
+    }
+  | {
+      hooks: PolicyHooksConfig & {
+        /** @deprecated Use notifications.onPlanCreated. */
+        onPlanCreated: NotificationActionConfig;
+        /** @deprecated Use notifications.onPlanApproved. */
+        onApprovalNeeded: NotificationActionConfig;
+      };
+      notifications?: {
+        onPlanCreated?: never;
+        onPlanApproved?: never;
+      };
+    }
+);
 
 export interface HookContext {
   event: "beforeApprove" | "beforeApply";
@@ -350,6 +423,24 @@ export interface RollbackEntry {
   cleanupResidues: RollbackCleanupResidue[];
 }
 
+interface ApplyReceiptAuditMetadataBase {
+  summary: string;
+  source: string;
+  approvedBy: string;
+  approvedAt: string;
+}
+
+export type ApplyReceiptAuditMetadata = ApplyReceiptAuditMetadataBase & (
+  | {
+      approvalIdentity: "signed";
+      signerKeyId: string;
+    }
+  | {
+      approvalIdentity: "unsigned";
+      signerKeyId: null;
+    }
+);
+
 export interface ApplyReceipt {
   type: "gatefile-apply-receipt";
   stateVersion: 1;
@@ -363,6 +454,8 @@ export interface ApplyReceipt {
   results: Array<Required<ApplyOperationResult>>;
   dependencies: DependencyStatus;
   rollbackEntries: RollbackEntry[];
+  /** Absent only on authenticated receipts created before audit metadata was added. */
+  audit?: ApplyReceiptAuditMetadata;
   authentication: StateAuthenticationTag;
 }
 

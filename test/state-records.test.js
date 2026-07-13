@@ -231,6 +231,7 @@ test('authenticated snapshot, receipt, and plan-state records round trip after J
 
   const snapshot = createSnapshotRecord(snapshotBody(binding), key);
   const receipt = createReceiptRecord(receiptBody(binding, snapshot), key, snapshot);
+  assert.equal(receipt.audit, undefined, 'authenticated v1 receipts without audit metadata remain readable');
   const planState = createPlanStateRecord(planStateBody(binding, receipt), key, receipt);
 
   const snapshotJson = JSON.stringify(reverseObjectKeys(snapshot));
@@ -281,6 +282,63 @@ test('authenticated snapshot, receipt, and plan-state records round trip after J
   assert.equal(planStateHeader.kind, 'plan-state');
   assert.equal(planStateHeader.id, planState.plan.id);
   assert.equal(planStateHeader.authentication.keyId, key.keyId);
+});
+
+test('receipt audit metadata is optional for old records and strict when present', (t) => {
+  const { binding, key } = fixture(t, 'audit-metadata');
+  const snapshot = createSnapshotRecord(snapshotBody(binding), key);
+  const oldReceipt = createReceiptRecord(receiptBody(binding, snapshot), key, snapshot);
+  assert.equal(oldReceipt.audit, undefined);
+
+  const body = receiptBody(binding, snapshot);
+  body.audit = {
+    summary: 'Authenticated receipt metadata',
+    source: 'state-record-test',
+    approvedBy: 'release-reviewer',
+    approvedAt: '2026-07-13T01:02:59.000Z',
+    approvalIdentity: 'signed',
+    signerKeyId: 'gfk1_0123456789abcdef'
+  };
+  const receipt = createReceiptRecord(body, key, snapshot);
+  assert.deepEqual(receipt.audit, body.audit);
+  assert.deepEqual(parseAndVerifyReceiptRecord(receipt, key, { snapshot }).audit, body.audit);
+
+  const unknown = receiptBody(binding, snapshot);
+  unknown.audit = { ...body.audit, forged: true };
+  assert.throws(() => createReceiptRecord(unknown, key, snapshot), /unknown field.*forged/i);
+
+  const inconsistent = receiptBody(binding, snapshot);
+  inconsistent.audit = { ...body.audit, approvalIdentity: 'unsigned' };
+  assert.throws(() => createReceiptRecord(inconsistent, key, snapshot), /unsigned.*signerKeyId/i);
+
+  const nonCanonicalSigner = receiptBody(binding, snapshot);
+  nonCanonicalSigner.audit = { ...body.audit, signerKeyId: 'release-key' };
+  assert.throws(
+    () => createReceiptRecord(nonCanonicalSigner, key, snapshot),
+    /signerKeyId.*derived approval key ID/i
+  );
+});
+
+test('receipt audit approval timestamps accept equivalent RFC3339 offsets and canonicalize to UTC', (t) => {
+  const { binding, key } = fixture(t, 'audit-metadata-timestamp');
+  const snapshot = createSnapshotRecord(snapshotBody(binding), key);
+  const body = receiptBody(binding, snapshot);
+  body.audit = {
+    summary: 'Canonical receipt approval time',
+    source: 'state-record-test',
+    approvedBy: 'release-reviewer',
+    approvedAt: '2026-07-12T21:02:59-04:00',
+    approvalIdentity: 'unsigned',
+    signerKeyId: null
+  };
+
+  const receipt = createReceiptRecord(body, key, snapshot);
+
+  assert.equal(receipt.audit.approvedAt, '2026-07-13T01:02:59.000Z');
+  assert.equal(
+    parseAndVerifyReceiptRecord(receipt, key, { snapshot }).audit.approvedAt,
+    '2026-07-13T01:02:59.000Z'
+  );
 });
 
 test('state-record character bounds count astral Unicode scalars, not UTF-16 units', (t) => {

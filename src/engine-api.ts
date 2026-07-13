@@ -1,4 +1,4 @@
-import { GatefileEngine } from "./engine";
+import { GatefileEngine, type GatefileEngineOptions } from "./engine";
 import type { PlanRuntimeOptions } from "./applier";
 import type { InspectOptions, InspectReport } from "./inspect";
 import type {
@@ -16,6 +16,9 @@ import type {
 import { validatePlanFile } from "./validation";
 import type { VerifyPlanOptions } from "./verify";
 
+export interface ApprovePlanApiOptions extends ApprovePlanOptions,
+  Pick<GatefileEngineOptions, "repoRoot" | "repositoryId" | "config"> {}
+
 export function createPlanFromDraft(
   draft: PlanDraft,
   options: CreatePlanOptions = {}
@@ -29,12 +32,15 @@ export function createPlanFromDraft(
 export function approvePlan(
   plan: PlanFile,
   approvedBy: string,
-  options: ApprovePlanOptions = {}
+  options: ApprovePlanApiOptions = {}
 ): PlanFile {
   validatePlanFile(plan);
+  const { repoRoot, repositoryId, config, ...approveOptions } = options;
   return new GatefileEngine({
-    repositoryId: plan.context.repositoryId
-  }).approvePlan(plan, approvedBy, options);
+    repoRoot,
+    repositoryId,
+    config
+  }).approvePlan(plan, approvedBy, approveOptions);
 }
 
 export function verifyPlan(
@@ -54,7 +60,7 @@ export function buildInspectReport(
 ): InspectReport {
   return new GatefileEngine({
     repoRoot: options.repoRoot,
-    repositoryId: options.repositoryId ?? plan.context?.repositoryId,
+    repositoryId: options.repositoryId,
     stateHome: options.stateHome,
     config: options.config
   }).inspectPlan(plan);
@@ -81,7 +87,10 @@ export function applyPlan(
     repositoryId: options.repositoryId,
     stateHome: options.stateHome,
     config: options.config
-  }).applyPlan(plan, { planPath: options.planPath });
+  }).applyPlan(plan, {
+    planPath: options.planPath,
+    commandOutput: options.commandOutput
+  });
 }
 
 export function rollbackApply(

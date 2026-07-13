@@ -1,468 +1,676 @@
 #!/usr/bin/env node
-/**
- * Gatefile MCP Server
- *
- * Exposes gatefile operations as MCP tools over stdio (JSON-RPC 2.0).
- * Zero dependencies — speaks the protocol directly.
- *
- * Usage:
- *   gatefile mcp          (from CLI)
- *   npx gatefile mcp      (from MCP client config)
- */
 
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
-import { resolve } from "node:path";
-import { createInterface } from "node:readline";
 import { GatefileEngine } from "./engine";
-import type { PlanDraft } from "./planner";
-import { getRepoRoot } from "./state";
+import type { GatefileEngineOptions } from "./engine";
+import {
+  assertConfinedRelativePath,
+  readConfinedUtf8,
+  writeConfinedUtf8Atomic
+} from "./confined-io";
+import type {
+  ApprovePlanOptions,
+  PlanDraft
+} from "./planner";
 import type { PlanFile } from "./types";
 import { validatePlanFile } from "./validation";
 
-/* ------------------------------------------------------------------ */
-/*  JSON-RPC helpers                                                   */
-/* ------------------------------------------------------------------ */
+type JsonRpcId = string | number;
+
+export interface McpServerCapabilities {
+  approve?: boolean;
+  apply?: boolean;
+  rollback?: boolean;
+}
+
+export interface McpApprovalOptions extends ApprovePlanOptions {
+  approvedBy: string;
+}
+
+export interface McpServerOptions extends GatefileEngineOptions {
+  capabilities?: McpServerCapabilities;
+  approval?: McpApprovalOptions;
+  maxMessageBytes?: number;
+}
+
+export interface McpServerHandle {
+  close(): void;
+}
 
 interface JsonRpcRequest {
-  jsonrpc: "2.0";
-  id?: string | number | null;
-  method: string;
-  params?: Record<string, unknown>;
+  readonly jsonrpc: "2.0";
+  readonly id?: JsonRpcId;
+  readonly method: string;
+  readonly params?: Record<string, unknown>;
+  readonly notification: boolean;
 }
 
 interface JsonRpcResponse {
-  jsonrpc: "2.0";
-  id: string | number | null;
-  result?: unknown;
-  error?: { code: number; message: string; data?: unknown };
+  readonly jsonrpc: "2.0";
+  readonly id: JsonRpcId | null;
+  readonly result?: unknown;
+  readonly error?: { readonly code: number; readonly message: string };
 }
 
-function respond(id: string | number | null, result: unknown): JsonRpcResponse {
+type DecodedLine =
+  | { readonly kind: "request"; readonly request: JsonRpcRequest }
+  | { readonly kind: "error"; readonly response: JsonRpcResponse }
+  | { readonly kind: "notification" };
+
+interface ToolResult {
+  readonly content: readonly { readonly type: "text"; readonly text: string }[];
+  readonly isError: boolean;
+}
+
+type ArgumentKind = "string" | "boolean" | "object";
+
+interface ToolArgumentContract {
+  readonly kind: ArgumentKind;
+  readonly required?: boolean;
+  readonly path?: boolean;
+}
+
+interface ToolDefinition {
+  readonly name: string;
+  readonly description: string;
+  readonly arguments: Readonly<Record<string, ToolArgumentContract>>;
+  readonly handler: (args: Record<string, unknown>) => ToolResult;
+}
+
+interface PublicToolDefinition {
+  readonly name: string;
+  readonly description: string;
+  readonly inputSchema: {
+    readonly type: "object";
+    readonly properties: Readonly<Record<string, {
+      readonly type: ArgumentKind;
+      readonly description: string;
+    }>>;
+    readonly required: readonly string[];
+    readonly additionalProperties: false;
+  };
+}
+
+export interface McpDispatcher {
+  readonly tools: readonly PublicToolDefinition[];
+  dispatch(request: JsonRpcRequest): JsonRpcResponse | undefined;
+}
+
+const PACKAGE_VERSION = (require("../package.json") as { version: string }).version;
+const DEFAULT_MAX_MESSAGE_BYTES = 1024 * 1024;
+const MAX_CONFIGURED_MESSAGE_BYTES = 16 * 1024 * 1024;
+const MCP_COMMAND_CAPTURE_BYTES = 8192;
+const JSON_RPC_KEYS = new Set(["jsonrpc", "id", "method", "params"]);
+const STARTUP_OPTION_KEYS = new Set([
+  "repoRoot",
+  "repositoryId",
+  "stateHome",
+  "config",
+  "capabilities",
+  "approval",
+  "maxMessageBytes"
+]);
+const CAPABILITY_KEYS = new Set(["approve", "apply", "rollback"]);
+const APPROVAL_KEYS = new Set([
+  "approvedBy",
+  "signingPrivateKeyPem",
+  "signingKeyId"
+]);
+
+const SERVER_INFO = Object.freeze({
+  name: "gatefile",
+  version: PACKAGE_VERSION
+});
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, allowed: ReadonlySet<string>): boolean {
+  return Object.keys(value).every((key) => allowed.has(key));
+}
+
+function own(value: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function respond(id: JsonRpcId, result: unknown): JsonRpcResponse {
   return { jsonrpc: "2.0", id, result };
 }
 
 function respondError(
-  id: string | number | null,
+  id: JsonRpcId | null,
   code: number,
-  message: string,
-  data?: unknown
+  message: string
 ): JsonRpcResponse {
-  return { jsonrpc: "2.0", id, error: { code, message, data } };
+  return { jsonrpc: "2.0", id, error: { code, message } };
 }
 
-function send(msg: JsonRpcResponse): void {
-  const json = JSON.stringify(msg);
-  process.stdout.write(json + "\n");
+function invalidRequest(): DecodedLine {
+  return {
+    kind: "error",
+    response: respondError(null, -32600, "Invalid Request")
+  };
 }
 
-/* ------------------------------------------------------------------ */
-/*  File I/O helpers                                                   */
-/* ------------------------------------------------------------------ */
+export function decodeJsonRpcLine(line: string): DecodedLine {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line) as unknown;
+  } catch {
+    return {
+      kind: "error",
+      response: respondError(null, -32700, "Parse error")
+    };
+  }
 
-function readPlan(path: string): PlanFile {
-  const full = resolve(path);
-  if (!existsSync(full)) throw new Error(`Plan file not found: ${full}`);
-  return JSON.parse(readFileSync(full, "utf-8")) as PlanFile;
-}
+  if (!isPlainObject(parsed)) return invalidRequest();
+  const idPresent = own(parsed, "id");
+  const envelopeCouldBeNotification =
+    !idPresent && parsed.jsonrpc === "2.0" &&
+    typeof parsed.method === "string" && parsed.method.length > 0;
 
-function writePlan(path: string, plan: PlanFile): void {
-  writeFileSync(resolve(path), JSON.stringify(plan, null, 2) + "\n", "utf-8");
-}
+  if (!hasOnlyKeys(parsed, JSON_RPC_KEYS)) {
+    return envelopeCouldBeNotification ? { kind: "notification" } : invalidRequest();
+  }
+  if (parsed.jsonrpc !== "2.0" || typeof parsed.method !== "string" || parsed.method.length === 0) {
+    return invalidRequest();
+  }
 
-/* ------------------------------------------------------------------ */
-/*  Tool definitions                                                   */
-/* ------------------------------------------------------------------ */
-
-const TOOLS = [
-  {
-    name: "inspect_plan",
-    description:
-      "Inspect a gatefile plan. Shows plan ID, summary, operations, risk level, integrity status, approval status, and whether the plan is ready to apply.",
-    inputSchema: {
-      type: "object" as const,
-      properties: {
-        path: {
-          type: "string",
-          description: "Path to the plan JSON file"
-        },
-        json: {
-          type: "boolean",
-          description: "Return machine-readable JSON instead of human summary (default: false)"
-        },
-        repo_root: {
-          type: "string",
-          description: "Repository root used for repository identity and dependency state"
-        },
-        repository_id: {
-          type: "string",
-          description: "Explicit repository identity override"
-        },
-        state_home: {
-          type: "string",
-          description: "Trusted external authenticated-state directory"
-        }
-      },
-      required: ["path"]
-    }
-  },
-  {
-    name: "create_plan",
-    description:
-      "Create a new gatefile plan from a draft. The draft specifies file and command operations the agent wants to execute. Returns the plan with a unique ID, risk score, and integrity hash.",
-    inputSchema: {
-      type: "object" as const,
-      properties: {
-        draft: {
-          type: "object",
-          description:
-            "Plan draft object with: source (string), summary (string), operations (array of file/command ops), preconditions (optional array), execution (optional config), dependsOn (optional string array)"
-        },
-        out: {
-          type: "string",
-          description: "Path to write the created plan JSON file"
-        },
-        repo_root: {
-          type: "string",
-          description: "Repository root to bind into the new plan"
-        },
-        repository_id: {
-          type: "string",
-          description: "Explicit repository identity to bind into the new plan"
-        }
-      },
-      required: ["draft", "out"]
-    }
-  },
-  {
-    name: "approve_plan",
-    description:
-      "Approve a gatefile plan. Locks the approval to the current plan hash so any tampering after approval is detected. Optionally sign with an Ed25519 attestation key.",
-    inputSchema: {
-      type: "object" as const,
-      properties: {
-        path: {
-          type: "string",
-          description: "Path to the plan JSON file"
-        },
-        by: {
-          type: "string",
-          description: "Name of the approver"
-        },
-        signing_key: {
-          type: "string",
-          description: "Optional path to Ed25519 private key PEM for signed approval"
-        },
-        key_id: {
-          type: "string",
-          description: "Optional key ID (requires signing_key)"
-        },
-        repo_root: {
-          type: "string",
-          description: "Repository root used for approval policy and repository identity"
-        },
-        repository_id: {
-          type: "string",
-          description: "Explicit repository identity override"
-        }
-      },
-      required: ["path", "by"]
-    }
-  },
-  {
-    name: "verify_plan",
-    description:
-      "Verify a plan's integrity, approval status, and signer trust. Returns whether the plan is ready to apply and lists any blockers.",
-    inputSchema: {
-      type: "object" as const,
-      properties: {
-        path: {
-          type: "string",
-          description: "Path to the plan JSON file"
-        },
-        repo_root: {
-          type: "string",
-          description: "Repository root used to verify the plan context"
-        },
-        repository_id: {
-          type: "string",
-          description: "Explicit repository identity override"
-        }
-      },
-      required: ["path"]
-    }
-  },
-  {
-    name: "dry_run_plan",
-    description:
-      "Preview what applying a plan would do without executing anything. Shows each operation that would run, file path safety checks, and recovery guidance.",
-    inputSchema: {
-      type: "object" as const,
-      properties: {
-        path: {
-          type: "string",
-          description: "Path to the plan JSON file"
-        },
-        repo_root: {
-          type: "string",
-          description: "Repository root used for verification and path resolution"
-        },
-        repository_id: {
-          type: "string",
-          description: "Explicit repository identity override"
-        },
-        state_home: {
-          type: "string",
-          description: "Trusted external authenticated-state directory"
-        }
-      },
-      required: ["path"]
-    }
-  },
-  {
-    name: "apply_plan",
-    description:
-      "Apply an approved plan — executes file writes and structured commands. Creates a pre-apply snapshot for rollback. Only works on verified, approved plans.",
-    inputSchema: {
-      type: "object" as const,
-      properties: {
-        path: {
-          type: "string",
-          description: "Path to the plan JSON file"
-        },
-        repo_root: {
-          type: "string",
-          description: "Repository root used for verification and path resolution"
-        },
-        repository_id: {
-          type: "string",
-          description: "Explicit repository identity override"
-        },
-        state_home: {
-          type: "string",
-          description: "Trusted external authenticated-state directory"
-        }
-      },
-      required: ["path"]
-    }
-  },
-  {
-    name: "rollback_apply",
-    description:
-      "Rollback a previously applied plan using its receipt ID. Restores files from the pre-apply snapshot.",
-    inputSchema: {
-      type: "object" as const,
-      properties: {
-        receipt_id: {
-          type: "string",
-          description: "Receipt ID from the apply report"
-        },
-        repo_root: {
-          type: "string",
-          description: "Repository root returned in the apply rollback context"
-        },
-        repository_id: {
-          type: "string",
-          description: "Repository identity returned in the apply rollback context"
-        },
-        state_home: {
-          type: "string",
-          description: "Authenticated-state directory returned in the apply rollback context"
-        }
-      },
-      required: ["receipt_id"]
+  if (idPresent) {
+    const id = parsed.id;
+    if (
+      !(
+        typeof id === "string" ||
+        (typeof id === "number" && Number.isSafeInteger(id))
+      )
+    ) {
+      return invalidRequest();
     }
   }
-];
 
-/* ------------------------------------------------------------------ */
-/*  Tool handlers                                                      */
-/* ------------------------------------------------------------------ */
+  if (own(parsed, "params") && !isPlainObject(parsed.params)) {
+    if (!idPresent) return { kind: "notification" };
+    return {
+      kind: "error",
+      response: respondError(parsed.id as JsonRpcId, -32602, "Invalid params")
+    };
+  }
 
-function toolResult(text: string, isError = false): { content: { type: string; text: string }[]; isError: boolean } {
+  if (!idPresent) return { kind: "notification" };
+  return {
+    kind: "request",
+    request: {
+      jsonrpc: "2.0",
+      id: parsed.id as JsonRpcId,
+      method: parsed.method,
+      ...(own(parsed, "params") ? { params: parsed.params as Record<string, unknown> } : {}),
+      notification: false
+    }
+  };
+}
+
+function toolResult(text: string, isError = false): ToolResult {
   return { content: [{ type: "text", text }], isError };
 }
 
-function optionalStringArg(args: Record<string, unknown>, name: string): string | undefined {
-  const value = args[name];
-  return typeof value === "string" ? value : undefined;
-}
-
-function runtimeContext(args: Record<string, unknown>): {
-  repoRoot: string;
-  repositoryId?: string;
-  stateHome?: string;
+function parsePlan(engine: GatefileEngine, requestedPath: string): {
+  readonly absolutePath: string;
+  readonly plan: PlanFile;
+  readonly revision: ReturnType<typeof readConfinedUtf8>["revision"];
 } {
+  const confined = readConfinedUtf8(engine.context.repoRoot, requestedPath);
+  let value: unknown;
+  try {
+    value = JSON.parse(confined.contents) as unknown;
+  } catch (error) {
+    throw new Error(`Invalid plan JSON at ${requestedPath}: ${(error as Error).message}`);
+  }
   return {
-    repoRoot: getRepoRoot(optionalStringArg(args, "repo_root")),
-    repositoryId: optionalStringArg(args, "repository_id"),
-    stateHome: optionalStringArg(args, "state_home")
+    absolutePath: confined.absolutePath,
+    plan: validatePlanFile(value as PlanFile),
+    revision: confined.revision
   };
 }
 
-function handleTool(name: string, args: Record<string, unknown>): { content: { type: string; text: string }[]; isError: boolean } {
-  try {
-    switch (name) {
-      case "inspect_plan": {
-        const plan = readPlan(args.path as string);
-        const engine = new GatefileEngine(runtimeContext(args));
-        const report = engine.inspectPlan(plan);
-        if (args.json) {
-          return toolResult(JSON.stringify(report, null, 2));
-        }
-        return toolResult(engine.formatInspectPlan(plan, report));
-      }
+function serializePlan(plan: PlanFile): string {
+  return `${JSON.stringify(plan, null, 2)}\n`;
+}
 
-      case "create_plan": {
-        const draft = args.draft as PlanDraft;
-        const engine = new GatefileEngine(runtimeContext(args));
-        const plan = engine.createPlan(draft);
-        const outPath = args.out as string;
-        writePlan(outPath, plan);
+function assertStartupOptions(options: McpServerOptions): void {
+  if (!isPlainObject(options) || !hasOnlyKeys(options as Record<string, unknown>, STARTUP_OPTION_KEYS)) {
+    throw new TypeError("MCP startup options contain unsupported fields");
+  }
+  if (options.capabilities !== undefined) {
+    if (
+      !isPlainObject(options.capabilities) ||
+      !hasOnlyKeys(options.capabilities as Record<string, unknown>, CAPABILITY_KEYS) ||
+      Object.values(options.capabilities).some((value) => typeof value !== "boolean")
+    ) {
+      throw new TypeError("MCP capabilities must contain only boolean approve/apply/rollback fields");
+    }
+  }
+  if (options.approval !== undefined) {
+    if (
+      !isPlainObject(options.approval) ||
+      !hasOnlyKeys(options.approval as unknown as Record<string, unknown>, APPROVAL_KEYS) ||
+      typeof options.approval.approvedBy !== "string" ||
+      options.approval.approvedBy.trim().length === 0 ||
+      (options.approval.signingPrivateKeyPem !== undefined &&
+        typeof options.approval.signingPrivateKeyPem !== "string") ||
+      (options.approval.signingKeyId !== undefined &&
+        typeof options.approval.signingKeyId !== "string") ||
+      (options.approval.signingKeyId !== undefined &&
+        options.approval.signingPrivateKeyPem === undefined)
+    ) {
+      throw new TypeError(
+        "MCP approval startup configuration requires a non-empty approvedBy and valid in-memory signing options"
+      );
+    }
+  }
+  const maxMessageBytes = options.maxMessageBytes;
+  if (
+    maxMessageBytes !== undefined &&
+    (typeof maxMessageBytes !== "number" ||
+      !Number.isSafeInteger(maxMessageBytes) ||
+      maxMessageBytes < 64 ||
+      maxMessageBytes > MAX_CONFIGURED_MESSAGE_BYTES)
+  ) {
+    throw new TypeError(
+      `MCP maxMessageBytes must be an integer between 64 and ${MAX_CONFIGURED_MESSAGE_BYTES}`
+    );
+  }
+}
+
+function argumentDescription(name: string): string {
+  switch (name) {
+    case "path":
+      return "Repository-relative path to a plan JSON file";
+    case "out":
+      return "Repository-relative output path for the new plan JSON file";
+    case "draft":
+      return "Gatefile plan draft object";
+    case "json":
+      return "Return machine-readable JSON instead of a human summary";
+    case "receipt_id":
+      return "Receipt ID from an apply report in the pinned state namespace";
+    default:
+      return name;
+  }
+}
+
+function publicTool(tool: ToolDefinition): PublicToolDefinition {
+  const properties: Record<string, {
+    type: ArgumentKind;
+    description: string;
+  }> = {};
+  const required: string[] = [];
+  for (const [name, contract] of Object.entries(tool.arguments)) {
+    properties[name] = {
+      type: contract.kind,
+      description: argumentDescription(name)
+    };
+    if (contract.required) required.push(name);
+  }
+  return Object.freeze({
+    name: tool.name,
+    description: tool.description,
+    inputSchema: Object.freeze({
+      type: "object" as const,
+      properties: Object.freeze(properties),
+      required: Object.freeze(required),
+      additionalProperties: false as const
+    })
+  });
+}
+
+function validateToolArguments(
+  tool: ToolDefinition,
+  args: unknown
+): args is Record<string, unknown> {
+  if (!isPlainObject(args)) return false;
+  const allowed = new Set(Object.keys(tool.arguments));
+  if (!hasOnlyKeys(args, allowed)) return false;
+  for (const [name, contract] of Object.entries(tool.arguments)) {
+    if (!own(args, name)) {
+      if (contract.required) return false;
+      continue;
+    }
+    const value = args[name];
+    if (contract.kind === "object") {
+      if (!isPlainObject(value)) return false;
+    } else if (typeof value !== contract.kind) {
+      return false;
+    }
+    if (contract.kind === "string" && (value as string).length === 0) return false;
+    if (contract.path) {
+      try {
+        assertConfinedRelativePath(value as string);
+      } catch {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+function emptyParams(params: Record<string, unknown> | undefined): boolean {
+  return params === undefined || Object.keys(params).length === 0;
+}
+
+export function createMcpDispatcher(options: McpServerOptions = {}): McpDispatcher {
+  assertStartupOptions(options);
+  const capabilities = Object.freeze({
+    approve: options.capabilities?.approve === true,
+    apply: options.capabilities?.apply === true,
+    rollback: options.capabilities?.rollback === true
+  });
+  const approval = options.approval === undefined
+    ? undefined
+    : Object.freeze({ ...options.approval });
+  const engine = new GatefileEngine({
+    repoRoot: options.repoRoot,
+    repositoryId: options.repositoryId,
+    stateHome: options.stateHome,
+    config: options.config
+  });
+
+  const tools: ToolDefinition[] = [
+    {
+      name: "inspect_plan",
+      description: "Inspect a plan using the server's pinned repository and policy context.",
+      arguments: {
+        path: { kind: "string", required: true, path: true },
+        json: { kind: "boolean" }
+      },
+      handler(args) {
+        const { plan } = parsePlan(engine, args.path as string);
+        const report = engine.inspectPlan(plan);
+        return args.json === true
+          ? toolResult(JSON.stringify(report, null, 2))
+          : toolResult(engine.formatInspectPlan(plan, report));
+      }
+    },
+    {
+      name: "create_plan",
+      description: "Create a plan bound to the server's pinned repository authority.",
+      arguments: {
+        draft: { kind: "object", required: true },
+        out: { kind: "string", required: true, path: true }
+      },
+      handler(args) {
+        const plan = engine.createPlan(args.draft as unknown as PlanDraft);
+        const out = args.out as string;
+        writeConfinedUtf8Atomic(engine.context.repoRoot, out, serializePlan(plan));
         return toolResult(
-          `Plan created: ${outPath}\nID: ${plan.id}\nRisk: ${plan.risk.level} (score ${plan.risk.score})\nOperations: ${plan.operations.length}\nStatus: ${plan.approval.status}`
+          `Plan created: ${out}\nID: ${plan.id}\nRisk: ${plan.risk.level} (score ${plan.risk.score})\nOperations: ${plan.operations.length}\nStatus: ${plan.approval.status}`
         );
       }
+    },
+    {
+      name: "verify_plan",
+      description: "Verify a plan using the server's pinned repository identity and policy.",
+      arguments: {
+        path: { kind: "string", required: true, path: true }
+      },
+      handler(args) {
+        const { plan } = parsePlan(engine, args.path as string);
+        return toolResult(JSON.stringify(engine.verifyPlan(plan), null, 2));
+      }
+    },
+    {
+      name: "dry_run_plan",
+      description: "Preview a plan without executing operations.",
+      arguments: {
+        path: { kind: "string", required: true, path: true }
+      },
+      handler(args) {
+        const { absolutePath, plan } = parsePlan(engine, args.path as string);
+        return toolResult(
+          JSON.stringify(engine.previewPlan(plan, { planPath: absolutePath }), null, 2)
+        );
+      }
+    }
+  ];
 
-      case "approve_plan": {
-        const planPath = args.path as string;
-        const plan = readPlan(planPath);
-        validatePlanFile(plan);
-        const engine = new GatefileEngine(runtimeContext(args));
-        const signingKeyPem = args.signing_key
-          ? readFileSync(resolve(args.signing_key as string), "utf-8")
-          : undefined;
-        const approved = engine.approvePlan(plan, args.by as string, {
-          planPath: resolve(planPath),
-          signingPrivateKeyPem: signingKeyPem,
-          signingKeyId: args.key_id as string | undefined
+  if (capabilities.approve && approval !== undefined) {
+    tools.splice(2, 0, {
+      name: "approve_plan",
+      description: "Approve a plan using startup-configured approver and signing authority.",
+      arguments: {
+        path: { kind: "string", required: true, path: true }
+      },
+      handler(args) {
+        const requestedPath = args.path as string;
+        const { absolutePath, plan, revision } = parsePlan(engine, requestedPath);
+        const { approvedBy, ...approvalOptions } = approval;
+        const approved = engine.approvePlan(plan, approvedBy, {
+          ...approvalOptions,
+          planPath: absolutePath
         });
-        writePlan(planPath, approved);
-        return toolResult(`Plan approved by ${args.by}: ${planPath}`);
+        writeConfinedUtf8Atomic(
+          engine.context.repoRoot,
+          requestedPath,
+          serializePlan(approved),
+          { expectedRevision: revision }
+        );
+        return toolResult(`Plan approved by ${approvedBy}: ${requestedPath}`);
       }
+    });
+  }
 
-      case "verify_plan": {
-        const plan = readPlan(args.path as string);
-        const engine = new GatefileEngine(runtimeContext(args));
-        const report = engine.verifyPlan(plan);
-        return toolResult(JSON.stringify(report, null, 2));
-      }
-
-      case "dry_run_plan": {
-        const plan = readPlan(args.path as string);
-        const engine = new GatefileEngine(runtimeContext(args));
-        const preview = engine.previewPlan(plan, { planPath: resolve(args.path as string) });
-        return toolResult(JSON.stringify(preview, null, 2));
-      }
-
-      case "apply_plan": {
-        const planPath = args.path as string;
-        const plan = readPlan(planPath);
-        const engine = new GatefileEngine(runtimeContext(args));
-        const report = engine.applyPlan(plan, { planPath: resolve(planPath) });
+  if (capabilities.apply) {
+    tools.push({
+      name: "apply_plan",
+      description: "Apply a verified plan using explicitly enabled startup authority.",
+      arguments: {
+        path: { kind: "string", required: true, path: true }
+      },
+      handler(args) {
+        const { absolutePath, plan } = parsePlan(engine, args.path as string);
+        const report = engine.applyPlan(plan, {
+          planPath: absolutePath,
+          commandOutput: { mode: "capture", maxBytes: MCP_COMMAND_CAPTURE_BYTES }
+        });
         return toolResult(JSON.stringify(report, null, 2), !report.success);
       }
+    });
+  }
 
-      case "rollback_apply": {
-        const engine = new GatefileEngine(runtimeContext(args));
+  if (capabilities.rollback) {
+    tools.push({
+      name: "rollback_apply",
+      description: "Rollback an apply receipt using explicitly enabled startup authority.",
+      arguments: {
+        receipt_id: { kind: "string", required: true }
+      },
+      handler(args) {
         const report = engine.rollbackApply(args.receipt_id as string);
         return toolResult(JSON.stringify(report, null, 2), !report.success);
       }
-
-      default:
-        return toolResult(`Unknown tool: ${name}`, true);
-    }
-  } catch (error) {
-    return toolResult(`Error: ${(error as Error).message}`, true);
+    });
   }
+
+  const toolByName = new Map(tools.map((tool) => [tool.name, tool]));
+  const publicTools = Object.freeze(tools.map(publicTool));
+
+  return Object.freeze({
+    tools: publicTools,
+    dispatch(request: JsonRpcRequest): JsonRpcResponse | undefined {
+      if (request.notification) return undefined;
+      const id = request.id as JsonRpcId;
+      switch (request.method) {
+        case "initialize":
+          return respond(id, {
+            protocolVersion: "2024-11-05",
+            capabilities: { tools: {} },
+            serverInfo: SERVER_INFO
+          });
+        case "ping":
+          return emptyParams(request.params)
+            ? respond(id, {})
+            : respondError(id, -32602, "Invalid params");
+        case "tools/list":
+          return emptyParams(request.params)
+            ? respond(id, { tools: publicTools })
+            : respondError(id, -32602, "Invalid params");
+        case "tools/call": {
+          if (
+            !isPlainObject(request.params) ||
+            !hasOnlyKeys(request.params, new Set(["name", "arguments"])) ||
+            typeof request.params.name !== "string" ||
+            request.params.name.length === 0 ||
+            !own(request.params, "arguments")
+          ) {
+            return respondError(id, -32602, "Invalid params");
+          }
+          const tool = toolByName.get(request.params.name);
+          if (tool === undefined) {
+            return respondError(id, -32601, "Method not found");
+          }
+          if (!validateToolArguments(tool, request.params.arguments)) {
+            return respondError(id, -32602, "Invalid params");
+          }
+          try {
+            return respond(id, tool.handler(request.params.arguments));
+          } catch (error) {
+            return respond(id, toolResult(`Error: ${(error as Error).message}`, true));
+          }
+        }
+        default:
+          return respondError(id, -32601, "Method not found");
+      }
+    }
+  });
 }
 
-/* ------------------------------------------------------------------ */
-/*  MCP protocol handler                                               */
-/* ------------------------------------------------------------------ */
-
-const PACKAGE_VERSION = (require("../package.json") as { version: string }).version;
-
-const SERVER_INFO = {
-  name: "gatefile",
-  version: PACKAGE_VERSION
-};
-
-function handleMessage(req: JsonRpcRequest): JsonRpcResponse | null {
-  const { id, method, params } = req;
-
-  switch (method) {
-    case "initialize":
-      return respond(id ?? null, {
-        protocolVersion: "2024-11-05",
-        capabilities: { tools: {} },
-        serverInfo: SERVER_INFO
-      });
-
-    case "notifications/initialized":
-      // Notification — no response
-      return null;
-
-    case "tools/list":
-      return respond(id ?? null, { tools: TOOLS });
-
-    case "tools/call": {
-      const toolName = (params as { name?: string })?.name;
-      const toolArgs = ((params as { arguments?: Record<string, unknown> })?.arguments) ?? {};
-      if (!toolName) {
-        return respondError(id ?? null, -32602, "Missing tool name");
-      }
-      const result = handleTool(toolName, toolArgs);
-      return respond(id ?? null, result);
-    }
-
-    case "ping":
-      return respond(id ?? null, {});
-
-    default:
-      // Unknown method — if it has an id, respond with error; otherwise ignore
-      if (id != null) {
-        return respondError(id, -32601, `Method not found: ${method}`);
-      }
-      return null;
-  }
+function maximumMessageBytes(options: McpServerOptions): number {
+  return options.maxMessageBytes ?? DEFAULT_MAX_MESSAGE_BYTES;
 }
 
-/* ------------------------------------------------------------------ */
-/*  Main: stdio transport                                              */
-/* ------------------------------------------------------------------ */
+export function startMcpServer(options: McpServerOptions = {}): McpServerHandle {
+  const dispatcher = createMcpDispatcher(options);
+  const maxMessageBytes = maximumMessageBytes(options);
+  const originalLog = console.log;
+  const originalInfo = console.info;
+  const originalDebug = console.debug;
+  const originalError = console.error;
+  const redirectConsole = (...args: unknown[]): void => {
+    originalError("[gatefile-mcp]", ...args);
+  };
+  console.log = redirectConsole;
+  console.info = redirectConsole;
+  console.debug = redirectConsole;
 
-export function startMcpServer(): void {
-  // Prevent any accidental console.log from polluting the protocol
-  const origLog = console.log;
-  const origError = console.error;
-  console.log = (...args: unknown[]) => {
-    origError("[gatefile-mcp debug]", ...args);
+  let closed = false;
+  let oversized = false;
+  let lineBytes = 0;
+  let lineChunks: Buffer[] = [];
+
+  const send = (response: JsonRpcResponse): void => {
+    process.stdout.write(`${JSON.stringify(response)}\n`);
   };
 
-  const rl = createInterface({ input: process.stdin, terminal: false });
+  const resetLine = (): void => {
+    oversized = false;
+    lineBytes = 0;
+    lineChunks = [];
+  };
 
-  rl.on("line", (line: string) => {
-    const trimmed = line.trim();
-    if (!trimmed) return;
-
-    let req: JsonRpcRequest;
-    try {
-      req = JSON.parse(trimmed) as JsonRpcRequest;
-    } catch {
-      send(respondError(null, -32700, "Parse error"));
+  const append = (segment: Buffer): void => {
+    if (oversized || segment.length === 0) return;
+    if (lineBytes + segment.length > maxMessageBytes) {
+      oversized = true;
+      lineBytes = 0;
+      lineChunks = [];
       return;
     }
+    lineBytes += segment.length;
+    lineChunks.push(segment);
+  };
 
-    const response = handleMessage(req);
-    if (response) {
-      send(response);
+  const finishLine = (): void => {
+    if (oversized) {
+      send(
+        respondError(
+          null,
+          -32600,
+          `Request line exceeds ${maxMessageBytes} bytes`
+        )
+      );
+      resetLine();
+      return;
     }
-  });
+    if (lineBytes === 0) {
+      resetLine();
+      return;
+    }
+    let bytes = Buffer.concat(lineChunks, lineBytes);
+    if (bytes.length > 0 && bytes[bytes.length - 1] === 0x0d) {
+      bytes = bytes.subarray(0, -1);
+    }
+    const line = bytes.toString("utf8");
+    resetLine();
+    if (line.trim().length === 0) return;
+    const decoded = decodeJsonRpcLine(line);
+    if (decoded.kind === "error") {
+      send(decoded.response);
+      return;
+    }
+    if (decoded.kind === "notification") return;
+    const response = dispatcher.dispatch(decoded.request);
+    if (response !== undefined) send(response);
+  };
 
-  rl.on("close", () => {
-    process.exit(0);
-  });
+  const onData = (chunk: Buffer | string): void => {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const newline = bytes.indexOf(0x0a, offset);
+      if (newline === -1) {
+        append(bytes.subarray(offset));
+        return;
+      }
+      append(bytes.subarray(offset, newline));
+      finishLine();
+      offset = newline + 1;
+    }
+  };
 
-  // Keep alive
+  const restore = (): void => {
+    console.log = originalLog;
+    console.info = originalInfo;
+    console.debug = originalDebug;
+    console.error = originalError;
+  };
+
+  const detach = (): void => {
+    if (closed) return;
+    closed = true;
+    process.stdin.off("data", onData);
+    process.stdin.off("end", onEnd);
+    process.stdin.off("close", onClose);
+    process.stdin.pause();
+    restore();
+  };
+
+  const onEnd = (): void => {
+    if (closed) return;
+    if (oversized || lineBytes > 0) finishLine();
+    detach();
+  };
+
+  const onClose = (): void => {
+    if (closed) return;
+    if (oversized || lineBytes > 0) finishLine();
+    detach();
+  };
+
+  process.stdin.on("data", onData);
+  process.stdin.on("end", onEnd);
+  process.stdin.on("close", onClose);
   process.stdin.resume();
+
+  return Object.freeze({ close: detach });
 }

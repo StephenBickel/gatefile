@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, lstatSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import {
@@ -673,6 +673,45 @@ export function preflightStateForApply(
 
 export function readReceipt(input: StateRuntimeInput, receiptId: string): ApplyReceipt {
   return loadReceipt(input, receiptId).record;
+}
+
+/**
+ * Enumerate receipts only after verifying each receipt/snapshot authentication
+ * chain. This is the sole supported audit source.
+ */
+export function listAuthenticatedReceipts(
+  input: StateRuntimeInput = {}
+): AuthenticatedReceiptRecord[] {
+  const options = normalizeStateOptions(input);
+  const layout = getStateLayout(options);
+  if (!inspectPrivateStateDirectoryIfPresent(layout.recordsRoot)) return [];
+  if (!inspectPrivateStateDirectoryIfPresent(layout.receiptsDir)) return [];
+
+  const receipts: AuthenticatedReceiptRecord[] = [];
+  for (const filename of readdirSync(layout.receiptsDir).sort()) {
+    if (!filename.endsWith(".json") || filename.length <= ".json".length) {
+      throw new Error(`Unexpected authenticated receipt entry: ${filename}`);
+    }
+    const receiptId = filename.slice(0, -".json".length);
+    try {
+      assertSafeStateId(receiptId);
+    } catch {
+      throw new Error(`Unexpected authenticated receipt entry: ${filename}`);
+    }
+    if (`${receiptId}.json` !== filename) {
+      throw new Error(`Unexpected authenticated receipt entry: ${filename}`);
+    }
+    const pathname = join(layout.receiptsDir, filename);
+    const stat = lstatSync(pathname);
+    if (!stat.isFile() || stat.isSymbolicLink()) {
+      throw new Error(`Unexpected authenticated receipt entry: ${filename}`);
+    }
+    receipts.push(loadReceiptChain(options, receiptId).receipt);
+  }
+
+  return receipts.sort((left, right) =>
+    left.appliedAt.localeCompare(right.appliedAt) || left.id.localeCompare(right.id)
+  );
 }
 
 export function readSnapshot(input: StateRuntimeInput, snapshotId: string): SnapshotFile {

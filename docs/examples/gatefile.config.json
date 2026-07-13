@@ -1,6 +1,6 @@
 {
   "signers": {
-    "trustedKeyIds": ["security-team-prod-1"],
+    "trustedKeyIds": ["gfk1_581597490e0f9380"],
     "trustedPublicKeys": [
       "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA3BpXovQEPSywMnUz4IdaCBTGcIH+6gRV9kt1SMjg7bE=\n-----END PUBLIC KEY-----"
     ]
@@ -11,6 +11,14 @@
     },
     "beforeApply": {
       "command": "node ./scripts/before-apply.js"
+    }
+  },
+  "notifications": {
+    "onPlanCreated": {
+      "webhook": "https://example.com/gatefile/plan-created"
+    },
+    "onPlanApproved": {
+      "shell": "node ./scripts/plan-approved.js"
     }
   }
 }

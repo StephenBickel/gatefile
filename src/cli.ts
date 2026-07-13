@@ -12,7 +12,7 @@ import { renderPRReviewComment } from "./pr-review";
 import { reviewPlan } from "./review";
 import { runPipeline, formatPipelineSummary } from "./pipeline";
 import { audit, formatAuditTable } from "./audit";
-import { fireOnPlanCreated, fireOnApprovalNeeded } from "./hooks";
+import { fireOnPlanApproved, fireOnPlanCreated } from "./hooks";
 import { configPath, loadGatefileConfig } from "./config";
 import { getRepoRoot } from "./state";
 import { generateApprovalAttestationKeyPair } from "./attestation";
@@ -71,7 +71,7 @@ function usage(): void {
   review <plan.json>
   apply-plan <plan.json> [--yes] [--dry-run] [--human]
   rollback-apply <receipt-id> [--yes] [--human] [--repo-root <path>] [--repository-id <id>] [--state-home <path>]
-  audit [--since <duration>] [--plan <planId>] [--json]
+  audit [--since <duration>] [--plan <planId>] [--json] [--repo-root <path>] [--repository-id <id>] [--state-home <path>]
   run-pipeline <dir> [--dry-run] [--continue-on-error] [--json] [--repo-root <path>] [--repository-id <id>] [--state-home <path>]
   render-pr-comment <plan.json> [--inspect <inspect.json>] [--verify <verify.json>] [--dry-run <dry-run.json>] [--out <comment.md>]
   mcp                                Start MCP server (stdio transport)`);
@@ -102,11 +102,16 @@ async function main(): Promise<void> {
     if (!from || !out) throw new Error("create-plan requires --from and --out");
 
     const draft = readJson<PlanDraft>(from);
-    const engine = new GatefileEngine({ repoRoot: getRepoRoot() });
+    const repoRoot = getRepoRoot();
+    const config = loadGatefileConfig(repoRoot);
+    const engine = new GatefileEngine({ repoRoot, config });
     const plan = engine.createPlan(draft);
     writeJson(out, plan);
     console.log(`Plan created: ${out}`);
-    await fireOnPlanCreated(plan);
+    await fireOnPlanCreated(plan, {
+      repoRoot: engine.context.repoRoot,
+      config
+    });
     return;
   }
 
@@ -171,7 +176,9 @@ async function main(): Promise<void> {
 
     const plan = readJson<PlanFile>(planPath);
     validatePlanFile(plan);
-    const engine = new GatefileEngine({ repoRoot: getRepoRoot() });
+    const repoRoot = getRepoRoot();
+    const config = loadGatefileConfig(repoRoot);
+    const engine = new GatefileEngine({ repoRoot, config });
     const signingPrivateKeyPem = signingKeyPath
       ? readFileSync(resolve(signingKeyPath), "utf-8")
       : undefined;
@@ -182,7 +189,10 @@ async function main(): Promise<void> {
     });
     writeJson(planPath, next);
     console.log(`Plan approved by ${by}: ${planPath}`);
-    await fireOnApprovalNeeded(next);
+    await fireOnPlanApproved(next, {
+      repoRoot: engine.context.repoRoot,
+      config
+    });
     return;
   }
 
@@ -298,7 +308,13 @@ async function main(): Promise<void> {
     const planId = arg(args, "--plan");
     const jsonMode = hasFlag(args, "--json");
 
-    const result = audit({ since: since ?? undefined, planId: planId ?? undefined });
+    const result = audit({
+      since: since ?? undefined,
+      planId: planId ?? undefined,
+      repoRoot: getRepoRoot(arg(args, "--repo-root")),
+      repositoryId: arg(args, "--repository-id"),
+      stateHome: arg(args, "--state-home")
+    });
 
     if (jsonMode) {
       console.log(JSON.stringify(result, null, 2));

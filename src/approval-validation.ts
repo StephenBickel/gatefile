@@ -1,7 +1,8 @@
-import { createPrivateKey } from "node:crypto";
+import { createPrivateKey, createPublicKey } from "node:crypto";
 import { scoreRisk } from "./risk";
 import { PlanFile } from "./types";
 import { riskProfilesEqual, validatePlanFile } from "./validation";
+import { approvalKeyIdFromPublicKey } from "./approval-key";
 
 export interface ApprovalValidationOptions {
   readonly signingPrivateKeyPem?: string;
@@ -53,8 +54,9 @@ export function validatePlanForApproval(
     throw new Error("Cannot approve plan: signingKeyId must be a non-empty string without NUL bytes");
   }
 
+  let privateKey: ReturnType<typeof createPrivateKey>;
   try {
-    const privateKey = createPrivateKey({
+    privateKey = createPrivateKey({
       format: "pem",
       key: options.signingPrivateKeyPem
     });
@@ -63,5 +65,14 @@ export function validatePlanForApproval(
     }
   } catch {
     throw new Error("Cannot approve plan: signingPrivateKeyPem must contain a valid Ed25519 private key");
+  }
+  const derivedKeyId = approvalKeyIdFromPublicKey(createPublicKey(privateKey));
+  if (
+    options.signingKeyId !== undefined &&
+    options.signingKeyId !== derivedKeyId
+  ) {
+    throw new Error(
+      `Cannot approve plan: signing key ID must match the signing key (${derivedKeyId})`
+    );
   }
 }

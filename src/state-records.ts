@@ -13,6 +13,8 @@ import type {
   StateRepositoryBinding
 } from "./state-auth";
 import { unicodeScalarLength } from "./unicode";
+import type { ApplyReceiptAuditMetadata } from "./types";
+import { isApprovalKeyId } from "./approval-key";
 
 export const STATE_RECORD_VERSION = 1 as const;
 
@@ -107,6 +109,8 @@ export interface StateDependencyStatus {
   allSatisfied: boolean;
 }
 
+export type ReceiptAuditMetadata = ApplyReceiptAuditMetadata;
+
 export interface RollbackRecordEntry {
   snapshotEntryId: string;
   operationId: string;
@@ -137,6 +141,8 @@ export interface ReceiptRecordBody {
   results: StateOperationResult[];
   dependencies: StateDependencyStatus;
   rollbackEntries: RollbackRecordEntry[];
+  /** Added after state v1 launch; absent only on older authenticated receipts. */
+  audit?: ReceiptAuditMetadata;
 }
 
 export interface AuthenticatedReceiptRecord extends ReceiptRecordBody {
@@ -315,6 +321,47 @@ function assertCanonicalTimestamp(value: unknown, label: string): string {
     throw new StateRecordValidationError(`${label} must be a valid canonical RFC3339 UTC timestamp`);
   }
   return value;
+}
+
+function canonicalizeRfc3339Timestamp(value: unknown, label: string): string {
+  if (typeof value !== "string") {
+    throw new StateRecordValidationError(`${label} must be an RFC3339 timestamp`);
+  }
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-](\d{2}):(\d{2}))$/.exec(
+    value
+  );
+  if (!match) {
+    throw new StateRecordValidationError(`${label} must be an RFC3339 timestamp`);
+  }
+  const [, yearText, monthText, dayText, hourText, minuteText, secondText, offsetHourText, offsetMinuteText] = match;
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  const second = Number(secondText);
+  const offsetHour = offsetHourText === undefined ? 0 : Number(offsetHourText);
+  const offsetMinute = offsetMinuteText === undefined ? 0 : Number(offsetMinuteText);
+  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const daysInMonth = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  if (
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > daysInMonth[month - 1] ||
+    hour > 23 ||
+    minute > 59 ||
+    second > 59 ||
+    offsetHour > 23 ||
+    offsetMinute > 59
+  ) {
+    throw new StateRecordValidationError(`${label} must be a valid RFC3339 timestamp`);
+  }
+  const milliseconds = Date.parse(value);
+  if (!Number.isFinite(milliseconds)) {
+    throw new StateRecordValidationError(`${label} must be a valid RFC3339 timestamp`);
+  }
+  return new Date(milliseconds).toISOString();
 }
 
 function assertBoolean(value: unknown, label: string): boolean {
@@ -753,6 +800,7 @@ function assertRollbackEntry(value: unknown, index: number): RollbackRecordEntry
 
 function assertReceiptBody(value: unknown): ReceiptRecordBody {
   const body = assertRecord(value, "receipt record");
+  const hasAudit = Object.prototype.hasOwnProperty.call(body, "audit");
   assertExactFields(
     body,
     [
@@ -767,7 +815,8 @@ function assertReceiptBody(value: unknown): ReceiptRecordBody {
       "success",
       "results",
       "dependencies",
-      "rollbackEntries"
+      "rollbackEntries",
+      ...(hasAudit ? ["audit"] : [])
     ],
     "receipt record"
   );
@@ -826,6 +875,57 @@ function assertReceiptBody(value: unknown): ReceiptRecordBody {
     rollbackOperations.add(entry.operationId);
   }
 
+  let audit: ReceiptAuditMetadata | undefined;
+  if (hasAudit) {
+    const metadata = assertRecord(body.audit, "receipt.audit");
+    assertExactFields(
+      metadata,
+      [
+        "summary",
+        "source",
+        "approvedBy",
+        "approvedAt",
+        "approvalIdentity",
+        "signerKeyId"
+      ],
+      "receipt.audit"
+    );
+    if (metadata.approvalIdentity !== "signed" && metadata.approvalIdentity !== "unsigned") {
+      throw new StateRecordValidationError(
+        "receipt.audit.approvalIdentity must be signed or unsigned"
+      );
+    }
+    const signerKeyId = metadata.signerKeyId === null
+      ? null
+      : assertBoundId(metadata.signerKeyId, "receipt.audit.signerKeyId");
+    const auditBase = {
+      summary: assertText(metadata.summary, "receipt.audit.summary"),
+      source: assertText(metadata.source, "receipt.audit.source"),
+      approvedBy: assertText(metadata.approvedBy, "receipt.audit.approvedBy"),
+      approvedAt: canonicalizeRfc3339Timestamp(metadata.approvedAt, "receipt.audit.approvedAt")
+    };
+    if (metadata.approvalIdentity === "signed") {
+      if (signerKeyId === null) {
+        throw new StateRecordValidationError(
+          "receipt.audit signed approval must include signerKeyId"
+        );
+      }
+      if (!isApprovalKeyId(signerKeyId)) {
+        throw new StateRecordValidationError(
+          "receipt.audit.signerKeyId must be a derived approval key ID (gfk1_ followed by 16 lowercase hex characters)"
+        );
+      }
+      audit = { ...auditBase, approvalIdentity: "signed", signerKeyId };
+    } else {
+      if (signerKeyId !== null) {
+        throw new StateRecordValidationError(
+          "receipt.audit unsigned approval may not include signerKeyId"
+        );
+      }
+      audit = { ...auditBase, approvalIdentity: "unsigned", signerKeyId: null };
+    }
+  }
+
   return {
     type: "gatefile-apply-receipt",
     stateVersion: STATE_RECORD_VERSION,
@@ -838,7 +938,8 @@ function assertReceiptBody(value: unknown): ReceiptRecordBody {
     success,
     results,
     dependencies: assertDependencies(body.dependencies),
-    rollbackEntries
+    rollbackEntries,
+    ...(audit ? { audit } : {})
   };
 }
 
