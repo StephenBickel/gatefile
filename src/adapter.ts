@@ -1,5 +1,6 @@
 import { CommandOperation, ExecutionConfig, FileAction, FileOperation, Precondition } from "./types";
 import { PlanDraft } from "./planner";
+import { validateCommandOperationValue } from "./command";
 
 export interface AdapterFileChange {
   id?: string;
@@ -11,7 +12,8 @@ export interface AdapterFileChange {
 
 export interface AdapterCommand {
   id?: string;
-  command: string;
+  executable: string;
+  args: string[];
   cwd?: string;
   timeoutMs?: number;
   allowFailure?: boolean;
@@ -62,14 +64,19 @@ export function adaptAgentInputToDraft(input: AgentAdapterInput): PlanDraft {
     after: change.after
   }));
 
-  const commandOperations: CommandOperation[] = (proposal.commands ?? []).map((command, idx) => ({
-    id: command.id ?? `op_command_${idx + 1}`,
-    type: "command",
-    command: command.command,
-    cwd: command.cwd,
-    timeoutMs: command.timeoutMs,
-    allowFailure: command.allowFailure
-  }));
+  const commandOperations: CommandOperation[] = (proposal.commands ?? []).map((command, idx) => {
+    const operation = {
+      id: command.id ?? `op_command_${idx + 1}`,
+      type: "command" as const,
+      executable: command.executable,
+      args: Array.isArray(command.args) ? [...command.args] : command.args,
+      cwd: command.cwd,
+      timeoutMs: command.timeoutMs,
+      allowFailure: command.allowFailure
+    };
+    validateCommandOperationValue(operation, `commands[${idx}]`);
+    return operation;
+  });
 
   const operations = [...fileOperations, ...commandOperations];
   if (operations.length === 0) {

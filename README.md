@@ -9,7 +9,7 @@
 
 ![gatefile demo](demo.gif)
 
-Your AI agent wants to edit 14 files and run 3 shell commands. Do you trust it?
+Your AI agent wants to edit 14 files and run 3 commands. Do you trust it?
 
 `gatefile` makes agent side effects explicit, reviewable, and approvable — before anything executes.
 
@@ -25,7 +25,7 @@ npx gatefile apply-plan .plan/plan.json      # execute with safety guardrails
 Agent tooling is good at *doing* things but weak at *governing* side effects.
 
 - Hidden file edits buried in PR-sized bursts
-- Shell commands with unclear blast radius
+- Commands with unclear blast radius
 - No durable artifact for review, approval, or audit
 - Tests verify behavior *after* changes. Traces show what happened *during*. Neither gives you a machine-readable **intent contract** *before* execution
 
@@ -51,7 +51,7 @@ Agent emits plan → Human reviews → Approve hash → Apply with guardrails �
 
 | | Claude Code / Codex | Git + PR Review | Gatefile |
 |---|---|---|---|
-| **Scope** | Interactive session approval | Code diffs only | File edits + shell commands + preconditions |
+| **Scope** | Interactive session approval | Code diffs only | File edits + structured commands + preconditions |
 | **Durability** | Disappears with the session | Commit history | Persistent plan artifact on disk |
 | **Tamper detection** | None | Git hash (post-merge) | Hash-locked before execution |
 | **Identity proof** | None | GitHub commit signing | Ed25519 signed attestation |
@@ -161,7 +161,7 @@ See [docs/agent-adapter.md](docs/agent-adapter.md) for supported input formats.
 | **Hash binding** | Approval locks to exact plan content — any tampering blocks execution |
 | **Signer trust policy** | Trusted signer allowlist via `gatefile.config.json` |
 | **File sandboxing** | Writes restricted to workspace root (configurable via `filePolicy.allowedRoots`) |
-| **Command policy** | Allow/deny patterns for shell commands |
+| **Command policy** | Exact executable + ordered-argument allow/deny rules; execution uses `shell: false` |
 | **Timeouts** | Default 10s per command, configurable per-operation or plan-wide |
 | **Preconditions** | Guard checks (branch, clean tree, env vars) must pass before apply |
 | **Policy hooks** | Optional `beforeApprove`/`beforeApply` hooks |

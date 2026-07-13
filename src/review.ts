@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { approvePlan } from "./planner";
 import { buildInspectReport, formatInspectSummary } from "./inspect";
 import { scoreRisk } from "./risk";
+import { formatCommandInvocation, validatePlanCommandContract } from "./command";
 import { CommandOperation, FileOperation, PlanFile } from "./types";
 
 // ── ANSI helpers ──────────────────────────────────────────────────────
@@ -125,7 +126,7 @@ function buildSections(plan: PlanFile): Section[] {
     if (op.type === "command") {
       const cop = op as CommandOperation;
       const opRisk = scoreRisk([cop]);
-      const header = `${BOLD}${CYAN}── Command: ${RESET}${WHITE}${cop.command}${RESET}`;
+      const header = `${BOLD}${CYAN}── Command: ${RESET}${WHITE}${formatCommandInvocation(cop)}${RESET}`;
       const details = [
         header,
         `   Risk: ${riskColor(opRisk.level)}${opRisk.level}${RESET} (score: ${opRisk.score})`,
@@ -298,6 +299,7 @@ function jumpToNextOfKind(state: TUIState, kind: "file" | "command"): void {
 export async function reviewPlan(planPath: string): Promise<void> {
   const fullPath = resolve(planPath);
   const plan: PlanFile = JSON.parse(readFileSync(fullPath, "utf-8"));
+  validatePlanCommandContract(plan);
 
   // Non-TTY fallback: print inspect output and exit
   if (!process.stdin.isTTY) {

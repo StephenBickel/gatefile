@@ -37,7 +37,7 @@
     "execution": {
       "type": "object",
       "properties": {
-        "commandTimeoutMs": { "type": "number", "exclusiveMinimum": 0 },
+        "commandTimeoutMs": { "type": "integer", "minimum": 1, "maximum": 2147483647 },
         "commandPolicy": { "$ref": "#/$defs/commandPolicy" },
         "filePolicy": { "$ref": "#/$defs/filePolicy" }
       }
@@ -116,26 +116,57 @@
         },
         {
           "type": "object",
-          "required": ["id", "type", "command"],
+          "additionalProperties": false,
+          "required": ["id", "type", "executable", "args"],
           "properties": {
             "id": { "type": "string" },
             "type": { "type": "string", "const": "command" },
-            "command": { "type": "string" },
-            "cwd": { "type": "string" },
-            "timeoutMs": { "type": "number", "exclusiveMinimum": 0 },
+            "executable": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^(?=.*\\S)[^\\u0000]+$"
+            },
+            "args": {
+              "type": "array",
+              "items": { "type": "string", "pattern": "^[^\\u0000]*$" }
+            },
+            "cwd": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^(?=.*\\S)[^\\u0000]+$"
+            },
+            "timeoutMs": { "type": "integer", "minimum": 1, "maximum": 2147483647 },
             "allowFailure": { "type": "boolean" }
           }
         }
       ]
     },
+    "commandPolicyRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["executable", "args"],
+      "properties": {
+        "executable": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?=.*\\S)[^\\u0000]+$"
+        },
+        "args": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[^\\u0000]*$" }
+        }
+      }
+    },
     "commandPolicy": {
       "type": "object",
-      "required": ["mode", "patterns"],
+      "additionalProperties": false,
+      "required": ["mode", "rules"],
       "properties": {
         "mode": { "type": "string", "enum": ["allow", "deny"] },
-        "patterns": {
+        "rules": {
           "type": "array",
-          "items": { "type": "string" }
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/commandPolicyRule" }
         }
       }
     },

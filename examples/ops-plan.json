@@ -13,14 +13,16 @@
     {
       "id": "op_cmd_1",
       "type": "command",
-      "command": "./scripts/restart-app.sh",
+      "executable": "./scripts/restart-app.sh",
+      "args": [],
       "cwd": ".",
       "allowFailure": false
     },
     {
       "id": "op_cmd_2",
       "type": "command",
-      "command": "curl -fsS http://localhost:8080/health",
+      "executable": "curl",
+      "args": ["-fsS", "http://localhost:8080/health"],
       "cwd": ".",
       "allowFailure": false
     }

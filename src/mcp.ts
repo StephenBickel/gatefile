@@ -175,7 +175,7 @@ const TOOLS = [
   {
     name: "apply_plan",
     description:
-      "Apply an approved plan — executes file writes and shell commands. Creates a pre-apply snapshot for rollback. Only works on verified, approved plans.",
+      "Apply an approved plan — executes file writes and structured commands. Creates a pre-apply snapshot for rollback. Only works on verified, approved plans.",
     inputSchema: {
       type: "object" as const,
       properties: {

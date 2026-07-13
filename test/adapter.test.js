@@ -35,7 +35,8 @@ test('adaptAgentInputToDraft converts concise proposal input into a plan draft',
     ],
     commands: [
       {
-        command: 'npm test'
+        executable: 'npm',
+        args: ['test']
       }
     ],
     preconditions: [{ kind: 'git_clean' }]
@@ -95,7 +96,7 @@ test('adapt-agent CLI produces a draft that create-plan and verify-plan accept',
               after: 'hello\n'
             }
           ],
-          commands: [{ command: `${process.execPath} -v` }]
+          commands: [{ executable: process.execPath, args: ['-v'] }]
         }
       },
       null,

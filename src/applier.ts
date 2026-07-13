@@ -1,4 +1,4 @@
-import { execSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import {
@@ -25,6 +25,11 @@ import {
   receiptPath
 } from "./state";
 import { runPolicyHook } from "./hooks";
+import {
+  commandRuleMatches,
+  formatCommandInvocation,
+  validatePlanCommandContract
+} from "./command";
 
 const DEFAULT_COMMAND_TIMEOUT_MS = 10_000;
 
@@ -134,26 +139,23 @@ function commandTimeoutMs(
 
 function checkCommandPolicy(
   plan: PlanFile,
-  command: string
+  operation: Extract<PlanFile["operations"][number], { type: "command" }>
 ): { allowed: true } | { allowed: false; message: string } {
   const policy = plan.execution?.commandPolicy;
   if (!policy) return { allowed: true };
 
-  const patterns = policy.patterns.filter((pattern) => pattern.length > 0);
-  if (patterns.length === 0) return { allowed: true };
-
-  const matches = patterns.filter((pattern) => command.includes(pattern));
+  const matches = policy.rules.filter((rule) => commandRuleMatches(operation, rule));
   if (policy.mode === "allow" && matches.length === 0) {
     return {
       allowed: false,
-      message: `command denied by policy (allow mode): command must include one of [${patterns.join(", ")}]`
+      message: "command denied by policy (allow mode): executable and arguments must exactly match a rule"
     };
   }
 
   if (policy.mode === "deny" && matches.length > 0) {
     return {
       allowed: false,
-      message: `command denied by policy (deny mode): matched [${matches.join(", ")}]`
+      message: "command denied by policy (deny mode): executable and arguments exactly matched a rule"
     };
   }
 
@@ -176,16 +178,9 @@ function applyCommandOperation(
   op: Extract<PlanFile["operations"][number], { type: "command" }>
 ): ApplyOperationResult {
   const timeoutMs = commandTimeoutMs(plan, op);
-  const policyResult = checkCommandPolicy(plan, op.command);
+  const invocation = formatCommandInvocation(op);
+  const policyResult = checkCommandPolicy(plan, op);
   if (!policyResult.allowed) {
-    if (op.allowFailure) {
-      return {
-        operationId: op.id,
-        success: true,
-        message: `command denied but allowed: ${policyResult.message}`
-      };
-    }
-
     return {
       operationId: op.id,
       success: false,
@@ -194,15 +189,21 @@ function applyCommandOperation(
   }
 
   try {
-    execSync(op.command, {
+    const result = spawnSync(op.executable, op.args, {
       cwd: op.cwd,
       stdio: "inherit",
-      timeout: timeoutMs
+      timeout: timeoutMs,
+      shell: false
     });
+    if (result.error) throw result.error;
+    if (result.status !== 0) {
+      const signal = result.signal ? `, signal ${result.signal}` : "";
+      throw new Error(`process exited with status ${result.status ?? "unknown"}${signal}`);
+    }
     return {
       operationId: op.id,
       success: true,
-      message: `command ok: ${op.command} (timeout ${timeoutMs}ms)`
+      message: `command ok: ${invocation} (timeout ${timeoutMs}ms)`
     };
   } catch (error) {
     const failureMessage = formatCommandFailureMessage(error, timeoutMs);
@@ -279,11 +280,14 @@ function describeCommandPreview(
   const allowFailure = op.allowFailure === true ? "yes" : "no";
   const timeoutMs = commandTimeoutMs(plan, op);
   const policy = plan.execution?.commandPolicy;
-  const policyDetails = policy ? `, policy: ${policy.mode} [${policy.patterns.join(", ")}]` : "";
+  const policyDetails = policy ? `, policy: ${policy.mode} (${policy.rules.length} exact rules)` : "";
+  const policyResult = checkCommandPolicy(plan, op);
+  const deniedSuffix = policyResult.allowed ? "" : " [DENIED by command policy]";
+  const denialDetails = policyResult.allowed ? "" : `, reason: ${policyResult.message}`;
   return {
     operationId: op.id,
-    message: `would run command: ${op.command}`,
-    details: `cwd: ${cwd}, allowFailure: ${allowFailure}, timeoutMs: ${timeoutMs}${policyDetails}`
+    message: `would run command: ${formatCommandInvocation(op)}${deniedSuffix}`,
+    details: `cwd: ${cwd}, allowFailure: ${allowFailure}, timeoutMs: ${timeoutMs}${policyDetails}${denialDetails}`
   };
 }
 
@@ -440,7 +444,19 @@ function applyCore(plan: PlanFile, options: PlanRuntimeOptions): ApplyReport {
   const results: ApplyOperationResult[] = [];
 
   for (const op of plan.operations) {
-    const result = op.type === "file" ? applyFileOperation(plan, op) : applyCommandOperation(plan, op);
+    let result: ApplyOperationResult;
+    if (op.type === "file") {
+      result = applyFileOperation(plan, op);
+    } else if (op.type === "command") {
+      result = applyCommandOperation(plan, op);
+    } else {
+      const unsupported = op as unknown as { id?: unknown; type?: unknown };
+      result = {
+        operationId: typeof unsupported.id === "string" ? unsupported.id : "unknown-operation",
+        success: false,
+        message: `Unsupported operation type: ${String(unsupported.type)}`
+      };
+    }
     results.push(result);
 
     if (!result.success) {
@@ -513,6 +529,7 @@ function applyCore(plan: PlanFile, options: PlanRuntimeOptions): ApplyReport {
 }
 
 export function previewPlan(plan: PlanFile, options: PlanRuntimeOptions = {}): DryRunReport {
+  validatePlanCommandContract(plan);
   const verification = verifyPlan(plan, { config: options.config });
   const dependencies = dependencyStatus(plan, options.repoRoot);
 
@@ -539,6 +556,7 @@ export function previewPlan(plan: PlanFile, options: PlanRuntimeOptions = {}): D
 }
 
 export function applyPlan(plan: PlanFile, options: PlanRuntimeOptions = {}): ApplyReport {
+  validatePlanCommandContract(plan);
   const verification = verifyPlan(plan, { config: options.config });
   if (!verification.readyToApplyFromIntegrityApproval) {
     throw new Error(`Plan failed verification: ${verification.blockers.join("; ")}`);

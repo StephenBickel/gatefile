@@ -18,7 +18,9 @@ The machine-readable schema for this MVP lives at `schema/gatefile.schema.json`.
     "commandTimeoutMs": 10000,
     "commandPolicy": {
       "mode": "allow",
-      "patterns": ["node -e", "npm test"]
+      "rules": [
+        { "executable": "/usr/local/bin/node", "args": ["--version"] }
+      ]
     },
     "filePolicy": {
       "allowedRoots": ["./tmp/safe-root"]
@@ -66,23 +68,28 @@ Allowed actions:
 {
   "id": "op_cmd_1",
   "type": "command",
-  "command": "npm test",
+  "executable": "/usr/local/bin/npm",
+  "args": ["test"],
   "cwd": ".",
   "timeoutMs": 5000,
   "allowFailure": false
 }
 ```
 
-`timeoutMs` is optional and must be > 0 when set.
+`timeoutMs` is optional and must be an integer from 1 through 2,147,483,647 milliseconds when set.
+
+Gatefile passes `args` directly to the executable with `shell: false`. It does not perform shell parsing, interpolation, globbing, redirects, or command composition. An explicitly selected shell such as `sh` is still an executable and is safe only when its complete argument tuple is deliberately reviewed and allowed.
 
 ## Execution Controls (MVP)
 
 Optional top-level `execution` supports lightweight command hardening:
-- `commandTimeoutMs`: default timeout for command operations (ms, > 0)
+- `commandTimeoutMs`: default timeout for command operations (integer from 1 through 2,147,483,647 milliseconds)
 - `commandPolicy`:
-  - `mode: "allow"` means command text must include at least one pattern substring
-  - `mode: "deny"` means command text must not include any matching pattern substring
-  - `patterns`: string list used for substring matching
+  - `rules`: a non-empty list of `{ "executable": string, "args": string[] }` tuples
+  - `mode: "allow"` means the executable and complete ordered argument array must exactly match a rule
+  - `mode: "deny"` blocks only an exact tuple match; use allow mode for a strong execution boundary
+  - rules use lexical executable identity. Prefer absolute executable paths: a bare name such as `node` trusts the process `PATH`
+  - `cwd` is hash-bound as reviewed plan content but is not part of a command-policy rule; use a trusted working directory
 - `filePolicy`:
   - `allowedRoots`: list of allowed roots for file operations (`create`, `update`, `delete`)
   - if omitted (or empty), allowed roots default to the current working directory (`process.cwd()`) at apply time

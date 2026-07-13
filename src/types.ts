@@ -14,7 +14,8 @@ export interface FileOperation {
 export interface CommandOperation {
   id: string;
   type: "command";
-  command: string;
+  executable: string;
+  args: string[];
   cwd?: string;
   timeoutMs?: number;
   allowFailure?: boolean;
@@ -24,9 +25,14 @@ export type Operation = FileOperation | CommandOperation;
 
 export type CommandPolicyMode = "allow" | "deny";
 
+export interface CommandPolicyRule {
+  executable: string;
+  args: string[];
+}
+
 export interface CommandPolicy {
   mode: CommandPolicyMode;
-  patterns: string[];
+  rules: CommandPolicyRule[];
 }
 
 export interface FilePolicy {
