@@ -9,7 +9,8 @@ const ADAPTERS = [
   'src/sdk.ts',
   'src/pipeline.ts',
   'src/review.ts',
-  'src/pr-review.ts'
+  'src/pr-review.ts',
+  'src/mcp.ts'
 ];
 
 const KERNEL_MODULES = new Set(['./planner', './applier', './verify', './inspect']);

@@ -12,6 +12,7 @@ const {
   approvePlanFile,
   createPlan,
   createPlanFromDraft,
+  generateApprovalAttestationKeyPair,
   repositoryIdForRoot,
   rollbackApply,
   runPipeline
@@ -276,6 +277,84 @@ test('MCP apply and rollback tool results set isError for failure reports', (t) 
   }
 });
 
+test('MCP approve enforces beforeApprove policy and preserves exact plan bytes', (t) => {
+  const f = fixture(t, 'gatefile-pr6-mcp-before-approve-');
+  const target = path.join(f.repoRoot, 'blocked-approval-output.txt');
+  const planPath = path.join(f.repoRoot, 'blocked-approval-plan.json');
+  const plan = createPlanFromDraft(filePlanDraft(target), { repoRoot: f.repoRoot });
+  const originalBytes = Buffer.from(`${JSON.stringify(plan, null, 4)}\n\n`, 'utf8');
+  fs.writeFileSync(planPath, originalBytes);
+  fs.writeFileSync(
+    path.join(f.repoRoot, 'gatefile.config.json'),
+    JSON.stringify({
+      hooks: {
+        beforeApprove: {
+          command: `"${process.execPath}" -e "process.exit(31)"`
+        }
+      }
+    }),
+    'utf8'
+  );
+
+  const response = callMcp(
+    'approve_plan',
+    { path: planPath, by: 'blocked-mcp-reviewer', repo_root: f.repoRoot },
+    { cwd: f.base, env: childEnv(f.stateHome) }
+  );
+
+  assert.equal(response.result.isError, true, response.result.content[0].text);
+  assert.match(response.result.content[0].text, /Policy hook beforeApprove blocked execution/);
+  assert.deepEqual(fs.readFileSync(planPath), originalBytes);
+  assert.equal(JSON.parse(originalBytes).approval.status, 'pending');
+});
+
+test('MCP signed approval remains adapter-owned and signer policy blocks apply without mutation', (t) => {
+  const f = fixture(t, 'gatefile-pr6-mcp-signer-policy-');
+  const target = path.join(f.repoRoot, 'untrusted-signer-output.txt');
+  const planPath = path.join(f.repoRoot, 'untrusted-signer-plan.json');
+  const privateKeyPath = path.join(f.base, 'approval-key.pem');
+  const signingKeys = generateApprovalAttestationKeyPair();
+  const trustedKeys = generateApprovalAttestationKeyPair();
+  const plan = createPlanFromDraft(filePlanDraft(target), { repoRoot: f.repoRoot });
+  fs.writeFileSync(planPath, `${JSON.stringify(plan, null, 2)}\n`, 'utf8');
+  fs.writeFileSync(privateKeyPath, signingKeys.privateKeyPem, 'utf8');
+  fs.writeFileSync(
+    path.join(f.repoRoot, 'gatefile.config.json'),
+    JSON.stringify({ signers: { trustedKeyIds: [trustedKeys.keyId] } }),
+    'utf8'
+  );
+
+  const spawnOptions = { cwd: f.base, env: childEnv(f.stateHome) };
+  const approveResponse = callMcp(
+    'approve_plan',
+    {
+      path: planPath,
+      by: 'signed-mcp-reviewer',
+      signing_key: privateKeyPath,
+      key_id: signingKeys.keyId,
+      repo_root: f.repoRoot
+    },
+    spawnOptions
+  );
+  assert.equal(
+    approveResponse.result.isError,
+    false,
+    approveResponse.result.content[0].text
+  );
+  const approved = JSON.parse(fs.readFileSync(planPath, 'utf8'));
+  assert.equal(approved.approval.attestation.keyId, signingKeys.keyId);
+
+  const applyResponse = callMcp(
+    'apply_plan',
+    { path: planPath, repo_root: f.repoRoot, state_home: f.stateHome },
+    spawnOptions
+  );
+
+  assert.equal(applyResponse.result.isError, true, applyResponse.result.content[0].text);
+  assert.match(applyResponse.result.content[0].text, /signer is not trusted/i);
+  assert.equal(fs.existsSync(target), false);
+});
+
 test('MCP schemas expose explicit runtime context for every repository-bound tool', (t) => {
   const f = fixture(t, 'gatefile-pr5-mcp-schema-');
   const request = { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} };
@@ -308,7 +387,7 @@ test('MCP schemas expose explicit runtime context for every repository-bound too
       );
     }
   }
-  for (const name of ['create_plan', 'verify_plan']) {
+  for (const name of ['create_plan', 'approve_plan', 'verify_plan']) {
     const properties = tools.get(name).inputSchema.properties;
     assert.equal(properties.repo_root?.type, 'string', `${name} must expose optional repo_root`);
     assert.equal(
