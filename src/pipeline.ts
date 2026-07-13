@@ -1,6 +1,6 @@
 import { lstatSync, readFileSync, readdirSync } from "node:fs";
 import { resolve, join } from "node:path";
-import type { ApplyReport, DryRunReport, PlanFile } from "./types";
+import { PLAN_VERSION, type ApplyReport, type DryRunReport, type PlanFile } from "./types";
 import { GatefileEngine, type GatefileEngineOptions } from "./engine";
 import { validatePlanFile } from "./validation";
 
@@ -53,7 +53,6 @@ interface PlanEntry {
 }
 
 const PLAN_MARKERS = new Set([
-  "version",
   "id",
   "context",
   "operations",
@@ -66,7 +65,10 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 function isPlanLike(value: unknown): value is Record<string, unknown> {
-  return isPlainObject(value) && Object.keys(value).some((key) => PLAN_MARKERS.has(key));
+  return isPlainObject(value) && (
+    value.version === PLAN_VERSION ||
+    Object.keys(value).some((key) => PLAN_MARKERS.has(key))
+  );
 }
 
 function readPlanEntries(dir: string): { entries: PlanEntry[]; inputErrors: PipelineInputError[] } {

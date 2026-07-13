@@ -106,6 +106,23 @@ test('pipeline rejects malformed plan-like JSON but ignores unrelated valid JSON
   assert.match(result.inputErrors[0].message, /Invalid v2 plan file|version/i);
 });
 
+test('pipeline ignores ordinary versioned JSON without ignoring a version-only v2 plan candidate', (t) => {
+  const f = fixture(t);
+  fs.writeFileSync(
+    path.join(f.plansDir, 'package.json'),
+    `${JSON.stringify({ name: 'ordinary-package', version: '1.2.3', private: true }, null, 2)}\n`
+  );
+  fs.writeFileSync(path.join(f.plansDir, 'malformed-v2-plan.json'), '{"version":"2"}\n');
+
+  const result = runPipeline(f.plansDir, { dryRun: true, repoRoot: f.repoRoot });
+
+  assert.equal(result.success, false);
+  assert.deepEqual(
+    result.inputErrors.map(({ file, code }) => ({ file, code })),
+    [{ file: 'malformed-v2-plan.json', code: 'invalid-plan' }]
+  );
+});
+
 test('pipeline rejects every duplicate plan ID instead of overwriting one entry', (t) => {
   const f = fixture(t);
   const plan = approvedPlan(f, 'duplicate');

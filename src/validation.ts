@@ -392,8 +392,8 @@ function validateDraftFields(draft: JsonObject, issues: ValidationIssue[]): void
   if (draft.version !== undefined && draft.version !== PLAN_VERSION) {
     issues.push({ path: "version", message: `must be ${PLAN_VERSION}` });
   }
-  requireNonEmptyString(draft.source, "source", issues);
-  requireNonEmptyString(draft.summary, "summary", issues);
+  requireReceiptTextInput(draft.source, "source", issues);
+  requireReceiptTextInput(draft.summary, "summary", issues);
   if (draft.dependsOn !== undefined) {
     validateStringArray(draft.dependsOn, "dependsOn", issues, {
       unique: true,
@@ -465,7 +465,7 @@ function validateAttestation(value: unknown, path: string, issues: ValidationIss
   if (attestation.scheme !== "ed25519-sha256") {
     issues.push({ path: `${path}.scheme`, message: "must be ed25519-sha256" });
   }
-  requireNonEmptyString(attestation.keyId, `${path}.keyId`, issues);
+  requireBoundId(attestation.keyId, `${path}.keyId`, issues);
   requireNonEmptyString(attestation.publicKeyPem, `${path}.publicKeyPem`, issues);
   requireNonEmptyString(attestation.signature, `${path}.signature`, issues);
   const payloadPath = `${path}.payload`;
@@ -481,7 +481,7 @@ function validateAttestation(value: unknown, path: string, issues: ValidationIss
     issues.push({ path: `${payloadPath}.type`, message: "must be gatefile-approval-v1" });
   }
   requireBoundId(payload.planId, `${payloadPath}.planId`, issues);
-  requireNonEmptyString(payload.approvedBy, `${payloadPath}.approvedBy`, issues);
+  requireReceiptTextInput(payload.approvedBy, `${payloadPath}.approvedBy`, issues);
   requireRfc3339DateTime(payload.approvedAt, `${payloadPath}.approvedAt`, issues);
   if (typeof payload.approvedPlanHash !== "string" || !/^[a-f0-9]{64}$/.test(payload.approvedPlanHash)) {
     issues.push({ path: `${payloadPath}.approvedPlanHash`, message: "must be a SHA-256 hex digest" });
@@ -501,7 +501,7 @@ function validateApproval(value: unknown, path: string, issues: ValidationIssue[
     issues.push({ path: `${path}.status`, message: "must be pending, approved, or rejected" });
   }
   if (approval.approvedBy !== undefined) {
-    requireNonEmptyString(approval.approvedBy, `${path}.approvedBy`, issues);
+    requireReceiptTextInput(approval.approvedBy, `${path}.approvedBy`, issues);
   }
   if (approval.approvedAt !== undefined) {
     requireRfc3339DateTime(approval.approvedAt, `${path}.approvedAt`, issues);
@@ -557,8 +557,8 @@ export function validatePlanFile(value: unknown): PlanFile {
     }
     requireBoundId(plan.id, "id", issues);
     requireRfc3339DateTime(plan.createdAt, "createdAt", issues);
-    requireNonEmptyString(plan.source, "source", issues);
-    requireNonEmptyString(plan.summary, "summary", issues);
+    requireReceiptTextInput(plan.source, "source", issues);
+    requireReceiptTextInput(plan.summary, "summary", issues);
     validateContext(plan.context, "context", issues);
     if (plan.dependsOn !== undefined) {
       validateStringArray(plan.dependsOn, "dependsOn", issues, {

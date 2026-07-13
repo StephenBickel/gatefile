@@ -328,6 +328,47 @@ function assertCanonicalTimestamp(value: unknown, label: string): string {
   return value;
 }
 
+function canonicalizeRfc3339Timestamp(value: unknown, label: string): string {
+  if (typeof value !== "string") {
+    throw new StateRecordValidationError(`${label} must be an RFC3339 timestamp`);
+  }
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-](\d{2}):(\d{2}))$/.exec(
+    value
+  );
+  if (!match) {
+    throw new StateRecordValidationError(`${label} must be an RFC3339 timestamp`);
+  }
+  const [, yearText, monthText, dayText, hourText, minuteText, secondText, offsetHourText, offsetMinuteText] = match;
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  const second = Number(secondText);
+  const offsetHour = offsetHourText === undefined ? 0 : Number(offsetHourText);
+  const offsetMinute = offsetMinuteText === undefined ? 0 : Number(offsetMinuteText);
+  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const daysInMonth = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  if (
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > daysInMonth[month - 1] ||
+    hour > 23 ||
+    minute > 59 ||
+    second > 59 ||
+    offsetHour > 23 ||
+    offsetMinute > 59
+  ) {
+    throw new StateRecordValidationError(`${label} must be a valid RFC3339 timestamp`);
+  }
+  const milliseconds = Date.parse(value);
+  if (!Number.isFinite(milliseconds)) {
+    throw new StateRecordValidationError(`${label} must be a valid RFC3339 timestamp`);
+  }
+  return new Date(milliseconds).toISOString();
+}
+
 function assertBoolean(value: unknown, label: string): boolean {
   if (typeof value !== "boolean") {
     throw new StateRecordValidationError(`${label} must be a boolean`);
@@ -876,7 +917,7 @@ function assertReceiptBody(value: unknown): ReceiptRecordBody {
       summary: assertText(metadata.summary, "receipt.audit.summary"),
       source: assertText(metadata.source, "receipt.audit.source"),
       approvedBy: assertText(metadata.approvedBy, "receipt.audit.approvedBy"),
-      approvedAt: assertCanonicalTimestamp(metadata.approvedAt, "receipt.audit.approvedAt"),
+      approvedAt: canonicalizeRfc3339Timestamp(metadata.approvedAt, "receipt.audit.approvedAt"),
       approvalIdentity: metadata.approvalIdentity,
       signerKeyId
     };

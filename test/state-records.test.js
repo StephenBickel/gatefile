@@ -312,6 +312,28 @@ test('receipt audit metadata is optional for old records and strict when present
   assert.throws(() => createReceiptRecord(inconsistent, key, snapshot), /unsigned.*signerKeyId/i);
 });
 
+test('receipt audit approval timestamps accept equivalent RFC3339 offsets and canonicalize to UTC', (t) => {
+  const { binding, key } = fixture(t, 'audit-metadata-timestamp');
+  const snapshot = createSnapshotRecord(snapshotBody(binding), key);
+  const body = receiptBody(binding, snapshot);
+  body.audit = {
+    summary: 'Canonical receipt approval time',
+    source: 'state-record-test',
+    approvedBy: 'release-reviewer',
+    approvedAt: '2026-07-12T21:02:59-04:00',
+    approvalIdentity: 'unsigned',
+    signerKeyId: null
+  };
+
+  const receipt = createReceiptRecord(body, key, snapshot);
+
+  assert.equal(receipt.audit.approvedAt, '2026-07-13T01:02:59.000Z');
+  assert.equal(
+    parseAndVerifyReceiptRecord(receipt, key, { snapshot }).audit.approvedAt,
+    '2026-07-13T01:02:59.000Z'
+  );
+});
+
 test('state-record character bounds count astral Unicode scalars, not UTF-16 units', (t) => {
   const { binding, key } = fixture(t, 'unicode-bounds');
   const scalar = '😀';

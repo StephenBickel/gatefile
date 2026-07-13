@@ -21,8 +21,8 @@
     "version": { "const": "2" },
     "id": { "$ref": "#/$defs/boundId" },
     "createdAt": { "$ref": "#/$defs/dateTime" },
-    "source": { "$ref": "#/$defs/nonEmptyString" },
-    "summary": { "$ref": "#/$defs/nonEmptyString" },
+    "source": { "$ref": "#/$defs/receiptNonEmptyString" },
+    "summary": { "$ref": "#/$defs/receiptNonEmptyString" },
     "context": { "$ref": "#/$defs/context" },
     "dependsOn": {
       "type": "array",
@@ -246,7 +246,7 @@
       "required": ["status"],
       "properties": {
         "status": { "type": "string", "enum": ["pending", "approved", "rejected"] },
-        "approvedBy": { "$ref": "#/$defs/nonEmptyString" },
+        "approvedBy": { "$ref": "#/$defs/receiptNonEmptyString" },
         "approvedAt": { "$ref": "#/$defs/dateTime" },
         "approvedPlanHash": { "$ref": "#/$defs/sha256" },
         "attestation": { "$ref": "#/$defs/approvalAttestation" }
@@ -264,7 +264,7 @@
       "required": ["scheme", "keyId", "publicKeyPem", "payload", "signature"],
       "properties": {
         "scheme": { "const": "ed25519-sha256" },
-        "keyId": { "$ref": "#/$defs/nonEmptyString" },
+        "keyId": { "$ref": "#/$defs/boundId" },
         "publicKeyPem": { "$ref": "#/$defs/nonEmptyString" },
         "signature": { "$ref": "#/$defs/nonEmptyString" },
         "payload": {
@@ -274,7 +274,7 @@
           "properties": {
             "type": { "const": "gatefile-approval-v1" },
             "planId": { "$ref": "#/$defs/boundId" },
-            "approvedBy": { "$ref": "#/$defs/nonEmptyString" },
+            "approvedBy": { "$ref": "#/$defs/receiptNonEmptyString" },
             "approvedAt": { "$ref": "#/$defs/dateTime" },
             "approvedPlanHash": { "$ref": "#/$defs/sha256" }
           }
