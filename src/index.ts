@@ -38,6 +38,13 @@ export type {
 export { generateApprovalAttestationKeyPair, createApprovalAttestation, verifyApprovalAttestation } from "./attestation";
 export { normalizeGatefileConfig } from "./config";
 export { startMcpServer } from "./mcp";
+export { GatefileEngine } from "./engine";
+export type {
+  GatefileEngineOptions,
+  GatefileEngineContext,
+  EnginePlanOptions,
+  EngineApproveOptions
+} from "./engine";
 
 import { repositoryIdForRoot as resolveRepositoryIdForRoot } from "./state";
 
