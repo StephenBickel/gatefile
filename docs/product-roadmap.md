@@ -31,7 +31,7 @@ Rationale: reduce friction between plan review and repo review.
 - Structured PR comment renderer with re-run safe updates and blocker classification
 - Optional required-status policy templates for branch protection
 - Approval UX that can sign from CI-safe contexts without exposing raw secret material in logs
-- First-party GitHub workflow example for CI-native signed approvals on PR branches
+- First-party GitHub workflow example for fork-safe signed approvals using an artifact handoff
 
 ## Phase 3: Official Agent Adapters + SDKs
 

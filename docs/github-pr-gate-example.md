@@ -60,22 +60,7 @@ This flow:
 5. Fails the job if `verify-report.json` is not `status: "ready"`.
 6. PR comment includes signer trust state (`trusted`, `untrusted`, etc.) when configured.
 
-## Option D: GitHub-Native Signed Approval (Same-Repo PR Branch)
-
-Use:
-`docs/examples/github-native-signed-approval.yml`
-
-This workflow signs `.plan/plan.json` directly on the PR branch, verifies trust/readiness, and pushes the signed plan back.
-It is intended for same-repo PR branches.
-
-Expected secrets:
-- `GATEFILE_SIGNING_KEY_PEM` (required): signer private key PEM
-
-Trust policy setup:
-- configure `gatefile.config.json` with `signers.trustedKeyIds` and/or `signers.trustedPublicKeys`
-- then `verify-plan` and PR gate enforce trusted signer identity
-
-## Option E: Fork-Safe Signed Approval (Two-Workflow Artifact Handoff)
+## Option D: Fork-Safe Signed Approval (Two-Workflow Artifact Handoff)
 
 Use this pair when PRs come from forks and you do not want signing workflows to push to fork branches:
 
@@ -87,7 +72,9 @@ Flow:
 2. Trusted `workflow_dispatch` workflow downloads that artifact, signs a copy, verifies trust/readiness, and uploads a signed artifact.
 3. Signing workflow comments on the PR with the signed artifact name and run ID.
 
-This pattern is fork-safe because the signing workflow never pushes commits to the PR head branch.
+The PR workflow runs with read-only permissions and no signing secret. The trusted signing workflow treats the downloaded plan and context as inert artifacts: it checks out and builds trusted default-branch code, signs an artifact copy, and never executes code or hooks from the PR. It never pushes commits to the PR head branch.
+
+For key setup and rotation, see `docs/signed-approvals.md`.
 
 ### Local command usage
 

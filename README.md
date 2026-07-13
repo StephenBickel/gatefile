@@ -228,7 +228,7 @@ Drop a gatefile check into any CI pipeline:
     plan-path: .plan/plan.json
 ```
 
-See [docs/github-pr-gate-example.md](docs/github-pr-gate-example.md) for full workflow examples, including [CI-native signed approvals](docs/examples/github-native-signed-approval.yml) and [fork-safe signing](docs/examples/github-native-signed-approval-fork-request.yml).
+See [docs/github-pr-gate-example.md](docs/github-pr-gate-example.md) for full workflow examples, including the [fork-safe signed-approval artifact flow](docs/examples/github-native-signed-approval-fork-request.yml).
 
 ## Config + Hooks
 
