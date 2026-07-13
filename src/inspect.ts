@@ -70,7 +70,13 @@ export function buildInspectReport(plan: PlanFile, options: InspectOptions = {})
 
 export function formatInspectSummary(
   plan: PlanFile,
-  report: InspectReport
+  report: InspectReport,
+  /** @deprecated Formatting uses report.verification; these options are ignored. */
+  _options: {
+    config?: GatefileConfig;
+    repoRoot?: string;
+    repositoryId?: string;
+  } = {}
 ): string {
   const verify = report.verification;
   const trustSuffix = verify.signerTrust.policyConfigured

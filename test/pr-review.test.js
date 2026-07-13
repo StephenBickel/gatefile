@@ -147,15 +147,30 @@ test('renderPRReviewComment asks the supplied engine only for missing assessment
 
   renderPRReviewComment({ plan, inspectReport, engine });
   assert.equal(inspectCalls, 0);
-  assert.equal(verifyCalls, 1);
+  assert.equal(verifyCalls, 0);
 
   renderPRReviewComment({ plan, verifyReport, engine });
   assert.equal(inspectCalls, 1);
-  assert.equal(verifyCalls, 1);
+  assert.equal(verifyCalls, 0);
 
   renderPRReviewComment({ plan, inspectReport, verifyReport, engine });
   assert.equal(inspectCalls, 1);
-  assert.equal(verifyCalls, 1);
+  assert.equal(verifyCalls, 0);
+});
+
+test('renderPRReviewComment rejects a verify report inconsistent with the inspect snapshot', () => {
+  const engine = new GatefileEngine({ repoRoot: process.cwd() });
+  const plan = engine.approvePlan(engine.createPlan(makeDraft()), 'ci-user');
+  const inspectReport = engine.inspectPlan(plan);
+  const verifyReport = {
+    ...inspectReport.verification,
+    status: 'not-ready'
+  };
+
+  assert.throws(
+    () => renderPRReviewComment({ plan, inspectReport, verifyReport }),
+    /verify report.*inspect.*snapshot|inconsistent supplied reports/i
+  );
 });
 
 test('renderPRReviewComment includes dry-run highlights when provided', () => {
@@ -167,7 +182,53 @@ test('renderPRReviewComment includes dry-run highlights when provided', () => {
   assert.match(markdown, /### Dry-Run Highlights/);
   assert.match(markdown, /Previewed operations: 2/);
   assert.match(markdown, /op_cmd_1:/);
-  assert.match(markdown, /\| Apply ready \| yes \|/);
+  assert.match(
+    markdown,
+    new RegExp(`\\| Apply ready \\| ${dryRun.staticGate.passed ? 'yes' : 'no'} \\|`)
+  );
+});
+
+test('renderPRReviewComment surfaces static-gate facts and denied operations', () => {
+  const outsideRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gatefile-pr-denied-'));
+  try {
+    const plan = approvePlan(createPlanFromDraft({
+      source: 'test-agent',
+      summary: 'PR comment must expose policy denial',
+      operations: [{
+        id: 'op_denied_pr',
+        type: 'file',
+        action: 'create',
+        path: path.join(outsideRoot, 'outside.txt'),
+        after: 'denied\n'
+      }],
+      preconditions: []
+    }), 'ci-user');
+    const dryRunReport = previewPlan(plan);
+    const markdown = renderPRReviewComment({ plan, dryRunReport });
+
+    assert.match(markdown, /Static gate: failed/);
+    assert.match(markdown, /Operation policy: denied/);
+    assert.match(markdown, /Preconditions checked: no/);
+    assert.match(markdown, /\| Apply ready \| no \|/);
+    assert.match(markdown, /Dry-run static gate failed/);
+    assert.match(markdown, /Denied operations:/);
+    assert.match(markdown, /op_denied_pr/);
+  } finally {
+    fs.rmSync(outsideRoot, { recursive: true, force: true });
+  }
+});
+
+test('renderPRReviewComment rejects dry-run evidence for a different plan', () => {
+  const plan = createPlanFromDraft(makeDraft());
+  const dryRunReport = previewPlan(plan);
+
+  assert.throws(
+    () => renderPRReviewComment({
+      plan,
+      dryRunReport: { ...dryRunReport, planId: 'plan_different' }
+    }),
+    /dry-run report.*plan/i
+  );
 });
 
 test('render-pr-comment CLI writes markdown file with optional reports', (t) => {

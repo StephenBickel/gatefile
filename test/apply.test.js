@@ -5,7 +5,13 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
-const { applyPlan, createPlanFromDraft, approvePlan, previewPlan } = require('../dist');
+const {
+  applyPlan,
+  approvePlan,
+  createPlanFromDraft,
+  formatDryRunSummary,
+  previewPlan
+} = require('../dist');
 
 const CLI_PATH = path.join(__dirname, '..', 'dist', 'cli.js');
 
@@ -639,6 +645,36 @@ test('previewPlan marks file operations denied when path is outside default work
     assert.match(report.results[0].details, /allowedRoots:/);
     assertRecoveryShape(report.recovery);
     assert.equal(fs.existsSync(outsidePath), false);
+  } finally {
+    fs.rmSync(outsideRoot, { recursive: true, force: true });
+  }
+});
+
+test('formatDryRunSummary surfaces the static gate and each denied operation', () => {
+  const outsideRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gatefile-preview-human-denied-'));
+  try {
+    const outsidePath = path.join(outsideRoot, 'outside.txt');
+    const plan = approvePlan(createPlanFromDraft({
+      source: 'test-agent',
+      summary: 'Human preview must expose policy denial',
+      operations: [{
+        id: 'op_denied_human',
+        type: 'file',
+        action: 'create',
+        path: outsidePath,
+        after: 'denied\n'
+      }],
+      preconditions: []
+    }), 'ci-user');
+    const report = previewPlan(plan);
+    const summary = formatDryRunSummary(report);
+
+    assert.match(summary, /Static Gate: failed/);
+    assert.match(summary, /Operation Policy: denied/);
+    assert.match(summary, /Preconditions Checked: no/);
+    assert.match(summary, /Denied Operations: 1/);
+    assert.match(summary, /op_denied_human/);
+    assert.match(summary, /DENIED by file policy/);
   } finally {
     fs.rmSync(outsideRoot, { recursive: true, force: true });
   }

@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
+const { execFileSync, spawnSync } = require('node:child_process');
 
 const {
   GatefileEngine,
@@ -165,6 +165,35 @@ test('formatInspectSummary renders the embedded verification snapshot without re
   const summary = engine.formatInspectPlan(plan, report);
   assert.match(summary, /trust: unsigned/);
   assert.match(summary, /Ready To Apply: no/);
+});
+
+test('formatInspectSummary retains the deprecated ignored third options parameter in its types', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gatefile-inspect-types-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const packageRoot = path.join(__dirname, '..');
+  const sourcePath = path.join(root, 'consumer.ts');
+  fs.writeFileSync(sourcePath, `
+import { formatInspectSummary } from ${JSON.stringify(packageRoot)};
+declare const plan: Parameters<typeof formatInspectSummary>[0];
+declare const report: Parameters<typeof formatInspectSummary>[1];
+formatInspectSummary(plan, report, {
+  config: {},
+  repoRoot: '/trusted/repository',
+  repositoryId: 'repo:trusted'
+});
+`, 'utf8');
+
+  const tsc = path.join(__dirname, '..', 'node_modules', '.bin', 'tsc');
+  const result = spawnSync(tsc, [
+    '--noEmit',
+    '--strict',
+    '--skipLibCheck',
+    '--module', 'commonjs',
+    '--moduleResolution', 'node',
+    sourcePath
+  ], { encoding: 'utf8', shell: false });
+
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
 });
 
 test('non-TTY review readiness matches the injected engine signer policy', async (t) => {

@@ -9,12 +9,18 @@ function formatStep(step: RecoveryOperationGuidance): string {
 }
 
 export function formatDryRunSummary(report: DryRunReport): string {
+  const deniedOperations = report.results.filter((result) => !result.allowed);
   const lines = [
     `Plan: ${report.planId}`,
     `Mode: dry-run preview`,
     `Verification: ${report.verification.status} (approval=${report.verification.approvalStatus})`,
     `Signer Trust: ${report.verification.signerTrustStatus}`,
-    `Ready To Apply: ${report.verification.readyToApplyFromIntegrityApproval ? "yes" : "no"}`
+    `Ready To Apply: ${report.staticGate.passed ? "yes" : "no"}`,
+    `Static Gate: ${report.staticGate.passed ? "passed" : "failed"}`,
+    `Verification Gate: ${report.staticGate.verificationReady ? "ready" : "not-ready"}`,
+    `Dependency Gate: ${report.staticGate.dependenciesSatisfied ? "satisfied" : "missing"}`,
+    `Operation Policy: ${report.staticGate.operationsAllowed ? "allowed" : "denied"}`,
+    `Preconditions Checked: ${report.staticGate.preconditionsChecked ? "yes" : "no"}`
   ];
 
   if (report.verification.blockers.length > 0) {
@@ -30,6 +36,10 @@ export function formatDryRunSummary(report: DryRunReport): string {
   }
 
   lines.push(`Operations Previewed: ${report.results.length}`);
+  lines.push(`Denied Operations: ${deniedOperations.length}`);
+  for (const result of deniedOperations) {
+    lines.push(`  - [denied] ${result.operationId}: ${result.message}`);
+  }
   if (report.recovery.affectedPaths.length > 0) {
     lines.push(`Affected Paths: ${report.recovery.affectedPaths.join(", ")}`);
   }
