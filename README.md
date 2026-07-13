@@ -348,7 +348,7 @@ Drop a gatefile check into any CI pipeline:
   with:
     fetch-depth: 0
 
-- uses: StephenBickel/gatefile/.github/actions/gatefile-pr-gate@9c193dd39c7c1e7b20ca3f8c42f0a72860b15814
+- uses: StephenBickel/gatefile/.github/actions/gatefile-pr-gate@57689dd2ddc2e8a6bc1c3cb5b46d5239f2d0ced0
   with:
     plan-path: .plan/plan.json
     trusted-policy-ref: ${{ github.event.pull_request.base.sha }}

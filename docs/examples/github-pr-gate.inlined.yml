@@ -30,7 +30,7 @@ jobs:
         run: |
           set -euo pipefail
           action_checkout="$(mktemp -d "${RUNNER_TEMP}/gatefile-action.XXXXXX")"
-          action_sha=9c193dd39c7c1e7b20ca3f8c42f0a72860b15814
+          action_sha=57689dd2ddc2e8a6bc1c3cb5b46d5239f2d0ced0
           git -C "${action_checkout}" init -q
           git -C "${action_checkout}" remote add origin https://github.com/StephenBickel/gatefile.git
           git -C "${action_checkout}" fetch --depth 1 origin "${action_sha}"

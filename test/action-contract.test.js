@@ -8,7 +8,7 @@ const { spawnSync, execFileSync } = require('node:child_process');
 
 const projectRoot = path.resolve(__dirname, '..');
 const actionRelativePath = path.join('.github', 'actions', 'gatefile-pr-gate');
-const PINNED_GATEFILE_ACTION_SHA = '9c193dd39c7c1e7b20ca3f8c42f0a72860b15814';
+const PINNED_GATEFILE_ACTION_SHA = '57689dd2ddc2e8a6bc1c3cb5b46d5239f2d0ced0';
 const EXPECTED_ACTION_SHAS = new Map([
   ['actions/checkout', '93cb6efe18208431cddfb8368fd83d5badbf9bfd'],
   ['actions/setup-node', 'a0853c24544627f65ddf259abe73b1d18a591444'],

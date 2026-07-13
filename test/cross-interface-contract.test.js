@@ -7,7 +7,7 @@ const path = require('node:path');
 const { execFileSync, spawnSync } = require('node:child_process');
 
 const projectRoot = path.resolve(__dirname, '..');
-const PINNED_GATEFILE_ACTION_SHA = '9c193dd39c7c1e7b20ca3f8c42f0a72860b15814';
+const PINNED_GATEFILE_ACTION_SHA = '57689dd2ddc2e8a6bc1c3cb5b46d5239f2d0ced0';
 
 function git(repoRoot, args) {
   return execFileSync('git', ['-C', repoRoot, ...args], { encoding: 'utf8' }).trim();
