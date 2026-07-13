@@ -298,14 +298,17 @@ imports are the allowlisted package root, `gatefile/schema/gatefile.schema.json`
 `gatefile/schema/gatefile.config.schema.json`, and `gatefile/package.json`.
 Node.js rejects other package subpaths, including the internal `dist` tree.
 Treat only the explicit root exports and those JSON subpaths as the installed
-package compatibility contract.
+package compatibility contract. This is not a security sandbox: code that
+already has filesystem access to an installation can locate it and load files
+by absolute path. The export map prevents accidental or supported package-specifier
+coupling to internals; it does not isolate mutually untrusted code in one process.
 
 ## GitHub PR Gate
 
 Drop a gatefile check into any CI pipeline:
 
 ```yaml
-- uses: actions/checkout@v5
+- uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
   with:
     fetch-depth: 0
 
@@ -320,9 +323,10 @@ Store the SHA-256 digest of the trusted base branch's
 `gatefile.config.json` bytes in the repository Actions variable
 `GATEFILE_POLICY_SHA256`. The Action requires the plan to be Git-tracked and
 unchanged from `HEAD`; it loads policy from the full base commit SHA and checks
-that snapshot against the caller-pinned digest. It generates inspect,
-verification, dry-run, and manifest evidence with Action-owned Gatefile code,
-uploads that evidence even when verification is not ready, and only then fails
+that snapshot against the caller-pinned digest. It stages the committed plan
+plus inspect, verification, dry-run, and manifest evidence in a fresh
+runner-owned temporary directory, uploads only that bundle even when
+verification is not ready, verifies its manifest digests, and only then fails
 the gate. Repositories intentionally evaluating without signer policy must opt
 in explicitly with `allow-unsigned-no-policy: "true"`; that mode is not a
 substitute for trusted approval verification.

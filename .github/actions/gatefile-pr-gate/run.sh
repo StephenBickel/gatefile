@@ -46,20 +46,12 @@ repo_root=$(cd "${repo_root}" && pwd -P)
 [[ "${repo_root}" == "${workspace}" ]] || fail "GITHUB_WORKSPACE must be the repository top-level"
 
 plan_path=${INPUT_PLAN_PATH:-.plan/plan.json}
-inspect_report_path=${INPUT_INSPECT_REPORT_PATH:-inspect-report.json}
-verify_report_path=${INPUT_VERIFY_REPORT_PATH:-verify-report.json}
-dry_run_report_path=${INPUT_DRY_RUN_REPORT_PATH:-dry-run-report.json}
-manifest_path=${INPUT_MANIFEST_PATH:-gatefile-manifest.json}
 trusted_policy_ref=${INPUT_TRUSTED_POLICY_REF:-}
 trusted_policy_path=${INPUT_TRUSTED_POLICY_PATH:-gatefile.config.json}
 trusted_policy_sha256=${INPUT_TRUSTED_POLICY_SHA256:-}
 allow_unsigned_no_policy=${INPUT_ALLOW_UNSIGNED_NO_POLICY:-false}
 
 validate_relative_path "plan-path" "${plan_path}"
-validate_relative_path "inspect-report-path" "${inspect_report_path}"
-validate_relative_path "verify-report-path" "${verify_report_path}"
-validate_relative_path "dry-run-report-path" "${dry_run_report_path}"
-validate_relative_path "manifest-path" "${manifest_path}"
 
 [[ -f "${plan_path}" && ! -L "${plan_path}" ]] || fail "plan-path must be a regular, non-symlink file"
 if ! git ls-files --error-unmatch -- "${plan_path}" >/dev/null 2>&1; then
@@ -74,16 +66,19 @@ case "${allow_unsigned_no_policy}" in
   *) fail "allow-unsigned-no-policy must be exactly true or false" ;;
 esac
 
+umask 077
+runner_temp=$(cd "${RUNNER_TEMP}" && pwd -P)
+evidence_dir=$(mktemp -d "${runner_temp%/}/gatefile-evidence.XXXXXX")
+runtime_dir=$(mktemp -d "${runner_temp%/}/gatefile-runtime.XXXXXX")
+plan_snapshot="${evidence_dir}/plan.json"
+if ! git cat-file blob "HEAD:${plan_path}" > "${plan_snapshot}" 2>/dev/null; then
+  fail "unable to stage the committed plan blob from HEAD: ${plan_path}"
+fi
+
 policy_snapshot=""
 policy_mode="unsigned-no-policy"
 normalized_policy_ref=""
 normalized_policy_sha256=""
-cleanup() {
-  if [[ -n "${policy_snapshot}" ]]; then
-    rm -f -- "${policy_snapshot}"
-  fi
-}
-trap cleanup EXIT
 
 if [[ -n "${trusted_policy_ref}" || -n "${trusted_policy_sha256}" ]]; then
   [[ "${trusted_policy_ref}" =~ ^[0-9a-fA-F]{40}$ ]] || fail "trusted-policy-ref must be a full 40-character Git commit SHA"
@@ -92,8 +87,7 @@ if [[ -n "${trusted_policy_ref}" || -n "${trusted_policy_sha256}" ]]; then
   normalized_policy_sha256=$(printf '%s' "${trusted_policy_sha256}" | tr '[:upper:]' '[:lower:]')
   validate_relative_path "trusted-policy-path" "${trusted_policy_path}"
   git cat-file -e "${trusted_policy_ref}^{commit}" 2>/dev/null || fail "trusted-policy-ref is not available as a commit; checkout with fetch-depth: 0"
-  umask 077
-  policy_snapshot=$(mktemp "${RUNNER_TEMP%/}/gatefile-policy.XXXXXX")
+  policy_snapshot="${runtime_dir}/trusted-policy.json"
   if ! git show "${trusted_policy_ref}:${trusted_policy_path}" > "${policy_snapshot}" 2>/dev/null; then
     fail "trusted policy does not exist at ${trusted_policy_ref}:${trusted_policy_path}"
   fi
@@ -117,16 +111,15 @@ if [[ ! -f "${package_root}/dist/index.js" ]]; then
 fi
 [[ -f "${package_root}/dist/index.js" ]] || fail "action-owned Gatefile build did not produce dist/index.js"
 
-state_home="${RUNNER_TEMP%/}/gatefile-action-state-${GITHUB_RUN_ID:-$$}"
+state_home="${runtime_dir}/state"
 runner_args=(
   "${action_path}/runner.js"
   --package-root "${package_root}"
   --repo-root "${repo_root}"
   --state-home "${state_home}"
-  --plan "${plan_path}"
-  --inspect "${inspect_report_path}"
-  --verify "${verify_report_path}"
-  --dry-run "${dry_run_report_path}"
+  --plan-snapshot "${plan_snapshot}"
+  --plan-source-path "${plan_path}"
+  --evidence-dir "${evidence_dir}"
 )
 if [[ -n "${policy_snapshot}" ]]; then
   runner_args+=(--config "${policy_snapshot}")
@@ -137,11 +130,12 @@ head_commit=$(git rev-parse HEAD)
 manifest_args=(
   "${action_path}/manifest.js"
   --package-json "${package_root}/package.json"
-  --plan "${plan_path}"
-  --inspect "${inspect_report_path}"
-  --verify "${verify_report_path}"
-  --dry-run "${dry_run_report_path}"
-  --manifest "${manifest_path}"
+  --plan "plan.json"
+  --plan-source-path "${plan_path}"
+  --inspect "inspect-report.json"
+  --verify "verify-report.json"
+  --dry-run "dry-run-report.json"
+  --manifest "gatefile-manifest.json"
   --head "${head_commit}"
   --policy-mode "${policy_mode}"
 )
@@ -152,13 +146,17 @@ if [[ "${policy_mode}" == "trusted-snapshot" ]]; then
     --policy-sha256 "${normalized_policy_sha256}"
   )
 fi
-node "${manifest_args[@]}"
+(
+  cd "${evidence_dir}"
+  node "${manifest_args[@]}"
+)
 
-gate_status=$(node -e 'const fs=require("node:fs");const report=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));if(report.status!=="ready"&&report.status!=="not-ready")throw new Error("Invalid verification status");process.stdout.write(report.status);' "${verify_report_path}")
-write_output "inspect-report-path" "${inspect_report_path}"
-write_output "verify-report-path" "${verify_report_path}"
-write_output "dry-run-report-path" "${dry_run_report_path}"
-write_output "manifest-path" "${manifest_path}"
+gate_status=$(node -e 'const fs=require("node:fs");const report=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));if(report.status!=="ready"&&report.status!=="not-ready")throw new Error("Invalid verification status");process.stdout.write(report.status);' "${evidence_dir}/verify-report.json")
+write_output "evidence-directory" "${evidence_dir}"
+write_output "inspect-report-path" "${evidence_dir}/inspect-report.json"
+write_output "verify-report-path" "${evidence_dir}/verify-report.json"
+write_output "dry-run-report-path" "${evidence_dir}/dry-run-report.json"
+write_output "manifest-path" "${evidence_dir}/gatefile-manifest.json"
 write_output "status" "${gate_status}"
 
 echo "Gatefile evidence generated for ${plan_path}: status=${gate_status}"

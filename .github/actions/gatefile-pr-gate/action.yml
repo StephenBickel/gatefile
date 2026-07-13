@@ -5,22 +5,6 @@ inputs:
     description: Repository-relative path to the committed plan artifact.
     required: false
     default: .plan/plan.json
-  inspect-report-path:
-    description: Repository-relative output path for inspect JSON evidence.
-    required: false
-    default: inspect-report.json
-  verify-report-path:
-    description: Repository-relative output path for verification JSON evidence.
-    required: false
-    default: verify-report.json
-  dry-run-report-path:
-    description: Repository-relative output path for dry-run JSON evidence.
-    required: false
-    default: dry-run-report.json
-  manifest-path:
-    description: Repository-relative output path for the bound evidence manifest.
-    required: false
-    default: gatefile-manifest.json
   trusted-policy-ref:
     description: Full trusted Git commit SHA containing gatefile.config.json.
     required: false
@@ -44,8 +28,11 @@ inputs:
     required: false
     default: gatefile-artifacts
 outputs:
+  evidence-directory:
+    description: Runner-owned directory containing the complete staged evidence bundle.
+    value: ${{ steps.gate.outputs.evidence-directory }}
   inspect-report-path:
-    description: Path to inspect JSON evidence.
+    description: Absolute runner-owned path to inspect JSON evidence.
     value: ${{ steps.gate.outputs.inspect-report-path }}
   verify-report-path:
     description: Path to verification JSON evidence.
@@ -63,7 +50,7 @@ runs:
   using: composite
   steps:
     - name: Setup Node.js
-      uses: actions/setup-node@v5
+      uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
       with:
         node-version: ${{ inputs.node-version }}
 
@@ -72,10 +59,6 @@ runs:
       shell: bash
       env:
         INPUT_PLAN_PATH: ${{ inputs.plan-path }}
-        INPUT_INSPECT_REPORT_PATH: ${{ inputs.inspect-report-path }}
-        INPUT_VERIFY_REPORT_PATH: ${{ inputs.verify-report-path }}
-        INPUT_DRY_RUN_REPORT_PATH: ${{ inputs.dry-run-report-path }}
-        INPUT_MANIFEST_PATH: ${{ inputs.manifest-path }}
         INPUT_TRUSTED_POLICY_REF: ${{ inputs.trusted-policy-ref }}
         INPUT_TRUSTED_POLICY_PATH: ${{ inputs.trusted-policy-path }}
         INPUT_TRUSTED_POLICY_SHA256: ${{ inputs.trusted-policy-sha256 }}
@@ -84,21 +67,15 @@ runs:
 
     - name: Upload Gatefile evidence
       if: ${{ always() }}
-      uses: actions/upload-artifact@v5
+      uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
       with:
         name: ${{ inputs.artifact-name }}
         if-no-files-found: error
-        path: |
-          ${{ inputs.plan-path }}
-          ${{ inputs.inspect-report-path }}
-          ${{ inputs.verify-report-path }}
-          ${{ inputs.dry-run-report-path }}
-          ${{ inputs.manifest-path }}
+        path: ${{ steps.gate.outputs.evidence-directory }}
 
     - name: Enforce Gatefile readiness
       if: ${{ always() }}
       shell: bash
       env:
-        VERIFY_REPORT_PATH: ${{ inputs.verify-report-path }}
-        DRY_RUN_REPORT_PATH: ${{ inputs.dry-run-report-path }}
-      run: node "${GITHUB_ACTION_PATH}/enforce.js" "${VERIFY_REPORT_PATH}" "${DRY_RUN_REPORT_PATH}"
+        EVIDENCE_DIRECTORY: ${{ steps.gate.outputs.evidence-directory }}
+      run: node "${GITHUB_ACTION_PATH}/enforce.js" "${EVIDENCE_DIRECTORY}"

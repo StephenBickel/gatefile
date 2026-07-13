@@ -14,13 +14,13 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           fetch-depth: 0
           persist-credentials: false
 
       - name: Setup Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 22
 
@@ -45,10 +45,6 @@ jobs:
         shell: bash
         env:
           INPUT_PLAN_PATH: .plan/plan.json
-          INPUT_INSPECT_REPORT_PATH: inspect-report.json
-          INPUT_VERIFY_REPORT_PATH: verify-report.json
-          INPUT_DRY_RUN_REPORT_PATH: dry-run-report.json
-          INPUT_MANIFEST_PATH: gatefile-manifest.json
           INPUT_TRUSTED_POLICY_REF: ${{ github.event.pull_request.base.sha }}
           INPUT_TRUSTED_POLICY_PATH: gatefile.config.json
           INPUT_TRUSTED_POLICY_SHA256: ${{ vars.GATEFILE_POLICY_SHA256 }}
@@ -60,21 +56,15 @@ jobs:
       # Keep this before enforcement so failed/not-ready evidence survives.
       - name: Upload Gatefile evidence
         if: ${{ always() }}
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
           name: gatefile-artifacts
           if-no-files-found: error
-          path: |
-            .plan/plan.json
-            inspect-report.json
-            verify-report.json
-            dry-run-report.json
-            gatefile-manifest.json
+          path: ${{ steps.gate.outputs.evidence-directory }}
 
       - name: Enforce Gatefile readiness
         if: ${{ always() }}
         shell: bash
         run: >-
           node "${{ steps.gatefile_action.outputs.path }}/enforce.js"
-          verify-report.json
-          dry-run-report.json
+          "${{ steps.gate.outputs.evidence-directory }}"

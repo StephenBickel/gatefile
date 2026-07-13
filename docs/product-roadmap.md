@@ -40,12 +40,13 @@ New product surface and feature work are deferred until the stabilization freeze
 - Audit projected only from authenticated external receipt/snapshot chains;
   repository-local legacy audit files are not trusted
 - An explicit installed-package export allowlist for the root API, both JSON
-  schemas, and package metadata, with unsupported `dist/*` imports blocked
+  schemas, and package metadata, with unsupported `dist/*` package specifiers
+  blocked (a compatibility boundary, not a same-process filesystem sandbox)
 - A startup-pinned MCP authority model with confined I/O, strict JSON-RPC
   validation, bounded command output capture, and capability-gated mutations
 - A reusable GitHub Action that executes action-owned Gatefile code, requires a
   tracked plan plus trusted policy or an explicit unsigned opt-in, and preserves
-  inspect, verify, dry-run, and manifest evidence before enforcing readiness
+  a runner-staged, manifest-bound evidence bundle before enforcing readiness
 
 ## Current stabilization boundary
 

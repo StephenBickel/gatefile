@@ -244,12 +244,6 @@ function collectMcpEvidence(fixture) {
 function collectActionEvidence(fixture) {
   const outputPath = path.join(fixture.base, 'github-output.txt');
   fs.writeFileSync(outputPath, '', 'utf8');
-  const reportPaths = {
-    inspect: 'action-inspect-report.json',
-    verify: 'action-verify-report.json',
-    dryRun: 'action-dry-run-report.json',
-    manifest: 'action-manifest.json'
-  };
   const result = spawnSync('bash', [path.join(actionPath, 'run.sh')], {
     cwd: fixture.repoRoot,
     env: {
@@ -260,10 +254,6 @@ function collectActionEvidence(fixture) {
       GITHUB_SHA: fixture.head,
       RUNNER_TEMP: fixture.runnerTemp,
       INPUT_PLAN_PATH: fixture.planRelativePath,
-      INPUT_INSPECT_REPORT_PATH: reportPaths.inspect,
-      INPUT_VERIFY_REPORT_PATH: reportPaths.verify,
-      INPUT_DRY_RUN_REPORT_PATH: reportPaths.dryRun,
-      INPUT_MANIFEST_PATH: reportPaths.manifest,
       INPUT_TRUSTED_POLICY_REF: fixture.head,
       INPUT_TRUSTED_POLICY_PATH: 'gatefile.config.json',
       INPUT_TRUSTED_POLICY_SHA256: sha256(fixture.configBytes),
@@ -274,15 +264,23 @@ function collectActionEvidence(fixture) {
     timeout: 60_000
   });
   assert.equal(result.status, 0, `Action runner\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
-  const readReport = (relativePath) => JSON.parse(
-    fs.readFileSync(path.join(fixture.repoRoot, relativePath), 'utf8')
+  const outputs = Object.fromEntries(
+    fs.readFileSync(outputPath, 'utf8')
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => {
+        const separator = line.indexOf('=');
+        return [line.slice(0, separator), line.slice(separator + 1)];
+      })
   );
+  const readReport = (filename) => JSON.parse(fs.readFileSync(filename, 'utf8'));
   const evidence = {
-    inspect: readReport(reportPaths.inspect),
-    verify: readReport(reportPaths.verify),
-    dryRun: readReport(reportPaths.dryRun)
+    inspect: readReport(outputs['inspect-report-path']),
+    verify: readReport(outputs['verify-report-path']),
+    dryRun: readReport(outputs['dry-run-report-path'])
   };
-  const manifest = readReport(reportPaths.manifest);
+  const manifest = readReport(outputs['manifest-path']);
   assert.equal(manifest.plan.id, evidence.verify.planId);
   assert.equal(manifest.plan.semanticHash, evidence.verify.hashes.currentPlanHash);
   assert.equal(manifest.decision.verificationStatus, evidence.verify.status);

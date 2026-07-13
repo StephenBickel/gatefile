@@ -59,7 +59,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -68,10 +68,6 @@ jobs:
         uses: StephenBickel/gatefile/.github/actions/gatefile-pr-gate@v0.3.0-alpha.0
         with:
           plan-path: .plan/plan.json
-          inspect-report-path: inspect-report.json
-          verify-report-path: verify-report.json
-          dry-run-report-path: dry-run-report.json
-          manifest-path: gatefile-manifest.json
           trusted-policy-ref: ${{ github.event.pull_request.base.sha }}
           trusted-policy-path: gatefile.config.json
           trusted-policy-sha256: ${{ vars.GATEFILE_POLICY_SHA256 }}
@@ -85,7 +81,9 @@ byte sequence would not describe the reviewed commit.
 
 ## Evidence and enforcement order
 
-The Action uploads the plan plus these bound evidence files:
+The Action copies the committed plan blob and these bound evidence files into a
+fresh runner-owned staging directory. Artifact upload receives only that
+directory, never caller-selected workspace paths:
 
 | File | Purpose |
 |---|---|
@@ -95,7 +93,8 @@ The Action uploads the plan plus these bound evidence files:
 | `gatefile-manifest.json` | Gatefile version, Git head, raw and semantic plan hashes, policy pin, and evidence digests |
 
 Evidence upload uses `if: ${{ always() }}` and appears before the final
-readiness enforcement step. A not-ready plan therefore leaves inspect,
+readiness enforcement step. Enforcement rechecks every manifest digest and the
+cross-report plan/hash/decision binding. A not-ready plan therefore leaves inspect,
 verification, dry-run, and manifest artifacts for diagnosis before the job is
 reported as failed. Failures that occur before evidence can be generated—for
 example, an untracked plan or a policy digest mismatch—still fail closed.
@@ -119,9 +118,10 @@ an error.
 ## Expanded workflow
 
 [`docs/examples/github-pr-gate.inlined.yml`](examples/github-pr-gate.inlined.yml)
-shows the same sequence expanded into separate steps. It clones the pinned
-Gatefile release into runner-owned temporary storage, invokes that checkout's
-Action runner, uploads all evidence, and then enforces readiness. It never
+shows the same sequence expanded into separate steps. It checks out pinned
+Gatefile code into runner-owned temporary storage, invokes that checkout's
+Action runner, uploads only its staged evidence directory, and then enforces
+manifest-bound readiness. It never
 installs, builds, or executes Gatefile code from the consumer repository.
 
 For signed-approval artifact handoff from fork pull requests, see:

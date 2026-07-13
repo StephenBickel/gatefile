@@ -89,6 +89,9 @@ blocks. The published package has an explicit `exports` map for the supported
 root API, both JSON schemas, and package metadata. Node package resolution rejects
 unsupported `dist/*` deep imports. The root API is an explicit allowlist and does
 not expose raw mutation kernels or the removed unauthenticated audit writers.
+This is a package-specifier compatibility boundary, not a filesystem or process
+sandbox; same-user code can still locate installed files and address them by
+absolute path.
 
 ## Configuration and notification boundary
 
@@ -128,8 +131,11 @@ The reusable GitHub Action executes Gatefile from `GITHUB_ACTION_PATH`, never a
 consumer repository's build output. It requires a tracked, unchanged plan and
 either a caller-pinned trusted policy ref and digest or an explicit unsigned,
 no-policy opt-in. Inspect, verify, dry-run, and manifest artifacts are produced
-before readiness is enforced; the manifest binds the plan hashes, Gatefile
-version, trusted policy, evidence digests, and checked-out commit.
+with a non-hidden copy of the committed plan in a fresh runner-owned staging
+directory before readiness is enforced. Upload receives only that directory,
+and enforcement rechecks the manifest digests and cross-report bindings. The
+manifest binds the plan hashes, Gatefile version, trusted policy, evidence
+digests, and checked-out commit.
 
 ## Audit boundary
 

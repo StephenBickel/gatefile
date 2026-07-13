@@ -35,7 +35,16 @@ function isWithin(root, candidate) {
 function resolveRepoFile(repoRoot, relativePath, label) {
   assertPlainRelativePath(relativePath, label);
   const canonicalRoot = fs.realpathSync(repoRoot);
-  const target = path.resolve(canonicalRoot, relativePath);
+  const components = relativePath.split(/[\\/]/u);
+  let parent = canonicalRoot;
+  for (const component of components.slice(0, -1)) {
+    parent = path.join(parent, component);
+    const parentStat = fs.lstatSync(parent);
+    if (parentStat.isSymbolicLink() || !parentStat.isDirectory()) {
+      throw new Error(`${label} parent must be a real directory without symlink components`);
+    }
+  }
+  const target = path.join(parent, components[components.length - 1]);
   if (target === canonicalRoot || !isWithin(canonicalRoot, target)) {
     throw new Error(`${label} escapes the repository root`);
   }
@@ -47,7 +56,9 @@ function readRegularFile(filename, label, maximumBytes = 32 * 1024 * 1024) {
   try {
     descriptor = fs.openSync(filename, fs.constants.O_RDONLY | NO_FOLLOW);
     const stat = fs.fstatSync(descriptor);
-    if (!stat.isFile()) throw new Error(`${label} must be a regular file`);
+    if (!stat.isFile() || stat.nlink !== 1) {
+      throw new Error(`${label} must be a single-link regular file`);
+    }
     if (stat.size > maximumBytes) {
       throw new Error(`${label} exceeds the ${maximumBytes}-byte Action limit`);
     }
@@ -83,6 +94,11 @@ function writeRepoJson(repoRoot, relativePath, value, label) {
   if (existing) {
     throw new Error(`${label} destination already exists; evidence outputs are create-only`);
   }
+  const parentStat = fs.lstatSync(canonicalParent);
+  if (parentStat.isSymbolicLink() || !parentStat.isDirectory()) {
+    throw new Error(`${label} parent must remain a non-symlink directory`);
+  }
+  const parentIdentity = { dev: parentStat.dev, ino: parentStat.ino };
 
   const bytes = Buffer.from(`${JSON.stringify(value, null, 2)}\n`, 'utf8');
   const temporary = path.join(
@@ -107,6 +123,15 @@ function writeRepoJson(repoRoot, relativePath, value, label) {
     temporaryIdentity = { dev: temporaryStat.dev, ino: temporaryStat.ino };
     fs.closeSync(descriptor);
     descriptor = undefined;
+    const currentParentStat = fs.lstatSync(canonicalParent);
+    if (
+      currentParentStat.isSymbolicLink() ||
+      !currentParentStat.isDirectory() ||
+      currentParentStat.dev !== parentIdentity.dev ||
+      currentParentStat.ino !== parentIdentity.ino
+    ) {
+      throw new Error(`${label} parent changed before create-only publication`);
+    }
     fs.linkSync(temporary, target);
     published = true;
     fs.unlinkSync(temporary);
@@ -119,6 +144,15 @@ function writeRepoJson(repoRoot, relativePath, value, label) {
       targetStat.ino !== temporaryIdentity.ino
     ) {
       throw new Error(`${label} create-only publication could not be verified`);
+    }
+    const finalParentStat = fs.lstatSync(canonicalParent);
+    if (
+      finalParentStat.isSymbolicLink() ||
+      !finalParentStat.isDirectory() ||
+      finalParentStat.dev !== parentIdentity.dev ||
+      finalParentStat.ino !== parentIdentity.ino
+    ) {
+      throw new Error(`${label} parent changed during create-only publication`);
     }
   } catch (error) {
     if (descriptor !== undefined) fs.closeSync(descriptor);

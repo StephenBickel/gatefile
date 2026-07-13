@@ -14,20 +14,18 @@ const allowed = new Set([
   '--package-root',
   '--repo-root',
   '--state-home',
-  '--plan',
+  '--plan-snapshot',
+  '--plan-source-path',
+  '--evidence-dir',
   '--config',
-  '--inspect',
-  '--verify',
-  '--dry-run'
 ]);
 const required = [
   '--package-root',
   '--repo-root',
   '--state-home',
-  '--plan',
-  '--inspect',
-  '--verify',
-  '--dry-run'
+  '--plan-snapshot',
+  '--plan-source-path',
+  '--evidence-dir'
 ];
 
 function main() {
@@ -35,8 +33,14 @@ function main() {
   const packageRoot = fs.realpathSync(args['--package-root']);
   const repoRoot = fs.realpathSync(args['--repo-root']);
   const stateHome = path.resolve(args['--state-home']);
-  if (!path.isAbsolute(packageRoot) || !path.isAbsolute(repoRoot) || !path.isAbsolute(stateHome)) {
-    throw new Error('package root, repository root, and state home must be absolute paths');
+  const evidenceDir = fs.realpathSync(args['--evidence-dir']);
+  if (
+    !path.isAbsolute(packageRoot) ||
+    !path.isAbsolute(repoRoot) ||
+    !path.isAbsolute(stateHome) ||
+    !path.isAbsolute(evidenceDir)
+  ) {
+    throw new Error('package root, repository root, state home, and evidence directory must be absolute paths');
   }
 
   const runtimePath = fs.realpathSync(path.join(packageRoot, 'dist', 'index.js'));
@@ -53,8 +57,16 @@ function main() {
     throw new Error('Action-owned Gatefile runtime does not expose the required engine API');
   }
 
-  const planLocation = resolveRepoFile(repoRoot, args['--plan'], 'plan').target;
-  const plan = readJsonFile(planLocation, 'plan', 16 * 1024 * 1024).value;
+  const planLocation = resolveRepoFile(
+    repoRoot,
+    args['--plan-source-path'],
+    'plan source path'
+  ).target;
+  const planSnapshot = fs.realpathSync(args['--plan-snapshot']);
+  if (!planSnapshot.startsWith(`${evidenceDir}${path.sep}`)) {
+    throw new Error('Plan snapshot must be staged inside the trusted evidence directory');
+  }
+  const plan = readJsonFile(planSnapshot, 'plan snapshot', 16 * 1024 * 1024).value;
   const config = args['--config']
     ? gatefile.normalizeGatefileConfig(
         readJsonFile(path.resolve(args['--config']), 'trusted policy', 1024 * 1024).value
@@ -79,9 +91,9 @@ function main() {
     throw new Error('Inspect and verify evidence disagree on the semantic plan hash');
   }
 
-  writeRepoJson(repoRoot, args['--inspect'], inspect, 'inspect report');
-  writeRepoJson(repoRoot, args['--verify'], verify, 'verify report');
-  writeRepoJson(repoRoot, args['--dry-run'], dryRun, 'dry-run report');
+  writeRepoJson(evidenceDir, 'inspect-report.json', inspect, 'inspect report');
+  writeRepoJson(evidenceDir, 'verify-report.json', verify, 'verify report');
+  writeRepoJson(evidenceDir, 'dry-run-report.json', dryRun, 'dry-run report');
 }
 
 try {

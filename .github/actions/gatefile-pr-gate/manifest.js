@@ -14,6 +14,7 @@ const {
 const allowed = new Set([
   '--package-json',
   '--plan',
+  '--plan-source-path',
   '--inspect',
   '--verify',
   '--dry-run',
@@ -27,6 +28,7 @@ const allowed = new Set([
 const required = [
   '--package-json',
   '--plan',
+  '--plan-source-path',
   '--inspect',
   '--verify',
   '--dry-run',
@@ -105,7 +107,7 @@ function main() {
       id: planId,
       semanticHash,
       rawSha256: sha256(plan.bytes),
-      path: args['--plan']
+      path: args['--plan-source-path']
     },
     git: { head: args['--head'] },
     policy,

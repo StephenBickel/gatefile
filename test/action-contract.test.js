@@ -106,10 +106,6 @@ function actionEnvironment(fixture, overrides = {}) {
     GITHUB_SHA: fixture.head,
     RUNNER_TEMP: fixture.runnerTemp,
     INPUT_PLAN_PATH: '.plan/plan.json',
-    INPUT_INSPECT_REPORT_PATH: 'inspect-report.json',
-    INPUT_VERIFY_REPORT_PATH: 'verify-report.json',
-    INPUT_DRY_RUN_REPORT_PATH: 'dry-run-report.json',
-    INPUT_MANIFEST_PATH: 'gatefile-manifest.json',
     INPUT_TRUSTED_POLICY_REF: fixture.head,
     INPUT_TRUSTED_POLICY_PATH: 'gatefile.config.json',
     INPUT_TRUSTED_POLICY_SHA256: fixture.policyDigest,
@@ -119,13 +115,29 @@ function actionEnvironment(fixture, overrides = {}) {
 }
 
 function runAction(fixture, overrides = {}) {
-  return spawnSync('bash', [path.join(fixture.action.actionPath, 'run.sh')], {
+  const env = actionEnvironment(fixture, overrides);
+  const result = spawnSync('bash', [path.join(fixture.action.actionPath, 'run.sh')], {
     cwd: fixture.consumer,
-    env: actionEnvironment(fixture, overrides),
+    env,
     encoding: 'utf8',
     shell: false,
     timeout: 120_000
   });
+  result.githubOutput = env.GITHUB_OUTPUT;
+  return result;
+}
+
+function readActionOutputs(result) {
+  const entries = fs.readFileSync(result.githubOutput, 'utf8')
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => {
+      const separator = line.indexOf('=');
+      assert.notEqual(separator, -1, `invalid GitHub output line: ${line}`);
+      return [line.slice(0, separator), line.slice(separator + 1)];
+    });
+  return Object.fromEntries(entries);
 }
 
 test('Action metadata owns its verifier and preserves evidence before enforcement', () => {
@@ -138,6 +150,7 @@ test('Action metadata owns its verifier and preserves evidence before enforcemen
   assert.doesNotMatch(metadata, /node dist\/cli\.js/);
   assert.match(metadata, /GITHUB_ACTION_PATH/);
   for (const output of [
+    'evidence-directory',
     'inspect-report-path',
     'verify-report-path',
     'dry-run-report-path',
@@ -147,6 +160,8 @@ test('Action metadata owns its verifier and preserves evidence before enforcemen
   }
   assert.match(metadata, /if: \$\{\{ always\(\) \}\}/);
   assert.match(metadata, /if-no-files-found: error/);
+  assert.match(metadata, /path: \$\{\{ steps\.gate\.outputs\.evidence-directory \}\}/);
+  assert.doesNotMatch(metadata, /path:\s*\|[\s\S]*inputs\.plan-path/);
   assert.ok(
     metadata.indexOf('Upload Gatefile evidence') < metadata.indexOf('Enforce Gatefile readiness'),
     'evidence upload must precede the failing readiness step'
@@ -169,10 +184,19 @@ test('Action runner uses action-owned code, trusted policy, and bound evidence',
   assert.match(result.stdout, /Gatefile evidence generated/, result.stderr);
   assert.equal(fs.existsSync(fixture.maliciousMarker), false, 'consumer dist/cli.js was executed');
 
-  const inspect = JSON.parse(fs.readFileSync(path.join(fixture.consumer, 'inspect-report.json'), 'utf8'));
-  const verify = JSON.parse(fs.readFileSync(path.join(fixture.consumer, 'verify-report.json'), 'utf8'));
-  const dryRun = JSON.parse(fs.readFileSync(path.join(fixture.consumer, 'dry-run-report.json'), 'utf8'));
-  const manifest = JSON.parse(fs.readFileSync(path.join(fixture.consumer, 'gatefile-manifest.json'), 'utf8'));
+  const outputs = readActionOutputs(result);
+  assert.ok(outputs['evidence-directory'].startsWith(`${fs.realpathSync(fixture.runnerTemp)}${path.sep}`));
+  assert.deepEqual(fs.readdirSync(outputs['evidence-directory']).sort(), [
+    'dry-run-report.json',
+    'gatefile-manifest.json',
+    'inspect-report.json',
+    'plan.json',
+    'verify-report.json'
+  ]);
+  const inspect = JSON.parse(fs.readFileSync(outputs['inspect-report-path'], 'utf8'));
+  const verify = JSON.parse(fs.readFileSync(outputs['verify-report-path'], 'utf8'));
+  const dryRun = JSON.parse(fs.readFileSync(outputs['dry-run-report-path'], 'utf8'));
+  const manifest = JSON.parse(fs.readFileSync(outputs['manifest-path'], 'utf8'));
   assert.equal(inspect.id ?? inspect.planId, fixture.plan.id);
   assert.equal(verify.planId, fixture.plan.id);
   assert.equal(verify.status, 'ready');
@@ -184,7 +208,7 @@ test('Action runner uses action-owned code, trusted policy, and bound evidence',
   assert.equal(manifest.plan.semanticHash, verify.hashes.currentPlanHash);
   assert.equal(
     manifest.plan.rawSha256,
-    sha256(fs.readFileSync(path.join(fixture.consumer, '.plan', 'plan.json')))
+    sha256(fs.readFileSync(path.join(outputs['evidence-directory'], 'plan.json')))
   );
   assert.equal(manifest.git.head, fixture.head);
   assert.deepEqual(manifest.policy, {
@@ -194,20 +218,34 @@ test('Action runner uses action-owned code, trusted policy, and bound evidence',
     sha256: fixture.policyDigest
   });
 
-  const inspectPath = path.join(fixture.consumer, 'inspect-report.json');
-  const existingEvidence = 'existing evidence must not be overwritten\n';
-  fs.writeFileSync(inspectPath, existingEvidence, 'utf8');
-  const clobberAttempt = runAction(fixture);
-  assert.notEqual(clobberAttempt.status, 0);
-  assert.match(clobberAttempt.stderr, /already exists|create-only/i);
-  assert.equal(fs.readFileSync(inspectPath, 'utf8'), existingEvidence);
+  const enforced = spawnSync(
+    process.execPath,
+    [path.join(fixture.action.actionPath, 'enforce.js'), outputs['evidence-directory']],
+    { cwd: fixture.consumer, encoding: 'utf8', shell: false }
+  );
+  assert.equal(enforced.status, 0, enforced.stderr);
+  fs.appendFileSync(outputs['verify-report-path'], ' ');
+  const tamperedEvidence = spawnSync(
+    process.execPath,
+    [path.join(fixture.action.actionPath, 'enforce.js'), outputs['evidence-directory']],
+    { cwd: fixture.consumer, encoding: 'utf8', shell: false }
+  );
+  assert.equal(tamperedEvidence.status, 1);
+  assert.match(tamperedEvidence.stderr, /digest.*manifest/i);
 
-  const gitMetadataAttempt = runAction(fixture, {
-    INPUT_INSPECT_REPORT_PATH: '.git/gatefile-inspect.json'
-  });
-  assert.notEqual(gitMetadataAttempt.status, 0);
-  assert.match(gitMetadataAttempt.stderr, /git metadata|\.git/i);
-  assert.equal(fs.existsSync(path.join(fixture.consumer, '.git', 'gatefile-inspect.json')), false);
+  const gitConfigPath = path.join(fixture.consumer, '.git', 'config');
+  const gitConfigBefore = fs.readFileSync(gitConfigPath);
+  fs.symlinkSync(gitConfigPath, path.join(fixture.consumer, 'inspect-report.json'));
+  const stagedDespiteWorkspaceSymlink = runAction(fixture);
+  assert.equal(
+    stagedDespiteWorkspaceSymlink.status,
+    0,
+    `${stagedDespiteWorkspaceSymlink.stdout}\n${stagedDespiteWorkspaceSymlink.stderr}`
+  );
+  const stagedOutputs = readActionOutputs(stagedDespiteWorkspaceSymlink);
+  assert.notEqual(stagedOutputs['inspect-report-path'], path.join(fixture.consumer, 'inspect-report.json'));
+  assert.equal(fs.lstatSync(stagedOutputs['inspect-report-path']).isSymbolicLink(), false);
+  assert.deepEqual(fs.readFileSync(gitConfigPath), gitConfigBefore);
 
   fs.writeFileSync(path.join(fixture.consumer, '.plan', 'plan.json'), '{}\n');
   const mutated = runAction(fixture);
@@ -264,16 +302,17 @@ test('Action emits failed verification evidence before its final enforcement ste
     INPUT_TRUSTED_POLICY_REF: fixture.head
   });
   assert.equal(generated.status, 0, `${generated.stdout}\n${generated.stderr}`);
-  const verifyPath = path.join(fixture.consumer, 'verify-report.json');
-  const dryRunPath = path.join(fixture.consumer, 'dry-run-report.json');
-  const manifestPath = path.join(fixture.consumer, 'gatefile-manifest.json');
+  const outputs = readActionOutputs(generated);
+  const verifyPath = outputs['verify-report-path'];
+  const dryRunPath = outputs['dry-run-report-path'];
+  const manifestPath = outputs['manifest-path'];
   assert.equal(JSON.parse(fs.readFileSync(verifyPath, 'utf8')).status, 'not-ready');
   assert.equal(JSON.parse(fs.readFileSync(dryRunPath, 'utf8')).planId, pending.id);
   assert.equal(JSON.parse(fs.readFileSync(manifestPath, 'utf8')).plan.id, pending.id);
 
   const enforcement = spawnSync(
     process.execPath,
-    [path.join(fixture.action.actionPath, 'enforce.js'), verifyPath, dryRunPath],
+    [path.join(fixture.action.actionPath, 'enforce.js'), outputs['evidence-directory']],
     { cwd: fixture.consumer, encoding: 'utf8', shell: false }
   );
   assert.equal(enforcement.status, 1);

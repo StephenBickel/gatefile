@@ -136,7 +136,7 @@ function createPackedConsumer(t) {
   return { root, consumer, metadata };
 }
 
-test('the installed tarball exposes only the reviewed package contract', (t) => {
+test('the installed tarball enforces the reviewed package-specifier contract', (t) => {
   const { consumer } = createPackedConsumer(t);
   const installedPackageRoot = path.join(consumer, 'node_modules', 'gatefile');
   const manifest = JSON.parse(fs.readFileSync(path.join(installedPackageRoot, 'package.json'), 'utf8'));

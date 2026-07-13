@@ -3,7 +3,8 @@
  *
  * Keep this file as an explicit allowlist. Internal planner, applier, state,
  * precondition, and audit-write kernels are deliberately unavailable through
- * the package root and package exports prevent deep-import workarounds.
+ * package specifiers. The exports map is a compatibility boundary, not a
+ * filesystem sandbox for code already running with access to the installation.
  */
 export {
   PLAN_VERSION,
