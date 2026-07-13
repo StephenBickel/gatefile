@@ -1,23 +1,56 @@
-# GitHub PR Review + Gate Example
+# GitHub PR Gate
 
-This keeps policy simple and local while making GitHub the primary review surface:
-- Require a committed plan artifact at `.plan/plan.json`
-- Generate `inspect-plan --json`, `verify-plan`, and `apply-plan --dry-run` artifacts
-- Render a markdown review summary using `render-pr-comment`
-- Post/update a sticky PR comment for every PR update
-- Gate PRs on `verify-plan.status === "ready"`
-- Optionally sign approvals in GitHub Actions and enforce trusted signer identities
+The reusable Action evaluates a committed Gatefile plan with code from the
+pinned Gatefile release, not build output from the pull-request repository. It
+produces inspect, verification, dry-run, and manifest evidence for review, then
+enforces readiness only after GitHub has had an opportunity to upload that
+evidence.
 
-## Option A: Reusable Action (Fastest Adoption)
+## Security contract
 
-Copy this workflow into your repo:
+The gate fails closed unless all of these conditions hold:
+
+- The plan path is repository-relative, Git-tracked, and byte-for-byte
+  unchanged from `HEAD`.
+- The checkout contains full history so the PR base commit can be resolved.
+- `trusted-policy-ref` is a full commit SHA. For pull requests, use
+  `github.event.pull_request.base.sha`, not a branch name or PR-controlled ref.
+- `trusted-policy-sha256` matches the exact bytes of the policy file at that
+  trusted commit.
+- Verification reports the plan as ready and the dry-run static gate passes.
+
+The Action reads policy with `git show` from the trusted commit and passes that
+snapshot explicitly to an Action-owned Gatefile runner. A pull request cannot
+weaken verification by replacing its working-tree `gatefile.config.json` or by
+placing malicious build output in the consumer repository.
+
+## Configure the trusted policy digest
+
+Compute the SHA-256 digest of the exact `gatefile.config.json` bytes on the base
+branch. For example, from a checkout of that branch:
+
+```bash
+shasum -a 256 gatefile.config.json
+```
+
+Store the hex digest as a repository Actions variable named
+`GATEFILE_POLICY_SHA256`. This value is a policy pin, not a secret. Update it as
+part of the trusted base-branch change whenever the policy bytes change.
+
+## Recommended workflow
+
+Copy [`docs/examples/github-pr-gate.yml`](examples/github-pr-gate.yml) into the
+consumer repository:
 
 ```yaml
-name: PR Planfile Gate
+name: Gatefile PR Gate
 
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
 
 jobs:
   gatefile-gate:
@@ -27,69 +60,73 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
 
-      - name: Planfile PR gate
-        uses: StephenBickel/gatefile/.github/actions/gatefile-pr-gate@main
+      - name: Gatefile PR gate
+        uses: StephenBickel/gatefile/.github/actions/gatefile-pr-gate@v0.3.0-alpha.0
         with:
           plan-path: .plan/plan.json
+          inspect-report-path: inspect-report.json
           verify-report-path: verify-report.json
+          dry-run-report-path: dry-run-report.json
+          manifest-path: gatefile-manifest.json
+          trusted-policy-ref: ${{ github.event.pull_request.base.sha }}
+          trusted-policy-path: gatefile.config.json
+          trusted-policy-sha256: ${{ vars.GATEFILE_POLICY_SHA256 }}
           node-version: "22"
+          artifact-name: gatefile-artifacts
 ```
 
-Reusable action source: `.github/actions/gatefile-pr-gate/action.yml`.
+The plan itself must be committed before the workflow runs. Generated or
+modified plans are deliberately rejected, because evidence from a different
+byte sequence would not describe the reviewed commit.
 
-## Option B: Fully Inlined Workflow
+## Evidence and enforcement order
 
-If you do not want an external `uses:` dependency, copy the inlined example:
-`docs/examples/github-pr-gate.inlined.yml`.
+The Action uploads the plan plus these bound evidence files:
 
-Primary example file using the reusable action:
-`docs/examples/github-pr-gate.yml`.
+| File | Purpose |
+|---|---|
+| `inspect-report.json` | Normalized plan inspection and review details |
+| `verify-report.json` | Integrity, approval, signer trust, and readiness result |
+| `dry-run-report.json` | Non-executing preview and static-gate result |
+| `gatefile-manifest.json` | Gatefile version, Git head, raw and semantic plan hashes, policy pin, and evidence digests |
 
-## Option C: GitHub-Native Sticky PR Review Comment + Gate (Recommended)
+Evidence upload uses `if: ${{ always() }}` and appears before the final
+readiness enforcement step. A not-ready plan therefore leaves inspect,
+verification, dry-run, and manifest artifacts for diagnosis before the job is
+reported as failed. Failures that occur before evidence can be generated—for
+example, an untracked plan or a policy digest mismatch—still fail closed.
 
-Copy this workflow into your repo:
-`docs/examples/github-pr-review-comment.yml`
+## Explicit unsigned evaluation mode
 
-This flow:
-1. Builds `gatefile` in CI.
-2. Produces `inspect-report.json`, `verify-report.json`, and `dry-run-report.json`.
-3. Renders markdown via:
-   - `node dist/cli.js render-pr-comment .plan/plan.json --inspect inspect-report.json --verify verify-report.json --dry-run dry-run-report.json --out gatefile-pr-comment.md`
-4. Posts/updates a sticky PR comment using `marocchino/sticky-pull-request-comment`.
-5. Fails the job if `verify-report.json` is not `status: "ready"`.
-6. PR comment includes signer trust state (`trusted`, `untrusted`, etc.) when configured.
+Repositories with no signer policy can opt into unsigned evaluation only by
+omitting the trusted-policy inputs and setting:
 
-## Option D: Fork-Safe Signed Approval (Two-Workflow Artifact Handoff)
-
-Use this pair when PRs come from forks and you do not want signing workflows to push to fork branches:
-
-- `docs/examples/github-native-signed-approval-fork-request.yml`
-- `docs/examples/github-native-signed-approval-fork-sign.yml`
-
-Flow:
-1. PR workflow builds Gatefile outputs and uploads unsigned plan + context as an artifact.
-2. Trusted `workflow_dispatch` workflow downloads that artifact, signs a copy, verifies trust/readiness, and uploads a signed artifact.
-3. Signing workflow comments on the PR with the signed artifact name and run ID.
-
-The PR workflow runs with read-only permissions and no signing secret. The trusted signing workflow treats the downloaded plan and context as inert artifacts: it checks out and builds trusted default-branch code, signs an artifact copy, and never executes code or hooks from the PR. It never pushes commits to the PR head branch.
-
-For key setup and rotation, see `docs/signed-approvals.md`.
-
-### Local command usage
-
-Render directly from a plan:
-
-```bash
-node dist/cli.js render-pr-comment .plan/plan.json
+```yaml
+with:
+  plan-path: .plan/plan.json
+  allow-unsigned-no-policy: "true"
 ```
 
-Render with precomputed artifacts (recommended in CI):
+This is an explicit alpha evaluation escape hatch. It does not establish signer
+trust and should not be used where an approved identity is part of the merge
+policy. With the default `"false"`, omitting the trusted policy ref or digest is
+an error.
 
-```bash
-node dist/cli.js render-pr-comment .plan/plan.json \
-  --inspect inspect-report.json \
-  --verify verify-report.json \
-  --dry-run dry-run-report.json \
-  --out gatefile-pr-comment.md
-```
+## Expanded workflow
+
+[`docs/examples/github-pr-gate.inlined.yml`](examples/github-pr-gate.inlined.yml)
+shows the same sequence expanded into separate steps. It clones the pinned
+Gatefile release into runner-owned temporary storage, invokes that checkout's
+Action runner, uploads all evidence, and then enforces readiness. It never
+installs, builds, or executes Gatefile code from the consumer repository.
+
+For signed-approval artifact handoff from fork pull requests, see:
+
+- [`docs/examples/github-native-signed-approval-fork-request.yml`](examples/github-native-signed-approval-fork-request.yml)
+- [`docs/examples/github-native-signed-approval-fork-sign.yml`](examples/github-native-signed-approval-fork-sign.yml)
+
+For key setup and rotation, see [`docs/signed-approvals.md`](signed-approvals.md).

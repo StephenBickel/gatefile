@@ -1,8 +1,11 @@
-name: PR Planfile Gate (Example)
+name: Gatefile PR Gate
 
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
 
 jobs:
   gatefile-gate:
@@ -12,10 +15,23 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          # The Action reads the trusted policy snapshot from the PR base SHA.
+          fetch-depth: 0
+          persist-credentials: false
 
-      - name: Planfile PR gate
-        uses: StephenBickel/gatefile/.github/actions/gatefile-pr-gate@main
+      - name: Gatefile PR gate
+        uses: StephenBickel/gatefile/.github/actions/gatefile-pr-gate@v0.3.0-alpha.0
         with:
           plan-path: .plan/plan.json
+          inspect-report-path: inspect-report.json
           verify-report-path: verify-report.json
+          dry-run-report-path: dry-run-report.json
+          manifest-path: gatefile-manifest.json
+          trusted-policy-ref: ${{ github.event.pull_request.base.sha }}
+          trusted-policy-path: gatefile.config.json
+          # Set this repository Actions variable to the SHA-256 digest of the
+          # exact gatefile.config.json bytes trusted on the base branch.
+          trusted-policy-sha256: ${{ vars.GATEFILE_POLICY_SHA256 }}
           node-version: "22"
+          artifact-name: gatefile-artifacts

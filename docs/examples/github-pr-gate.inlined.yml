@@ -1,8 +1,11 @@
-name: PR Planfile Gate (Inlined Example)
+name: Gatefile PR Gate (Expanded Evidence Flow)
 
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
 
 jobs:
   gatefile-gate:
@@ -12,34 +15,66 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
 
       - name: Setup Node.js
         uses: actions/setup-node@v5
         with:
           node-version: 22
-          cache: npm
 
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build gatefile CLI
-        run: npm run build
-
-      - name: Verify plan artifact exists
-        run: test -f .plan/plan.json
-
-      - name: Inspect plan artifact (machine output)
-        run: node dist/cli.js inspect-plan .plan/plan.json --json
-
-      - name: Verify plan ready state
+      - name: Checkout pinned Action-owned Gatefile code
+        id: gatefile_action
         shell: bash
         run: |
-          node -e 'const fs=require("fs");const {execFileSync}=require("node:child_process");const out=execFileSync(process.execPath,["dist/cli.js","verify-plan",".plan/plan.json"],{encoding:"utf8"});const r=JSON.parse(out);fs.writeFileSync("verify-report.json",JSON.stringify(r,null,2)+"\n","utf8");if(r.status!=="ready"){console.error("Planfile gate failed:",r.blockers.join("; "),"signerTrust="+(r.signerTrust?.status||"unknown"));process.exit(1);}console.log("Planfile gate passed:",r.planId,"signerTrust="+(r.signerTrust?.status||"not-configured"));'
+          set -euo pipefail
+          action_checkout="$(mktemp -d "${RUNNER_TEMP}/gatefile-action.XXXXXX")"
+          git clone \
+            --branch v0.3.0-alpha.0 \
+            --depth 1 \
+            --single-branch \
+            https://github.com/StephenBickel/gatefile.git \
+            "${action_checkout}"
+          action_path="${action_checkout}/.github/actions/gatefile-pr-gate"
+          test -f "${action_path}/run.sh"
+          printf 'path=%s\n' "${action_path}" >> "${GITHUB_OUTPUT}"
 
-      - name: Upload plan and verify artifacts
+      - name: Generate Gatefile evidence
+        id: gate
+        shell: bash
+        env:
+          INPUT_PLAN_PATH: .plan/plan.json
+          INPUT_INSPECT_REPORT_PATH: inspect-report.json
+          INPUT_VERIFY_REPORT_PATH: verify-report.json
+          INPUT_DRY_RUN_REPORT_PATH: dry-run-report.json
+          INPUT_MANIFEST_PATH: gatefile-manifest.json
+          INPUT_TRUSTED_POLICY_REF: ${{ github.event.pull_request.base.sha }}
+          INPUT_TRUSTED_POLICY_PATH: gatefile.config.json
+          INPUT_TRUSTED_POLICY_SHA256: ${{ vars.GATEFILE_POLICY_SHA256 }}
+          INPUT_ALLOW_UNSIGNED_NO_POLICY: "false"
+        run: |
+          GITHUB_ACTION_PATH="${{ steps.gatefile_action.outputs.path }}" \
+            bash "${{ steps.gatefile_action.outputs.path }}/run.sh"
+
+      # Keep this before enforcement so failed/not-ready evidence survives.
+      - name: Upload Gatefile evidence
+        if: ${{ always() }}
         uses: actions/upload-artifact@v5
         with:
           name: gatefile-artifacts
+          if-no-files-found: error
           path: |
             .plan/plan.json
+            inspect-report.json
             verify-report.json
+            dry-run-report.json
+            gatefile-manifest.json
+
+      - name: Enforce Gatefile readiness
+        if: ${{ always() }}
+        shell: bash
+        run: >-
+          node "${{ steps.gatefile_action.outputs.path }}/enforce.js"
+          verify-report.json
+          dry-run-report.json

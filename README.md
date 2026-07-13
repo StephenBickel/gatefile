@@ -293,20 +293,39 @@ and delegate to `GatefileEngine`. The Promise-returning file helpers
 should own plan JSON I/O.
 
 Raw lifecycle kernels and deep imports such as `gatefile/dist/applier` are not
-supported APIs. The current alpha package has no `exports` map and still ships
-the full `dist` tree, so those paths remain physically reachable; PR7 will add
-the explicit installed-package export contract. Do not rely on physical reachability
-as a policy or compatibility guarantee.
+supported APIs. The published package has an explicit `exports` map: supported
+imports are the allowlisted package root, `gatefile/schema/gatefile.schema.json`,
+`gatefile/schema/gatefile.config.schema.json`, and `gatefile/package.json`.
+Node.js rejects other package subpaths, including the internal `dist` tree.
+Treat only the explicit root exports and those JSON subpaths as the installed
+package compatibility contract.
 
 ## GitHub PR Gate
 
 Drop a gatefile check into any CI pipeline:
 
 ```yaml
-- uses: StephenBickel/gatefile/.github/actions/gatefile-pr-gate@main
+- uses: actions/checkout@v5
+  with:
+    fetch-depth: 0
+
+- uses: StephenBickel/gatefile/.github/actions/gatefile-pr-gate@v0.3.0-alpha.0
   with:
     plan-path: .plan/plan.json
+    trusted-policy-ref: ${{ github.event.pull_request.base.sha }}
+    trusted-policy-sha256: ${{ vars.GATEFILE_POLICY_SHA256 }}
 ```
+
+Store the SHA-256 digest of the trusted base branch's
+`gatefile.config.json` bytes in the repository Actions variable
+`GATEFILE_POLICY_SHA256`. The Action requires the plan to be Git-tracked and
+unchanged from `HEAD`; it loads policy from the full base commit SHA and checks
+that snapshot against the caller-pinned digest. It generates inspect,
+verification, dry-run, and manifest evidence with Action-owned Gatefile code,
+uploads that evidence even when verification is not ready, and only then fails
+the gate. Repositories intentionally evaluating without signer policy must opt
+in explicitly with `allow-unsigned-no-policy: "true"`; that mode is not a
+substitute for trusted approval verification.
 
 See [docs/github-pr-gate-example.md](docs/github-pr-gate-example.md) for full workflow examples, including the [fork-safe signed-approval artifact flow](docs/examples/github-native-signed-approval-fork-request.yml).
 

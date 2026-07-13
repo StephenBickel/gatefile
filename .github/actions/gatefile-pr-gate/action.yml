@@ -1,30 +1,64 @@
-name: Planfile PR Gate
-description: Verify a committed gatefile artifact is ready, then upload gate artifacts.
+name: Gatefile PR Gate
+description: Verify a committed Gatefile plan with action-owned code and preserve bound evidence.
 inputs:
   plan-path:
-    description: Path to the committed plan artifact JSON.
+    description: Repository-relative path to the committed plan artifact.
     required: false
     default: .plan/plan.json
+  inspect-report-path:
+    description: Repository-relative output path for inspect JSON evidence.
+    required: false
+    default: inspect-report.json
   verify-report-path:
-    description: Where to write verify-plan JSON output.
+    description: Repository-relative output path for verification JSON evidence.
     required: false
     default: verify-report.json
+  dry-run-report-path:
+    description: Repository-relative output path for dry-run JSON evidence.
+    required: false
+    default: dry-run-report.json
+  manifest-path:
+    description: Repository-relative output path for the bound evidence manifest.
+    required: false
+    default: gatefile-manifest.json
+  trusted-policy-ref:
+    description: Full trusted Git commit SHA containing gatefile.config.json.
+    required: false
+  trusted-policy-path:
+    description: Repository-relative policy path at trusted-policy-ref.
+    required: false
+    default: gatefile.config.json
+  trusted-policy-sha256:
+    description: Caller-pinned SHA-256 digest of the trusted policy bytes.
+    required: false
+  allow-unsigned-no-policy:
+    description: Explicitly allow evaluation without trusted signer policy (unsafe; alpha evaluation only).
+    required: false
+    default: "false"
   node-version:
-    description: Node.js version used for install/build/gate steps.
+    description: Node.js version used to build and execute the action-owned Gatefile checkout.
     required: false
     default: "22"
-  install-command:
-    description: Dependency install command.
-    required: false
-    default: npm ci
-  build-command:
-    description: Build command for producing dist/cli.js.
-    required: false
-    default: npm run build
   artifact-name:
-    description: Name used for uploaded gate artifacts.
+    description: Name used for uploaded Gatefile evidence.
     required: false
     default: gatefile-artifacts
+outputs:
+  inspect-report-path:
+    description: Path to inspect JSON evidence.
+    value: ${{ steps.gate.outputs.inspect-report-path }}
+  verify-report-path:
+    description: Path to verification JSON evidence.
+    value: ${{ steps.gate.outputs.verify-report-path }}
+  dry-run-report-path:
+    description: Path to dry-run JSON evidence.
+    value: ${{ steps.gate.outputs.dry-run-report-path }}
+  manifest-path:
+    description: Path to the Gatefile evidence manifest.
+    value: ${{ steps.gate.outputs.manifest-path }}
+  status:
+    description: Verification status reported by Gatefile.
+    value: ${{ steps.gate.outputs.status }}
 runs:
   using: composite
   steps:
@@ -32,36 +66,39 @@ runs:
       uses: actions/setup-node@v5
       with:
         node-version: ${{ inputs.node-version }}
-        cache: npm
 
-    - name: Install dependencies
+    - name: Generate Gatefile evidence with action-owned code
+      id: gate
       shell: bash
-      run: ${{ inputs.install-command }}
-
-    - name: Build gatefile CLI
-      shell: bash
-      run: ${{ inputs.build-command }}
-
-    - name: Verify plan artifact exists
-      shell: bash
-      run: test -f "${{ inputs.plan-path }}"
-
-    - name: Inspect plan artifact (machine output)
-      shell: bash
-      run: node dist/cli.js inspect-plan "${{ inputs.plan-path }}" --json
-
-    - name: Verify plan ready state
-      shell: bash
-      run: |
-        node -e 'const fs=require("fs");const {execFileSync}=require("node:child_process");const planPath=process.env.PLAN_PATH;const reportPath=process.env.REPORT_PATH;const out=execFileSync(process.execPath,["dist/cli.js","verify-plan",planPath],{encoding:"utf8"});const r=JSON.parse(out);fs.writeFileSync(reportPath,JSON.stringify(r,null,2)+"\n","utf8");if(r.status!=="ready"){console.error("Planfile gate failed:",r.blockers.join("; "),"signerTrust="+(r.signerTrust?.status||"unknown"));process.exit(1);}console.log("Planfile gate passed:",r.planId,"signerTrust="+(r.signerTrust?.status||"not-configured"));'
       env:
-        PLAN_PATH: ${{ inputs.plan-path }}
-        REPORT_PATH: ${{ inputs.verify-report-path }}
+        INPUT_PLAN_PATH: ${{ inputs.plan-path }}
+        INPUT_INSPECT_REPORT_PATH: ${{ inputs.inspect-report-path }}
+        INPUT_VERIFY_REPORT_PATH: ${{ inputs.verify-report-path }}
+        INPUT_DRY_RUN_REPORT_PATH: ${{ inputs.dry-run-report-path }}
+        INPUT_MANIFEST_PATH: ${{ inputs.manifest-path }}
+        INPUT_TRUSTED_POLICY_REF: ${{ inputs.trusted-policy-ref }}
+        INPUT_TRUSTED_POLICY_PATH: ${{ inputs.trusted-policy-path }}
+        INPUT_TRUSTED_POLICY_SHA256: ${{ inputs.trusted-policy-sha256 }}
+        INPUT_ALLOW_UNSIGNED_NO_POLICY: ${{ inputs.allow-unsigned-no-policy }}
+      run: '"${GITHUB_ACTION_PATH}/run.sh"'
 
-    - name: Upload plan and verify artifacts
+    - name: Upload Gatefile evidence
+      if: ${{ always() }}
       uses: actions/upload-artifact@v5
       with:
         name: ${{ inputs.artifact-name }}
+        if-no-files-found: error
         path: |
           ${{ inputs.plan-path }}
+          ${{ inputs.inspect-report-path }}
           ${{ inputs.verify-report-path }}
+          ${{ inputs.dry-run-report-path }}
+          ${{ inputs.manifest-path }}
+
+    - name: Enforce Gatefile readiness
+      if: ${{ always() }}
+      shell: bash
+      env:
+        VERIFY_REPORT_PATH: ${{ inputs.verify-report-path }}
+        DRY_RUN_REPORT_PATH: ${{ inputs.dry-run-report-path }}
+      run: node "${GITHUB_ACTION_PATH}/enforce.js" "${VERIFY_REPORT_PATH}" "${DRY_RUN_REPORT_PATH}"
