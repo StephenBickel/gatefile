@@ -29,7 +29,8 @@ export type PipelineInputErrorCode =
   | "invalid-plan"
   | "unsafe-entry"
   | "duplicate-plan-id"
-  | "dependency-cycle";
+  | "dependency-cycle"
+  | "no-plans";
 
 export interface PipelineInputError {
   file: string;
@@ -52,23 +53,28 @@ interface PlanEntry {
   dependsOn: string[];
 }
 
-const PLAN_MARKERS = new Set([
-  "id",
-  "context",
-  "operations",
-  "integrity",
-  "approval"
-]);
-
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isPlanLike(value: unknown): value is Record<string, unknown> {
-  return isPlainObject(value) && (
-    value.version === PLAN_VERSION ||
-    Object.keys(value).some((key) => PLAN_MARKERS.has(key))
+  if (!isPlainObject(value)) return false;
+  if (value.version === PLAN_VERSION) return true;
+  const hasPlanId = typeof value.id === "string" && value.id.trim().length > 0;
+  const hasOperations = Array.isArray(value.operations);
+  const hasContext = isPlainObject(value.context) &&
+    typeof value.context.repositoryId === "string";
+  const hasIntegrity = isPlainObject(value.integrity) && (
+    Object.prototype.hasOwnProperty.call(value.integrity, "planHash") ||
+    Object.prototype.hasOwnProperty.call(value.integrity, "algorithm")
   );
+  const hasApproval = isPlainObject(value.approval) &&
+    ["pending", "approved", "rejected"].includes(String(value.approval.status));
+  const strongShapeCount = [hasContext, hasIntegrity, hasApproval]
+    .filter(Boolean).length;
+  if (hasOperations) return hasPlanId || strongShapeCount > 0;
+  if (hasPlanId) return strongShapeCount >= 2;
+  return hasContext && hasIntegrity && hasApproval;
 }
 
 function readPlanEntries(dir: string): { entries: PlanEntry[]; inputErrors: PipelineInputError[] } {
@@ -191,7 +197,16 @@ export function runPipeline(dir: string, options?: PipelineOptions): PipelineRes
   }
 
   if (entries.length === 0) {
-    return { success: true, order: [], results: [], inputErrors: [] };
+    return {
+      success: false,
+      order: [],
+      results: [],
+      inputErrors: [{
+        file: ".",
+        code: "no-plans",
+        message: "Pipeline directory contains no recognizable Gatefile v2 plans"
+      }]
+    };
   }
 
   let sorted: PlanEntry[];

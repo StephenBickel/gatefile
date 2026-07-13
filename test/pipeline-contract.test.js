@@ -123,6 +123,57 @@ test('pipeline ignores ordinary versioned JSON without ignoring a version-only v
   );
 });
 
+test('pipeline ignores isolated generic object fields when a real plan is present', (t) => {
+  const f = fixture(t);
+  const plan = approvedPlan(f, 'generic-fields');
+  writePlan(f, 'plan.json', plan);
+  const ordinary = {
+    id: { id: 'release-record', name: 'ordinary-id-record' },
+    context: { context: { locale: 'en-US' }, name: 'ordinary-context-record' },
+    operations: { operations: ['read', 'write'], name: 'ordinary-operations-record' },
+    integrity: { integrity: 'verified-elsewhere', name: 'ordinary-integrity-record' },
+    approval: { approval: 'manager', name: 'ordinary-approval-record' },
+    combined: {
+      id: 'release-record',
+      context: { locale: 'en-US' },
+      approval: { owner: 'manager' }
+    },
+    nestedLifecycleRecord: {
+      context: { repositoryId: 'repo:ordinary-release-record' },
+      approval: { status: 'approved' }
+    }
+  };
+  for (const [name, value] of Object.entries(ordinary)) {
+    fs.writeFileSync(path.join(f.plansDir, `${name}.json`), `${JSON.stringify(value)}\n`);
+  }
+
+  const result = runPipeline(f.plansDir, {
+    dryRun: true,
+    repoRoot: f.repoRoot,
+    stateHome: f.stateHome
+  });
+
+  assert.equal(result.success, true, JSON.stringify(result, null, 2));
+  assert.deepEqual(result.order, [plan.id]);
+  assert.deepEqual(result.results.map((entry) => entry.file), ['plan.json']);
+});
+
+test('pipeline fails closed when a directory contains no recognizable plans', (t) => {
+  const f = fixture(t);
+  fs.writeFileSync(path.join(f.plansDir, 'notes.json'), '{"owner":"release"}\n');
+
+  const result = runPipeline(f.plansDir, { dryRun: true, repoRoot: f.repoRoot });
+
+  assert.equal(result.success, false);
+  assert.deepEqual(result.order, []);
+  assert.deepEqual(result.results, []);
+  assert.deepEqual(result.inputErrors, [{
+    file: '.',
+    code: 'no-plans',
+    message: 'Pipeline directory contains no recognizable Gatefile v2 plans'
+  }]);
+});
+
 test('pipeline rejects every duplicate plan ID instead of overwriting one entry', (t) => {
   const f = fixture(t);
   const plan = approvedPlan(f, 'duplicate');

@@ -297,7 +297,7 @@ test('receipt audit metadata is optional for old records and strict when present
     approvedBy: 'release-reviewer',
     approvedAt: '2026-07-13T01:02:59.000Z',
     approvalIdentity: 'signed',
-    signerKeyId: 'release-key'
+    signerKeyId: 'gfk1_0123456789abcdef'
   };
   const receipt = createReceiptRecord(body, key, snapshot);
   assert.deepEqual(receipt.audit, body.audit);
@@ -310,6 +310,13 @@ test('receipt audit metadata is optional for old records and strict when present
   const inconsistent = receiptBody(binding, snapshot);
   inconsistent.audit = { ...body.audit, approvalIdentity: 'unsigned' };
   assert.throws(() => createReceiptRecord(inconsistent, key, snapshot), /unsigned.*signerKeyId/i);
+
+  const nonCanonicalSigner = receiptBody(binding, snapshot);
+  nonCanonicalSigner.audit = { ...body.audit, signerKeyId: 'release-key' };
+  assert.throws(
+    () => createReceiptRecord(nonCanonicalSigner, key, snapshot),
+    /signerKeyId.*derived approval key ID/i
+  );
 });
 
 test('receipt audit approval timestamps accept equivalent RFC3339 offsets and canonicalize to UTC', (t) => {

@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { generateKeyPairSync } = require('node:crypto');
 const { execFileSync } = require('node:child_process');
 
 const {
@@ -10,7 +11,9 @@ const {
   approvePlan,
   verifyPlan,
   generateApprovalAttestationKeyPair,
-  normalizeGatefileConfig
+  normalizeGatefileConfig,
+  validatePlanFile,
+  verifyApprovalAttestation
 } = require('../dist');
 const CLI_PATH = path.join(__dirname, '..', 'dist', 'cli.js');
 
@@ -196,6 +199,93 @@ test('approvePlan with signing key adds valid signed attestation', () => {
   assert.equal(report.signerTrust.status, 'not-configured');
 });
 
+test('approval signing accepts only Ed25519 keys and their derived key ID', () => {
+  const plan = createPlanFromDraft(makeDraft());
+  const rsa = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const rsaPrivatePem = rsa.privateKey.export({ format: 'pem', type: 'pkcs8' }).toString();
+  assert.throws(
+    () => approvePlan(plan, 'ci-user', { signingPrivateKeyPem: rsaPrivatePem }),
+    /valid Ed25519 private key|must use Ed25519/i
+  );
+
+  const keys = generateApprovalAttestationKeyPair();
+  assert.throws(
+    () => approvePlan(plan, 'ci-user', {
+      signingPrivateKeyPem: keys.privateKeyPem,
+      signingKeyId: 'gfk1_0000000000000000'
+    }),
+    /key ID must match the signing key/i
+  );
+});
+
+test('plan validation rejects private or non-Ed25519 attestation public-key material', () => {
+  const plan = createPlanFromDraft(makeDraft());
+  const keys = generateApprovalAttestationKeyPair();
+  const approved = approvePlan(plan, 'ci-user', { signingPrivateKeyPem: keys.privateKeyPem });
+  const privatePemPlan = {
+    ...approved,
+    approval: {
+      ...approved.approval,
+      attestation: {
+        ...approved.approval.attestation,
+        publicKeyPem: keys.privateKeyPem
+      }
+    }
+  };
+
+  assert.throws(
+    () => validatePlanFile(privatePemPlan),
+    /approval\.attestation\.publicKeyPem.*Ed25519 SPKI public PEM/i
+  );
+  assert.throws(
+    () => verifyPlan(privatePemPlan, {
+      config: { signers: { trustedPublicKeys: [keys.publicKeyPem] } }
+    }),
+    /approval\.attestation\.publicKeyPem.*Ed25519 SPKI public PEM/i
+  );
+});
+
+test('approval signatures require canonical base64 for exactly 64 Ed25519 bytes', () => {
+  const plan = createPlanFromDraft(makeDraft());
+  const keys = generateApprovalAttestationKeyPair();
+  const approved = approvePlan(plan, 'ci-user', { signingPrivateKeyPem: keys.privateKeyPem });
+  const schema = JSON.parse(fs.readFileSync(
+    path.join(__dirname, '..', 'schema', 'gatefile.schema.json'),
+    'utf8'
+  ));
+  const fields = {
+    planId: approved.id,
+    approvedBy: approved.approval.approvedBy,
+    approvedAt: approved.approval.approvedAt,
+    approvedPlanHash: approved.approval.approvedPlanHash
+  };
+
+  for (const suffix of ['!!!!', '\nignored', '====']) {
+    const attestation = {
+      ...approved.approval.attestation,
+      signature: `${approved.approval.attestation.signature}${suffix}`
+    };
+    const tampered = {
+      ...approved,
+      approval: { ...approved.approval, attestation }
+    };
+    assert.throws(
+      () => validatePlanFile(tampered),
+      /approval\.attestation\.signature.*canonical base64.*64-byte/i
+    );
+    assert.equal(validateAgainstSchema(schema, tampered).valid, false);
+    assert.equal(verifyApprovalAttestation(fields, attestation).valid, false);
+  }
+
+  const wrongScheme = {
+    ...approved.approval.attestation,
+    scheme: 'none'
+  };
+  const wrongSchemeResult = verifyApprovalAttestation(fields, wrongScheme);
+  assert.equal(wrongSchemeResult.schemeMatches, false);
+  assert.equal(wrongSchemeResult.valid, false);
+});
+
 test('verifyPlan marks signed approval as trusted when keyId is configured', () => {
   const plan = createPlanFromDraft(makeDraft());
   const keys = generateApprovalAttestationKeyPair();
@@ -222,7 +312,7 @@ test('verifyPlan blocks signed approvals from untrusted key IDs when policy is c
   const report = verifyPlan(approved, {
     config: {
       signers: {
-        trustedKeyIds: ['trusted-signer-1']
+        trustedKeyIds: ['gfk1_1111111111111111']
       }
     }
   });
@@ -239,7 +329,7 @@ test('verifyPlan blocks unsigned approval when signer trust policy is configured
   const report = verifyPlan(approved, {
     config: {
       signers: {
-        trustedKeyIds: ['trusted-signer-1']
+        trustedKeyIds: ['gfk1_1111111111111111']
       }
     }
   });
@@ -399,7 +489,7 @@ test('CLI verify-plan enforces signer trust policy from gatefile.config.json', (
     JSON.stringify(
       {
         signers: {
-          trustedKeyIds: ['trusted-signer-1']
+          trustedKeyIds: ['gfk1_1111111111111111']
         }
       },
       null,
@@ -434,7 +524,7 @@ test('CLI lint-config reports trust policy state', (t) => {
     JSON.stringify(
       {
         signers: {
-          trustedKeyIds: ['security-team-prod-1']
+          trustedKeyIds: ['gfk1_0123456789abcdef']
         }
       },
       null,

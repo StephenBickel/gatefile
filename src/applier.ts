@@ -749,14 +749,15 @@ function receiptAuditMetadata(plan: PlanFile): ReceiptAuditMetadata {
     throw new Error("An authenticated apply receipt requires complete approval metadata");
   }
   const signerKeyId = plan.approval.attestation?.keyId ?? null;
-  return {
+  const audit = {
     summary: plan.summary,
     source: plan.source,
     approvedBy: plan.approval.approvedBy,
-    approvedAt: plan.approval.approvedAt,
-    approvalIdentity: signerKeyId === null ? "unsigned" : "signed",
-    signerKeyId
+    approvedAt: plan.approval.approvedAt
   };
+  return signerKeyId === null
+    ? { ...audit, approvalIdentity: "unsigned", signerKeyId: null }
+    : { ...audit, approvalIdentity: "signed", signerKeyId };
 }
 
 function receiptBodyForApply(

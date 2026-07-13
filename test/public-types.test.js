@@ -60,10 +60,64 @@ test('the packed package root compiles and runs the in-memory engine lifecycle',
 
   fs.writeFileSync(path.join(root, 'consumer.ts'), `
 import { GatefileEngine, PLAN_VERSION } from 'gatefile';
-import type { ApplyReceipt, SnapshotFile, RollbackEntry } from 'gatefile';
+import type {
+  ApplyReceipt,
+  ApplyReceiptAuditMetadata,
+  ApproveOptions,
+  ApprovePlanOptions,
+  CreateApprovalAttestationOptions,
+  McpApprovalOptions,
+  NonEmptyStringArray,
+  SignerTrustConfig,
+  SnapshotFile,
+  RollbackEntry
+} from 'gatefile';
 declare const receipt: ApplyReceipt;
 declare const snapshot: SnapshotFile;
 declare const rollback: RollbackEntry;
+const trustedKeyIds: NonEmptyStringArray = ['gfk1_0123456789abcdef'];
+const signerTrust: SignerTrustConfig = { trustedKeyIds };
+const attestationKeyIdAssertion: CreateApprovalAttestationOptions = {
+  keyId: trustedKeyIds[0]
+};
+const plannerKeyIdAssertion: ApprovePlanOptions = {
+  signingKeyId: trustedKeyIds[0]
+};
+const sdkKeyIdAssertion: ApproveOptions = {
+  signingKeyId: trustedKeyIds[0]
+};
+const mcpKeyIdAssertion: McpApprovalOptions = {
+  approvedBy: 'packed-types',
+  signingKeyId: trustedKeyIds[0]
+};
+const signedReceiptAudit: ApplyReceiptAuditMetadata = {
+  summary: 'Signed receipt audit',
+  source: 'packed-types',
+  approvedBy: 'packed-types',
+  approvedAt: '2026-07-13T00:00:00.000Z',
+  approvalIdentity: 'signed',
+  signerKeyId: trustedKeyIds[0]
+};
+const unsignedReceiptAudit: ApplyReceiptAuditMetadata = {
+  summary: 'Unsigned receipt audit',
+  source: 'packed-types',
+  approvedBy: 'packed-types',
+  approvedAt: '2026-07-13T00:00:00.000Z',
+  approvalIdentity: 'unsigned',
+  signerKeyId: null
+};
+// @ts-expect-error A signed receipt must identify its signer key.
+const signedReceiptWithoutKey: ApplyReceiptAuditMetadata = {
+  ...signedReceiptAudit,
+  signerKeyId: null
+};
+// @ts-expect-error An unsigned receipt cannot claim a signer key.
+const unsignedReceiptWithKey: ApplyReceiptAuditMetadata = {
+  ...unsignedReceiptAudit,
+  signerKeyId: trustedKeyIds[0]
+};
+// @ts-expect-error A public non-empty string array cannot be empty.
+const emptyTrustedKeyIds: NonEmptyStringArray = [];
 const engine = new GatefileEngine({
   repoRoot: '/consumer/repo',
   repositoryId: 'repo:packed-types',
@@ -98,7 +152,19 @@ const values: string[] = [
   snapshot.entries[0]?.before.kind ?? 'absent',
   rollback.after.kind
 ];
-void values;
+void [
+  values,
+  signerTrust,
+  attestationKeyIdAssertion,
+  plannerKeyIdAssertion,
+  sdkKeyIdAssertion,
+  mcpKeyIdAssertion,
+  signedReceiptAudit,
+  unsignedReceiptAudit,
+  signedReceiptWithoutKey,
+  unsignedReceiptWithKey,
+  emptyTrustedKeyIds
+];
 `, 'utf8');
   fs.writeFileSync(path.join(root, 'tsconfig.json'), `${JSON.stringify({
     compilerOptions: {
@@ -119,6 +185,18 @@ void values;
     shell: false
   });
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+
+  for (const filename of ['attestation.d.ts', 'planner.d.ts', 'sdk.d.ts']) {
+    const declaration = fs.readFileSync(
+      path.join(installedPackage, 'dist', filename),
+      'utf8'
+    );
+    assert.match(
+      declaration,
+      /key ID assertion[^.]*must equal[^.]*derived from the signing key/i,
+      `${filename} must document key IDs as equality assertions`
+    );
+  }
 
   const repoRoot = path.join(root, 'repo');
   const stateHome = path.join(root, 'state');

@@ -13,6 +13,11 @@ import {
 } from "./types";
 import { DEFAULT_MAX_PRIVATE_STATE_FILE_BYTES } from "./state-auth";
 import { unicodeScalarLength } from "./unicode";
+import {
+  canonicalizeApprovalPublicKeyPem,
+  isApprovalKeyId,
+  isCanonicalApprovalSignature
+} from "./approval-key";
 
 /** Limits shared by plan validation and the authenticated state-record contract. */
 export const STATE_RECORD_BOUND_ID_MAX_LENGTH = 1_024;
@@ -115,6 +120,22 @@ function requireBoundId(value: unknown, path: string, issues: ValidationIssue[])
     STATE_RECORD_BOUND_ID_MAX_LENGTH,
     issues
   );
+}
+
+function requireApprovalKeyId(
+  value: unknown,
+  path: string,
+  issues: ValidationIssue[]
+): value is string {
+  if (!requireNonEmptyString(value, path, issues)) return false;
+  if (!isApprovalKeyId(value)) {
+    issues.push({
+      path,
+      message: "must be gfk1_ followed by 16 lowercase hexadecimal characters"
+    });
+    return false;
+  }
+  return true;
 }
 
 function requireReceiptTextInput(
@@ -465,9 +486,26 @@ function validateAttestation(value: unknown, path: string, issues: ValidationIss
   if (attestation.scheme !== "ed25519-sha256") {
     issues.push({ path: `${path}.scheme`, message: "must be ed25519-sha256" });
   }
-  requireBoundId(attestation.keyId, `${path}.keyId`, issues);
-  requireNonEmptyString(attestation.publicKeyPem, `${path}.publicKeyPem`, issues);
-  requireNonEmptyString(attestation.signature, `${path}.signature`, issues);
+  requireApprovalKeyId(attestation.keyId, `${path}.keyId`, issues);
+  if (requireNonEmptyString(attestation.publicKeyPem, `${path}.publicKeyPem`, issues)) {
+    try {
+      canonicalizeApprovalPublicKeyPem(attestation.publicKeyPem);
+    } catch {
+      issues.push({
+        path: `${path}.publicKeyPem`,
+        message: "must be a canonical Ed25519 SPKI public PEM"
+      });
+    }
+  }
+  if (
+    typeof attestation.signature !== "string" ||
+    !isCanonicalApprovalSignature(attestation.signature)
+  ) {
+    issues.push({
+      path: `${path}.signature`,
+      message: "must be canonical base64 for one 64-byte Ed25519 signature"
+    });
+  }
   const payloadPath = `${path}.payload`;
   const payload = objectAt(attestation.payload, payloadPath, issues);
   if (!payload) return;

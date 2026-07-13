@@ -257,7 +257,7 @@ test('previewPlan reports untrusted signer when trust policy is configured', () 
     const report = previewPlan(plan, {
       config: {
         signers: {
-          trustedKeyIds: ['trusted-signer-1']
+          trustedKeyIds: ['gfk1_1111111111111111']
         }
       }
     });
@@ -281,7 +281,7 @@ test('applyPlan refuses unsigned approvals when signer trust policy is configure
         applyPlan(plan, {
           config: {
             signers: {
-              trustedKeyIds: ['trusted-signer-1']
+              trustedKeyIds: ['gfk1_1111111111111111']
             }
           }
         }),

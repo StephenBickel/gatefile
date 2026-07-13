@@ -40,7 +40,7 @@ export interface ApproveOptions
   approvedBy?: string;
   /** Optional Ed25519 private key used to attest the approval. */
   signingPrivateKeyPem?: string;
-  /** Optional signing key identity. */
+  /** Optional key ID assertion; it must equal the ID derived from the signing key. */
   signingKeyId?: string;
 }
 

@@ -7,9 +7,7 @@ const path = require('node:path');
 const { execFileSync, spawnSync } = require('node:child_process');
 
 const projectRoot = path.resolve(__dirname, '..');
-const cliPath = path.join(projectRoot, 'dist', 'cli.js');
-const mcpModulePath = path.join(projectRoot, 'dist', 'mcp.js');
-const actionPath = path.join(projectRoot, '.github', 'actions', 'gatefile-pr-gate');
+const PINNED_GATEFILE_ACTION_SHA = '9c193dd39c7c1e7b20ca3f8c42f0a72860b15814';
 
 function git(repoRoot, args) {
   return execFileSync('git', ['-C', repoRoot, ...args], { encoding: 'utf8' }).trim();
@@ -126,6 +124,20 @@ function createFixture(t) {
     false,
     'cross-interface consumers must use a packed installation, not a source-tree symlink'
   );
+  const installedCliPath = fs.realpathSync(
+    path.join(consumer, 'node_modules', '.bin', 'gatefile')
+  );
+
+  const actionCheckout = path.join(base, 'pinned-action');
+  const cloned = spawnSync(
+    'git',
+    ['clone', '--quiet', '--no-checkout', '--no-hardlinks', projectRoot, actionCheckout],
+    { encoding: 'utf8', shell: false, timeout: 60_000 }
+  );
+  assert.equal(cloned.status, 0, `clone pinned Action\n${cloned.stdout}\n${cloned.stderr}`);
+  git(actionCheckout, ['checkout', '--quiet', '--detach', PINNED_GATEFILE_ACTION_SHA]);
+  assert.equal(git(actionCheckout, ['rev-parse', 'HEAD']), PINNED_GATEFILE_ACTION_SHA);
+  const actionPath = path.join(actionCheckout, '.github', 'actions', 'gatefile-pr-gate');
 
   return {
     base,
@@ -139,6 +151,8 @@ function createFixture(t) {
     configPath,
     configBytes,
     keyPair,
+    installedCliPath,
+    actionPath,
     head: git(repoRoot, ['rev-parse', 'HEAD'])
   };
 }
@@ -189,7 +203,7 @@ function collectCliEvidence(fixture) {
     GATEFILE_STATE_HOME: path.join(fixture.base, 'cli-state')
   };
   const run = (args, label) => parseSuccessfulJson(
-    spawnNode([cliPath, ...args], { cwd: fixture.repoRoot, env }, `CLI ${label}`),
+    spawnNode([fixture.installedCliPath, ...args], { cwd: fixture.repoRoot, env }, `CLI ${label}`),
     `CLI ${label}`
   );
   return {
@@ -220,11 +234,11 @@ function collectMcpEvidence(fixture) {
     config: fixture.config
   };
   const program = [
-    'const { startMcpServer } = require(process.argv[1]);',
-    'startMcpServer(JSON.parse(process.argv[2]));'
+    'const { startMcpServer } = require("gatefile");',
+    'startMcpServer(JSON.parse(process.argv[1]));'
   ].join(' ');
   const result = spawnNode(
-    ['-e', program, mcpModulePath, JSON.stringify(startup)],
+    ['-e', program, JSON.stringify(startup)],
     {
       cwd: fixture.consumer,
       input: `${requests.map((request) => JSON.stringify(request)).join('\n')}\n`
@@ -244,11 +258,11 @@ function collectMcpEvidence(fixture) {
 function collectActionEvidence(fixture) {
   const outputPath = path.join(fixture.base, 'github-output.txt');
   fs.writeFileSync(outputPath, '', 'utf8');
-  const result = spawnSync('bash', [path.join(actionPath, 'run.sh')], {
+  const result = spawnSync('bash', [path.join(fixture.actionPath, 'run.sh')], {
     cwd: fixture.repoRoot,
     env: {
       ...process.env,
-      GITHUB_ACTION_PATH: actionPath,
+      GITHUB_ACTION_PATH: fixture.actionPath,
       GITHUB_WORKSPACE: fixture.repoRoot,
       GITHUB_OUTPUT: outputPath,
       GITHUB_SHA: fixture.head,

@@ -71,33 +71,42 @@ export function buildInspectReport(plan: PlanFile, options: InspectOptions = {})
 export function formatInspectSummary(
   plan: PlanFile,
   report: InspectReport,
-  /** @deprecated Formatting uses report.verification; these options are ignored. */
+  /** @deprecated Explicit options retain PR6 verification-formatting semantics. */
   _options: {
     config?: GatefileConfig;
     repoRoot?: string;
     repositoryId?: string;
   } = {}
 ): string {
-  const verify = report.verification;
+  const hasLegacyOptions =
+    _options.config !== undefined ||
+    _options.repoRoot !== undefined ||
+    _options.repositoryId !== undefined;
+  const effectiveReport = report;
+  const verify = hasLegacyOptions
+    ? verifyPlan(plan, _options)
+    : effectiveReport.verification;
   const trustSuffix = verify.signerTrust.policyConfigured
     ? `, trust: ${verify.signerTrust.status}`
     : "";
   const lines = [
-    `Plan: ${report.id}`,
-    `Summary: ${report.summary}`,
-    `Source: ${report.source}`,
-    `Operations: ${report.operationCount}`,
-    `Risk: ${report.risk.level} (score: ${report.risk.score})`,
-    `Integrity: ${report.integrity.integrityMatches ? "match" : "mismatch"}`,
-    `Approval: ${report.approval.status}${report.approval.status === "approved" ? ` (bound: ${report.approval.boundToCurrentPlan ? "yes" : "no"}, identity: ${verify.approvalIdentity}${trustSuffix})` : ""}`,
-    `Ready To Apply: ${verify.status === "ready" ? "yes" : "no"}`
+    `Plan: ${effectiveReport.id}`,
+    `Summary: ${effectiveReport.summary}`,
+    `Source: ${effectiveReport.source}`,
+    `Operations: ${effectiveReport.operationCount}`,
+    `Risk: ${effectiveReport.risk.level} (score: ${effectiveReport.risk.score})`,
+    `Integrity: ${effectiveReport.integrity.integrityMatches ? "match" : "mismatch"}`,
+    `Approval: ${effectiveReport.approval.status}${effectiveReport.approval.status === "approved" ? ` (bound: ${effectiveReport.approval.boundToCurrentPlan ? "yes" : "no"}, identity: ${verify.approvalIdentity}${trustSuffix})` : ""}`,
+    `Integrity + Approval Ready: ${verify.status === "ready" ? "yes" : "no"}`,
+    "Static Apply Gate: not evaluated (run a dry-run)",
+    "Ready To Attempt Apply: not evaluated (runtime preconditions are also unchecked)"
   ];
-  if (report.dependencies.requiredPlanIds.length > 0) {
+  if (effectiveReport.dependencies.requiredPlanIds.length > 0) {
     lines.push(
-      `Dependencies: ${report.dependencies.allSatisfied ? "satisfied" : "missing"} [${report.dependencies.requiredPlanIds.join(", ")}]`
+      `Dependencies: ${effectiveReport.dependencies.allSatisfied ? "satisfied" : "missing"} [${effectiveReport.dependencies.requiredPlanIds.join(", ")}]`
     );
-    if (!report.dependencies.allSatisfied) {
-      lines.push(`Missing Dependencies: ${report.dependencies.missingPlanIds.join(", ")}`);
+    if (!effectiveReport.dependencies.allSatisfied) {
+      lines.push(`Missing Dependencies: ${effectiveReport.dependencies.missingPlanIds.join(", ")}`);
     }
   }
 

@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 
 const {
   GatefileEngine,
@@ -17,6 +17,24 @@ const README_PATH = path.join(__dirname, '..', 'README.md');
 
 function shellCommand(scriptPath) {
   return `${JSON.stringify(process.execPath)} ${JSON.stringify(scriptPath)}`;
+}
+
+function runCli(args, cwd) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [CLI_PATH, ...args], {
+      cwd,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => { stdout += chunk; });
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.on('error', reject);
+    child.on('close', (status, signal) => resolve({ status, signal, stdout, stderr }));
+  });
 }
 
 function planSummary() {
@@ -116,6 +134,61 @@ test('deprecated fireOnApprovalNeeded preserves its legacy webhook event name', 
     'plan_approved',
     'approval_needed'
   ]);
+});
+
+test('approve-plan CLI preserves the legacy webhook event for legacy config', async (t) => {
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gatefile-legacy-event-cli-'));
+  t.after(() => fs.rmSync(repoRoot, { recursive: true, force: true }));
+  const payloads = [];
+  const server = http.createServer((request, response) => {
+    let body = '';
+    request.setEncoding('utf8');
+    request.on('data', (chunk) => { body += chunk; });
+    request.on('end', () => {
+      payloads.push(JSON.parse(body));
+      response.writeHead(204);
+      response.end();
+    });
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const address = server.address();
+
+  fs.writeFileSync(
+    path.join(repoRoot, 'gatefile.config.json'),
+    `${JSON.stringify({
+      hooks: {
+        onApprovalNeeded: {
+          webhook: `http://127.0.0.1:${address.port}/legacy-event`
+        }
+      }
+    }, null, 2)}\n`
+  );
+  const engine = new GatefileEngine({ repoRoot });
+  const plan = engine.createPlan({
+    source: 'notification-contract-test',
+    summary: 'Preserve the legacy CLI webhook event',
+    operations: [{
+      id: 'op_legacy_event',
+      type: 'file',
+      action: 'create',
+      path: path.join(repoRoot, 'unused.txt'),
+      after: 'not applied\n'
+    }],
+    preconditions: []
+  });
+  const planPath = path.join(repoRoot, 'plan.json');
+  fs.writeFileSync(planPath, `${JSON.stringify(plan, null, 2)}\n`);
+
+  const result = await runCli(
+    ['approve-plan', planPath, '--by', 'legacy-reviewer'],
+    repoRoot
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.signal, null);
+  assert.equal(payloads.length, 1);
+  assert.equal(payloads[0].event, 'approval_needed');
 });
 
 test('README matches packaged MCP capabilities and canonical notification config', () => {

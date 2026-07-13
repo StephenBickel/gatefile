@@ -69,6 +69,19 @@
       "maxLength": 16000,
       "pattern": "^[^\\u0000]*$"
     },
+    "approvalKeyId": {
+      "type": "string",
+      "pattern": "^gfk1_[a-f0-9]{16}$"
+    },
+    "approvalPublicKeyPem": {
+      "type": "string",
+      "pattern": "^\\s*-----BEGIN PUBLIC KEY-----\\r?\\nMCowBQYDK2VwAyEA[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=\\r?\\n-----END PUBLIC KEY-----\\s*$"
+    },
+    "approvalSignature": {
+      "type": "string",
+      "description": "Canonical base64 for one 64-byte Ed25519 signature.",
+      "pattern": "^[A-Za-z0-9+/]{85}[AQgw]==$"
+    },
     "text": {
       "type": "string",
       "pattern": "^[^\\u0000]*$"
@@ -264,9 +277,9 @@
       "required": ["scheme", "keyId", "publicKeyPem", "payload", "signature"],
       "properties": {
         "scheme": { "const": "ed25519-sha256" },
-        "keyId": { "$ref": "#/$defs/boundId" },
-        "publicKeyPem": { "$ref": "#/$defs/nonEmptyString" },
-        "signature": { "$ref": "#/$defs/nonEmptyString" },
+        "keyId": { "$ref": "#/$defs/approvalKeyId" },
+        "publicKeyPem": { "$ref": "#/$defs/approvalPublicKeyPem" },
+        "signature": { "$ref": "#/$defs/approvalSignature" },
         "payload": {
           "type": "object",
           "additionalProperties": false,

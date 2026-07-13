@@ -20,6 +20,38 @@ function trunc(value: string, max: number): string {
   return `${value.slice(0, max - 1)}…`;
 }
 
+function escapeMarkdownInline(value: string): string {
+  return value
+    .replace(/\r\n?|\n/g, " ")
+    .replace(/\\/g, "\\\\")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/[!()\[\]*_~@]/g, (character) =>
+      `&#${character.codePointAt(0)};`
+    )
+    .replace(/([|`])/g, "\\$1");
+}
+
+function markdownCode(value: string): string {
+  const escaped = value
+    .replace(/\r\n?|\n/g, " ")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\|/g, "&#124;");
+  return `<code>${escaped}</code>`;
+}
+
+function renderOperationSignal(
+  result: DryRunReport["results"][number]
+): string {
+  const detail = result.details
+    ? ` (${escapeMarkdownInline(trunc(result.details, 180))})`
+    : "";
+  return `  - ${escapeMarkdownInline(result.operationId)}: ${escapeMarkdownInline(trunc(result.message, 140))}${detail}`;
+}
+
 function integrityStatus(report: InspectReport): string {
   if (!report.integrity.planHash) return "missing integrity metadata";
   return report.integrity.integrityMatches ? "match" : "mismatch";
@@ -114,6 +146,14 @@ function assertDryRunSnapshot(
   }
 }
 
+function comparableDryRun(report: DryRunReport): Omit<DryRunReport, "previewedAt"> {
+  const { previewedAt: _previewedAt, ...comparable } = report;
+  // Reports supplied through the CLI have crossed JSON, which omits optional
+  // properties whose in-memory value is undefined. Compare the wire contract,
+  // not those representation-only properties.
+  return JSON.parse(JSON.stringify(comparable)) as Omit<DryRunReport, "previewedAt">;
+}
+
 function renderDryRunHighlights(dryRun: DryRunReport): string[] {
   const denied = dryRun.results.filter((result) => !result.allowed);
   const notable = dryRun.results
@@ -133,7 +173,7 @@ function renderDryRunHighlights(dryRun: DryRunReport): string[] {
   const lines = [
     "### Dry-Run Highlights",
     `- Preview status: ${dryRun.verification.status}`,
-    `- Ready to apply from integrity+approval: ${dryRun.verification.readyToApplyFromIntegrityApproval ? "yes" : "no"}`,
+    `- Integrity + approval gate: ${dryRun.verification.readyToApplyFromIntegrityApproval ? "ready" : "not-ready"}`,
     `- Static gate: ${dryRun.staticGate.passed ? "passed" : "failed"}`,
     `- Verification gate: ${dryRun.staticGate.verificationReady ? "ready" : "not-ready"}`,
     `- Dependencies: ${dryRun.staticGate.dependenciesSatisfied ? "satisfied" : "missing"}`,
@@ -147,8 +187,7 @@ function renderDryRunHighlights(dryRun: DryRunReport): string[] {
   } else {
     lines.push("- Denied operations:");
     for (const result of denied.slice(0, 5)) {
-      const detail = result.details ? ` (${trunc(result.details, 180)})` : "";
-      lines.push(`  - ${result.operationId}: ${trunc(result.message, 140)}${detail}`);
+      lines.push(renderOperationSignal(result));
     }
   }
 
@@ -159,37 +198,46 @@ function renderDryRunHighlights(dryRun: DryRunReport): string[] {
 
   lines.push("- Notable signals:");
   for (const result of notable) {
-    const detail = result.details ? ` (${trunc(result.details, 180)})` : "";
-    lines.push(`  - ${result.operationId}: ${trunc(result.message, 140)}${detail}`);
+    lines.push(renderOperationSignal(result));
   }
 
   return lines;
 }
 
 export function renderPRReviewComment(inputs: PRReviewCommentInputs): string {
-  let engine = inputs.engine;
-  if (!inputs.inspectReport) {
-    engine ??= new GatefileEngine({
-      repoRoot: inputs.repoRoot,
-      repositoryId: inputs.repositoryId,
-      stateHome: inputs.stateHome,
-      config: inputs.config
-    });
+  const engine = inputs.engine ?? new GatefileEngine({
+    repoRoot: inputs.repoRoot,
+    repositoryId: inputs.repositoryId,
+    stateHome: inputs.stateHome,
+    config: inputs.config
+  });
+  const inspect = engine.inspectPlan(inputs.plan);
+  const verify = inspect.verification;
+  const dryRun = engine.previewPlan(inputs.plan);
+
+  assertInspectSnapshot(inputs.plan, inspect);
+  assertDryRunSnapshot(inputs.plan, verify, dryRun);
+  if (inputs.inspectReport) {
+    assertInspectSnapshot(inputs.plan, inputs.inspectReport);
+    if (!isDeepStrictEqual(inputs.inspectReport, inspect)) {
+      inconsistentReports("inspect report disagrees with the current trusted assessment");
+    }
+  }
+  if (inputs.verifyReport && !isDeepStrictEqual(inputs.verifyReport, verify)) {
+    inconsistentReports("verify report disagrees with the current inspect snapshot");
+  }
+  if (inputs.dryRunReport) {
+    assertDryRunSnapshot(inputs.plan, verify, inputs.dryRunReport);
+    if (!isDeepStrictEqual(
+      comparableDryRun(inputs.dryRunReport),
+      comparableDryRun(dryRun)
+    )) {
+      inconsistentReports("dry-run report disagrees with the current trusted assessment");
+    }
   }
 
-  const inspect = inputs.inspectReport ?? engine!.inspectPlan(inputs.plan);
-  assertInspectSnapshot(inputs.plan, inspect);
-  const verify = inspect.verification;
-  if (inputs.verifyReport && !isDeepStrictEqual(inputs.verifyReport, verify)) {
-    inconsistentReports("verify report disagrees with the inspect verification snapshot");
-  }
-  const dryRun = inputs.dryRunReport;
-  if (dryRun) assertDryRunSnapshot(inputs.plan, verify, dryRun);
-  const applyReady = dryRun
-    ? dryRun.staticGate.passed
-    : verify.readyToApplyFromIntegrityApproval;
   const blockers = [...verify.blockers];
-  if (dryRun && !dryRun.staticGate.passed) {
+  if (!dryRun.staticGate.passed) {
     const failedFacts: string[] = [];
     if (!dryRun.staticGate.verificationReady) failedFacts.push("verification not ready");
     if (!dryRun.staticGate.dependenciesSatisfied) failedFacts.push("dependencies missing");
@@ -208,29 +256,30 @@ export function renderPRReviewComment(inputs: PRReviewCommentInputs): string {
     "",
     "| Signal | Status |",
     "| --- | --- |",
-    `| Plan | \`${inspect.id}\` |`,
-    `| Summary | ${trunc(inspect.summary, 240)} |`,
+    `| Plan | ${markdownCode(inspect.id)} |`,
+    `| Summary | ${escapeMarkdownInline(trunc(inspect.summary, 240))} |`,
     `| Risk | ${inspect.risk.level} (score: ${inspect.risk.score}) |`,
     `| Approval | ${approvalStatus(verify)} |`,
     `| Signer trust | ${signerTrustStatus(verify)} |`,
     `| Integrity | ${integrityStatus(inspect)} |`,
     `| Verify status | ${verify.status} |`,
-    `| Apply ready | ${applyReady ? "yes" : "no"} |`,
+    `| Integrity + approval ready | ${verify.readyToApplyFromIntegrityApproval ? "yes" : "no"} |`,
+    `| Static apply gate | ${dryRun.staticGate.passed ? "passed" : "failed"} |`,
+    `| Ready to attempt apply | ${dryRun.staticGate.passed ? "yes" : "no"} |`,
+    `| Runtime preconditions | not checked |`,
     `| Operations | ${inspect.operationCount} |`
   ];
 
   if (blockers.length > 0) {
     lines.push("", "### Blockers");
     for (const blocker of blockers) {
-      lines.push(`- ${blocker}`);
+      lines.push(`- ${escapeMarkdownInline(blocker)}`);
     }
   } else {
     lines.push("", "### Blockers", "- none");
   }
 
-  if (dryRun) {
-    lines.push("", ...renderDryRunHighlights(dryRun));
-  }
+  lines.push("", ...renderDryRunHighlights(dryRun));
 
   lines.push(
     "",

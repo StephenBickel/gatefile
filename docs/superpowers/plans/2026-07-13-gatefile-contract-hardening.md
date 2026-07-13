@@ -4,7 +4,7 @@
 
 **Goal:** Make Gatefile's config, report, audit, package, MCP, and reusable-Action contracts strict, authenticated, authority-pinned, and mutually consistent.
 
-**Architecture:** Keep `GatefileEngine` as the only lifecycle authority and harden every boundary around it. Runtime config and schemas share one strict shape; reports carry complete verification/static-gate evidence; audit projects authenticated receipt chains; installed exports are allowlisted; MCP receives authority only at startup; and the Action runs action-owned code while preserving bound evidence.
+**Architecture:** Keep `GatefileEngine` as the only lifecycle authority and harden every boundary around it. Runtime config and schemas share one strict structural shape; webhook URLs use a portable schema prefilter plus stricter runtime authority/port parsing; reports carry complete verification/static-gate evidence; audit projects authenticated receipt chains; installed exports are allowlisted; MCP receives authority only at startup; and the Action runs action-owned code while preserving bound evidence.
 
 **Tech Stack:** TypeScript 5.8, Node.js 18+ CommonJS, Node test runner, JSON Schema/Ajv in tests, POSIX shell for the composite Action, GitHub Actions YAML.
 
@@ -39,13 +39,13 @@
   canonical approved-plan action while preserving its legacy
   `approval_needed` webhook event identifier.
 
-- [ ] **Step 1: Write failing runtime/schema parity tests**
+- [ ] **Step 1: Write failing runtime/schema shape-parity and layered URL tests**
 
 Test a canonical mixed config, each unknown top-level/nested key, invalid webhook protocol, empty shell command, legacy aliases, and alias/canonical conflicts. Validate the same fixtures with both `normalizeGatefileConfig` and Ajv. Add a subdirectory CLI fixture proving notifications use the selected repository root rather than process CWD.
 
 ```js
 assert.deepEqual(normalizeGatefileConfig({
-  signers: { trustedKeyIds: ['release'] },
+  signers: { trustedKeyIds: ['gfk1_0123456789abcdef'] },
   hooks: { beforeApply: { command: 'node policy.js' } },
   notifications: { onPlanApproved: { webhook: 'https://example.test/hook' } }
 }).notifications.onPlanApproved.webhook, 'https://example.test/hook');
@@ -60,9 +60,10 @@ assert.throws(() => normalizeGatefileConfig({
 
 Run: `npm run build && node --require ./test-support/test-env.cjs --test test/config-contract.test.js`
 
-Expected: canonical notifications are rejected/ignored, unknown keys are accepted, or schema/runtime results differ.
+Expected: canonical notifications are rejected/ignored, unknown keys are accepted,
+structural results differ, or the runtime accepts an undispatchable webhook URL.
 
-- [ ] **Step 3: Implement one strict normalizer and matching schema**
+- [ ] **Step 3: Implement one strict normalizer and matching structural schema**
 
 Define the canonical notification action and normalize only this allowlist:
 
@@ -82,10 +83,13 @@ export interface GatefileConfig {
 }
 ```
 
-Reject unknown keys before reading values, require HTTP(S) URLs and non-empty
-shell commands, map legacy notification keys once, reject conflicts, and return
-a defensive copy. Make the schema use `additionalProperties: false` at every
-object level and encode the legacy/canonical conflict with `not`/`required`.
+Reject unknown keys before reading values, require lowercase HTTP(S) URLs and
+non-empty shell commands, and parse webhook authorities and ports at runtime
+before dispatch. The schema intentionally provides the portable lexical
+prefilter while runtime parsing is stricter. Map legacy notification keys once,
+reject conflicts, and return a defensive copy. Make the schema use
+`additionalProperties: false` at every object level and encode the
+legacy/canonical conflict with `not`/`required`.
 
 - [ ] **Step 4: Pin notification execution**
 

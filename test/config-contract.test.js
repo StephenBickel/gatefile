@@ -44,7 +44,7 @@ function runtimeAccepts(value) {
 test('canonical config is accepted identically by the schema and runtime normalizer', () => {
   const config = {
     signers: {
-      trustedKeyIds: ['security-team-prod-1'],
+      trustedKeyIds: ['gfk1_0123456789abcdef'],
       trustedPublicKeys: [publicKeyPem]
     },
     hooks: {
@@ -73,8 +73,8 @@ test('canonical config is accepted identically by the schema and runtime normali
 
 test('schema and runtime reject unknown config keys instead of failing policy open', () => {
   const invalidConfigs = [
-    { signerz: { trustedKeyIds: ['security-team-prod-1'] } },
-    { signers: { trustedKeyIds: ['security-team-prod-1'], trustEveryone: true } },
+    { signerz: { trustedKeyIds: ['gfk1_0123456789abcdef'] } },
+    { signers: { trustedKeyIds: ['gfk1_0123456789abcdef'], trustEveryone: true } },
     { hooks: { beforeApplly: { command: 'exit 1' } } },
     { hooks: { beforeApply: { command: 'exit 1', ignoreFailure: true } } },
     { notifications: { onPlanCreate: { shell: 'echo typo' } } },
@@ -101,6 +101,9 @@ test('schema and runtime enforce policy, signer, and notification shapes consist
     [{ hooks: { beforeApply: { command: '   ' } } }, false],
     [{ hooks: { beforeApply: { command: 'node\u0000check.js' } } }, false],
     [{ signers: { trustedKeyIds: [] } }, false],
+    [{ signers: { trustedKeyIds: ['security-team-prod-1'] } }, false],
+    [{ signers: { trustedKeyIds: [' gfk1_0123456789abcdef'] } }, false],
+    [{ signers: { trustedKeyIds: ['gfk1_0123456789abcdef\t'] } }, false],
     [{ signers: { trustedKeyIds: ['trusted\u0000suffix'] } }, false],
     [{ signers: { trustedPublicKeys: ['not a public key'] } }, false],
     [{ notifications: { onPlanCreated: {} } }, false],
@@ -120,6 +123,24 @@ test('schema and runtime enforce policy, signer, and notification shapes consist
     );
     assert.equal(runtimeAccepted, expected, `unexpected runtime result for ${JSON.stringify(config)}`);
   }
+});
+
+test('runtime signer diagnostics retain the original array index after deduplication', () => {
+  assert.throws(
+    () => normalizeGatefileConfig({
+      signers: {
+        trustedKeyIds: [
+          'gfk1_0123456789abcdef',
+          'gfk1_0123456789abcdef',
+          'not-a-derived-key-id'
+        ]
+      }
+    }),
+    (error) => (
+      error instanceof GatefileConfigError &&
+      error.issues.some((issue) => issue.path === 'signers.trustedKeyIds[2]')
+    )
+  );
 });
 
 test('schema and runtime accept only Ed25519 SPKI public keys as signer material', () => {
@@ -168,7 +189,7 @@ test('schema and runtime allow an empty optional signer array when the other sou
     },
     {
       signers: {
-        trustedKeyIds: ['security-team-prod-1'],
+        trustedKeyIds: ['gfk1_0123456789abcdef'],
         trustedPublicKeys: []
       }
     }
@@ -184,12 +205,19 @@ test('schema and runtime allow an empty optional signer array when the other sou
   }
 });
 
-test('schema and runtime require lowercase HTTP(S) webhook schemes', () => {
+test('schema and runtime share the documented lexical webhook contract', () => {
   const cases = [
     ['https://example.com/event', true],
     ['http://example.com/event', true],
+    ['http://127.0.0.1:65535/event', true],
     ['HTTPS://example.com/event', false],
-    ['HTTP://example.com/event', false]
+    ['HTTP://example.com/event', false],
+    ['http://', false],
+    ['http://?x', false],
+    ['http://#x', false],
+    ['http://example.com/%zz', true],
+    ['http://例.example/event', true],
+    ['http://example.com\\redirect', false]
   ];
 
   for (const [webhook, expected] of cases) {
@@ -203,6 +231,28 @@ test('schema and runtime require lowercase HTTP(S) webhook schemes', () => {
   }
 });
 
+test('runtime rejects webhook URLs that pass the schema prefilter but cannot be dispatched', () => {
+  const malformedAuthorities = [
+    'http://%',
+    'http://[',
+    'http://:80',
+    'http://a:b',
+    'http://user@:80',
+    'http://example.com:65536',
+    'http://example.com:99999'
+  ];
+
+  for (const webhook of malformedAuthorities) {
+    const config = { notifications: { onPlanCreated: { webhook } } };
+    assert.equal(
+      validatesSchema(config),
+      true,
+      `fixture no longer exercises the schema's lexical prefilter: ${webhook}`
+    );
+    assert.equal(runtimeAccepts(config), false, `runtime accepted undispatchable URL ${webhook}`);
+  }
+});
+
 test('public GatefileConfig types require non-empty signer and notification shapes', (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gatefile-config-types-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -211,19 +261,23 @@ test('public GatefileConfig types require non-empty signer and notification shap
   fs.writeFileSync(path.join(root, 'consumer.ts'), `
 import type { GatefileConfig } from ${JSON.stringify(path.join(packageRoot, 'dist'))};
 
-const validKeyId: GatefileConfig = { signers: { trustedKeyIds: ['security-team-prod-1'] } };
+const validKeyId: GatefileConfig = { signers: { trustedKeyIds: ['gfk1_0123456789abcdef'] } };
 const validPublicKey: GatefileConfig = { signers: { trustedPublicKeys: ['public-key-pem'] } };
 const emptyOptionalIds: GatefileConfig = {
   signers: { trustedKeyIds: [], trustedPublicKeys: ['public-key-pem'] }
 };
 const emptyOptionalKeys: GatefileConfig = {
-  signers: { trustedKeyIds: ['security-team-prod-1'], trustedPublicKeys: [] }
+  signers: { trustedKeyIds: ['gfk1_0123456789abcdef'], trustedPublicKeys: [] }
 };
 const validWebhook: GatefileConfig = {
   notifications: { onPlanCreated: { webhook: 'https://example.com/event' } }
 };
 const validShell: GatefileConfig = {
   notifications: { onPlanApproved: { shell: 'node notify.js' } }
+};
+const validLegacyCreatedWithCanonicalApproved: GatefileConfig = {
+  hooks: { onPlanCreated: { shell: 'node legacy-created.js' } },
+  notifications: { onPlanApproved: { shell: 'node approved.js' } }
 };
 
 // @ts-expect-error A signer policy must contain at least one non-empty trust source.
@@ -234,6 +288,16 @@ const emptyKeyIds: GatefileConfig = { signers: { trustedKeyIds: [] } };
 const emptyPublicKeys: GatefileConfig = { signers: { trustedPublicKeys: [] } };
 // @ts-expect-error A notification action must select a webhook or shell command.
 const emptyNotification: GatefileConfig = { notifications: { onPlanCreated: {} } };
+// @ts-expect-error Deprecated and canonical plan-created actions conflict.
+const conflictingCreated: GatefileConfig = {
+  hooks: { onPlanCreated: { shell: 'node old.js' } },
+  notifications: { onPlanCreated: { shell: 'node new.js' } }
+};
+// @ts-expect-error Deprecated and canonical approval actions conflict.
+const conflictingApproved: GatefileConfig = {
+  hooks: { onApprovalNeeded: { shell: 'node old.js' } },
+  notifications: { onPlanApproved: { shell: 'node new.js' } }
+};
 
 void [
   validKeyId,
@@ -242,10 +306,13 @@ void [
   emptyOptionalKeys,
   validWebhook,
   validShell,
+  validLegacyCreatedWithCanonicalApproved,
   emptySigners,
   emptyKeyIds,
   emptyPublicKeys,
-  emptyNotification
+  emptyNotification,
+  conflictingCreated,
+  conflictingApproved
 ];
 `, 'utf8');
   fs.writeFileSync(path.join(root, 'tsconfig.json'), `${JSON.stringify({

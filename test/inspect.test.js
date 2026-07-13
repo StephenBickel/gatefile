@@ -80,7 +80,8 @@ test('formatInspectSummary returns concise human-readable output', () => {
 
   assert.match(summary, new RegExp(`Plan: ${plan.id}`));
   assert.match(summary, /Risk: low \(score: 0\)/);
-  assert.match(summary, /Ready To Apply: no/);
+  assert.match(summary, /Integrity \+ Approval Ready: no/);
+  assert.match(summary, /Ready To Attempt Apply: not evaluated/);
   assert.match(summary, /Blockers:/);
   assert.match(summary, /Tip: Use inspect-plan --json for machine-readable output\./);
   assert.equal(summary.trimStart().startsWith('{'), false);
@@ -92,7 +93,7 @@ test('inspect-plan CLI prints human summary by default', (t) => {
   if (!output) return;
 
   assert.match(output, /Plan:/);
-  assert.match(output, /Ready To Apply:/);
+  assert.match(output, /Ready To Attempt Apply:/);
   assert.equal(output.trimStart().startsWith('{'), false);
 });
 
@@ -139,7 +140,7 @@ test('formatInspectSummary includes signer trust state when policy is configured
   const report = buildInspectReport(plan, {
     config: {
       signers: {
-        trustedKeyIds: ['trusted-signer-1']
+        trustedKeyIds: ['gfk1_1111111111111111']
       }
     }
   });
@@ -155,7 +156,7 @@ test('formatInspectSummary renders the embedded verification snapshot without re
   t.after(() => fs.rmSync(repoRoot, { recursive: true, force: true }));
   fs.writeFileSync(
     path.join(repoRoot, 'gatefile.config.json'),
-    JSON.stringify({ signers: { trustedKeyIds: ['required-review-signer'] } })
+    JSON.stringify({ signers: { trustedKeyIds: ['gfk1_3333333333333333'] } })
   );
   const engine = new GatefileEngine({ repoRoot });
   const plan = engine.approvePlan(engine.createPlan(makeDraft()), 'ci-user');
@@ -164,10 +165,10 @@ test('formatInspectSummary renders the embedded verification snapshot without re
   fs.writeFileSync(path.join(repoRoot, 'gatefile.config.json'), '{}\n');
   const summary = engine.formatInspectPlan(plan, report);
   assert.match(summary, /trust: unsigned/);
-  assert.match(summary, /Ready To Apply: no/);
+  assert.match(summary, /Integrity \+ Approval Ready: no/);
 });
 
-test('formatInspectSummary retains the deprecated ignored third options parameter in its types', (t) => {
+test('formatInspectSummary retains the deprecated third options parameter in its types', (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gatefile-inspect-types-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const packageRoot = path.join(__dirname, '..');
@@ -196,12 +197,24 @@ formatInspectSummary(plan, report, {
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
 });
 
+test('formatInspectSummary preserves explicit legacy signer-policy semantics', () => {
+  const plan = approvePlan(createPlanFromDraft(makeDraft()), 'ci-user');
+  const noPolicyReport = buildInspectReport(plan);
+
+  const summary = formatInspectSummary(plan, noPolicyReport, {
+    config: { signers: { trustedKeyIds: ['gfk1_3333333333333333'] } }
+  });
+
+  assert.match(summary, /Integrity \+ Approval Ready: no/);
+  assert.match(summary, /trust: unsigned/);
+});
+
 test('non-TTY review readiness matches the injected engine signer policy', async (t) => {
   const engine = new GatefileEngine({
     repoRoot: process.cwd(),
     config: {
       signers: {
-        trustedKeyIds: ['required-review-signer']
+        trustedKeyIds: ['gfk1_3333333333333333']
       }
     }
   });
@@ -223,8 +236,8 @@ test('non-TTY review readiness matches the injected engine signer policy', async
   assert.equal(expected.signerTrust.status, 'unsigned');
   assert.equal(summary, expectedSummary);
   assert.match(summary, /trust: unsigned/);
-  assert.match(
-    summary,
-    new RegExp(`Ready To Apply: ${expected.status === 'ready' ? 'yes' : 'no'}`)
-  );
+  assert.match(summary, new RegExp(
+    `Integrity \\+ Approval Ready: ${expected.status === 'ready' ? 'yes' : 'no'}`
+  ));
+  assert.match(summary, /Ready To Attempt Apply: not evaluated/);
 });

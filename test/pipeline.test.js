@@ -104,11 +104,16 @@ const baseDraft = (id) => ({
   preconditions: []
 });
 
-test('run-pipeline on empty directory returns success', () => {
+test('run-pipeline on empty directory fails closed with a structured input error', () => {
   const dir = tmpDir();
   const result = runPipeline(dir);
-  assert.equal(result.success, true);
+  assert.equal(result.success, false);
   assert.equal(result.results.length, 0);
+  assert.deepEqual(result.inputErrors, [{
+    file: '.',
+    code: 'no-plans',
+    message: 'Pipeline directory contains no recognizable Gatefile v2 plans'
+  }]);
 });
 
 test('run-pipeline dry-run reports pending plans as failed static gates', () => {
@@ -226,7 +231,7 @@ test('pipeline rejects unsigned approvals under trusted-signer policy without mu
   const result = runPipeline(f.plansDir, {
     repoRoot: f.repoRoot,
     stateHome: f.stateHome,
-    config: { signers: { trustedKeyIds: ['required-pipeline-signer'] } }
+    config: { signers: { trustedKeyIds: ['gfk1_4444444444444444'] } }
   });
 
   assert.equal(result.success, false, JSON.stringify(result, null, 2));
@@ -354,7 +359,7 @@ test('pipeline constructs one engine and delegates each real plan directly to ap
   };
   delete require.cache[pipelinePath];
 
-  const config = { signers: { trustedKeyIds: ['pipeline-probe-key'] } };
+  const config = { signers: { trustedKeyIds: ['gfk1_5555555555555555'] } };
   try {
     const isolatedPipeline = require(pipelinePath);
     const result = isolatedPipeline.runPipeline(f.plansDir, {

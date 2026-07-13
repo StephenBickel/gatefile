@@ -1,5 +1,4 @@
 import {
-  createHash,
   createPrivateKey,
   createPublicKey,
   generateKeyPairSync,
@@ -8,6 +7,11 @@ import {
   type KeyObject
 } from "node:crypto";
 import { ApprovalAttestation, ApprovalAttestationPayload } from "./types";
+import {
+  approvalKeyIdFromPublicKey,
+  canonicalizeApprovalPublicKeyPem,
+  isCanonicalApprovalSignature
+} from "./approval-key";
 
 export const APPROVAL_ATTESTATION_TYPE = "gatefile-approval-v1";
 
@@ -44,18 +48,19 @@ function createPayload(fields: AttestableApprovalFields): ApprovalAttestationPay
   };
 }
 
-function keyIdFromPublicKey(publicKey: KeyObject): string {
-  const spkiDer = publicKey.export({ format: "der", type: "spki" });
-  const digest = createHash("sha256").update(spkiDer).digest("hex");
-  return `gfk1_${digest.slice(0, 16)}`;
-}
-
 function parsePrivateKey(privateKeyPem: string): KeyObject {
-  return createPrivateKey({ format: "pem", key: privateKeyPem });
+  const key = createPrivateKey({ format: "pem", key: privateKeyPem });
+  if (key.asymmetricKeyType !== "ed25519") {
+    throw new Error("approval signing keys must use Ed25519");
+  }
+  return key;
 }
 
 function parsePublicKey(publicKeyPem: string): KeyObject {
-  return createPublicKey({ format: "pem", key: publicKeyPem });
+  return createPublicKey({
+    format: "pem",
+    key: canonicalizeApprovalPublicKeyPem(publicKeyPem)
+  });
 }
 
 export function generateApprovalAttestationKeyPair(): GeneratedApprovalKeyPair {
@@ -66,11 +71,12 @@ export function generateApprovalAttestationKeyPair(): GeneratedApprovalKeyPair {
   return {
     privateKeyPem,
     publicKeyPem,
-    keyId: keyIdFromPublicKey(publicKey)
+    keyId: approvalKeyIdFromPublicKey(publicKey)
   };
 }
 
 export interface CreateApprovalAttestationOptions {
+  /** Optional key ID assertion; it must equal the ID derived from the signing key. */
   keyId?: string;
 }
 
@@ -82,13 +88,19 @@ export function createApprovalAttestation(
   const privateKey = parsePrivateKey(signingPrivateKeyPem);
   const publicKey = createPublicKey(privateKey);
   const publicKeyPem = publicKey.export({ format: "pem", type: "spki" }).toString();
+  const derivedKeyId = approvalKeyIdFromPublicKey(publicKey);
+  if (options.keyId !== undefined && options.keyId !== derivedKeyId) {
+    throw new Error(
+      `approval key ID must match the signing key (${derivedKeyId})`
+    );
+  }
   const payload = createPayload(fields);
   const message = payloadToSigningMessage(payload);
   const signature = sign(null, Buffer.from(message, "utf-8"), privateKey).toString("base64");
 
   return {
     scheme: "ed25519-sha256",
-    keyId: options.keyId ?? keyIdFromPublicKey(publicKey),
+    keyId: derivedKeyId,
     publicKeyPem,
     payload,
     signature
@@ -96,6 +108,7 @@ export function createApprovalAttestation(
 }
 
 export interface ApprovalAttestationVerificationResult {
+  schemeMatches: boolean;
   keyIdMatchesPublicKey: boolean;
   payloadMatchesApproval: boolean;
   signatureValid: boolean;
@@ -106,6 +119,7 @@ export function verifyApprovalAttestation(
   fields: AttestableApprovalFields,
   attestation: ApprovalAttestation
 ): ApprovalAttestationVerificationResult {
+  const schemeMatches = attestation.scheme === "ed25519-sha256";
   const expectedPayload = createPayload(fields);
   const payloadMatchesApproval =
     attestation.payload.type === expectedPayload.type &&
@@ -119,24 +133,31 @@ export function verifyApprovalAttestation(
 
   try {
     const publicKey = parsePublicKey(attestation.publicKeyPem);
-    keyIdMatchesPublicKey = keyIdFromPublicKey(publicKey) === attestation.keyId;
+    keyIdMatchesPublicKey = approvalKeyIdFromPublicKey(publicKey) === attestation.keyId;
 
     const message = payloadToSigningMessage(attestation.payload);
-    signatureValid = verify(
-      null,
-      Buffer.from(message, "utf-8"),
-      publicKey,
-      Buffer.from(attestation.signature, "base64")
-    );
+    signatureValid =
+      isCanonicalApprovalSignature(attestation.signature) &&
+      verify(
+        null,
+        Buffer.from(message, "utf-8"),
+        publicKey,
+        Buffer.from(attestation.signature, "base64")
+      );
   } catch {
     keyIdMatchesPublicKey = false;
     signatureValid = false;
   }
 
   return {
+    schemeMatches,
     keyIdMatchesPublicKey,
     payloadMatchesApproval,
     signatureValid,
-    valid: keyIdMatchesPublicKey && payloadMatchesApproval && signatureValid
+    valid:
+      schemeMatches &&
+      keyIdMatchesPublicKey &&
+      payloadMatchesApproval &&
+      signatureValid
   };
 }

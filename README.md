@@ -385,11 +385,15 @@ Use `gatefile.config.json` to enforce policy hooks and signer trust:
     "beforeApply": { "command": "node ./scripts/before-apply.js" }
   },
   "signers": {
-    "trustedKeyIds": ["security-team-prod-1"],
+    "trustedKeyIds": ["gfk1_0123456789abcdef"],
     "trustedPublicKeys": ["-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----"]
   }
 }
 ```
+
+Replace the example key ID and public key with the pair printed by
+`gatefile generate-attestation-key`; key IDs are derived from the Ed25519 public
+key and are not operator-chosen labels.
 
 Policy hooks run operator-defined commands synchronously; a non-zero exit blocks
 the action. This alpha does not yet define a structured stdin/environment payload
@@ -422,7 +426,9 @@ lifecycle events. Add the canonical `notifications` object to
 | `onPlanApproved` | After `approve-plan` durably writes the approval | Plan summary JSON (with approval) |
 
 Configure at least one of `webhook` or `shell`; both may be used. Webhooks send
-a `POST` with `Content-Type: application/json`. Delivery errors warn to stderr
+a `POST` with `Content-Type: application/json`. Webhook values must use a
+lowercase `http://` or `https://` scheme and contain an authority and valid port
+that Node.js can parse before dispatch. Delivery errors warn to stderr
 but never change the completed lifecycle operation. Deprecated
 `hooks.onPlanCreated` and `hooks.onApprovalNeeded` inputs migrate to these
 canonical events when no canonical duplicate is present; new configurations

@@ -7,6 +7,22 @@ const { spawnSync } = require('node:child_process');
 
 const packageRoot = path.resolve(__dirname, '..');
 
+const PACKED_DOCUMENTATION_FILES = [
+  'docs/agent-adapter.md',
+  'docs/architecture.md',
+  'docs/changeset-spec.md',
+  'docs/coding-agent-demo.md',
+  'docs/examples/github-native-signed-approval-fork-request.yml',
+  'docs/examples/github-native-signed-approval-fork-sign.yml',
+  'docs/examples/github-pr-gate.inlined.yml',
+  'docs/examples/github-pr-gate.yml',
+  'docs/examples/github-pr-review-comment.yml',
+  'docs/github-pr-gate-example.md',
+  'docs/product-roadmap.md',
+  'docs/signed-approvals.md',
+  'docs/use-cases.md'
+];
+
 const PUBLIC_RUNTIME_EXPORTS = [
   'APPLY_RECEIPT_WORST_CASE_BUDGET_BYTES',
   'AUTHENTICATED_STATE_FILE_MAX_BYTES',
@@ -89,7 +105,16 @@ function createPackedConsumer(t) {
 
   const cleanPackageRoot = path.join(root, 'package-source');
   fs.mkdirSync(cleanPackageRoot);
-  for (const entry of ['LICENSE', 'README.md', 'package.json', 'schema', 'src', 'tsconfig.json']) {
+  for (const entry of [
+    'LICENSE',
+    'README.md',
+    'demo.gif',
+    'docs',
+    'package.json',
+    'schema',
+    'src',
+    'tsconfig.json'
+  ]) {
     fs.cpSync(path.join(packageRoot, entry), path.join(cleanPackageRoot, entry), {
       recursive: true
     });
@@ -108,6 +133,8 @@ function createPackedConsumer(t) {
   const expectedPackedFiles = [
     'LICENSE',
     'README.md',
+    'demo.gif',
+    ...PACKED_DOCUMENTATION_FILES,
     'package.json',
     'schema/gatefile.config.schema.json',
     'schema/gatefile.schema.json',
@@ -247,4 +274,17 @@ test('the installed tarball enforces the reviewed package-specifier contract', (
   });
   assert.equal(mcp.status, 0, mcp.stderr);
   assert.equal(JSON.parse(mcp.stdout).result.serverInfo.name, 'gatefile');
+
+  const installedReadme = fs.readFileSync(path.join(installedPackageRoot, 'README.md'), 'utf8');
+  const localTargets = [...installedReadme.matchAll(/!?\[[^\]]*\]\(([^)]+)\)/g)]
+    .map((match) => match[1].split('#')[0])
+    .filter((target) => target.length > 0 && !/^[a-z][a-z0-9+.-]*:/i.test(target));
+  assert.ok(localTargets.length > 0, 'README did not expose any local documentation links');
+  for (const target of localTargets) {
+    assert.equal(
+      fs.existsSync(path.join(installedPackageRoot, target)),
+      true,
+      `packed README target is missing: ${target}`
+    );
+  }
 });

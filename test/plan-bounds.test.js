@@ -173,25 +173,6 @@ const receiptBoundMutations = [
     /approval\.approvedBy.*16000/i
   ],
   [
-    'approval signer metadata',
-    (plan) => {
-      plan.approval.attestation = {
-        scheme: 'ed25519-sha256',
-        keyId: 'k'.repeat(MAX_STATE_BOUND_ID_LENGTH + 1),
-        publicKeyPem: 'public-key',
-        payload: {
-          type: 'gatefile-approval-v1',
-          planId: plan.id,
-          approvedBy: 'bounds-reviewer',
-          approvedAt: plan.createdAt,
-          approvedPlanHash: plan.integrity.planHash
-        },
-        signature: 'signature'
-      };
-    },
-    /approval\.attestation\.keyId.*1024/i
-  ],
-  [
     'plan ID',
     (plan) => { plan.id = 'p'.repeat(MAX_STATE_BOUND_ID_LENGTH + 1); },
     /id.*1024/i
@@ -244,19 +225,6 @@ test('runtime and schema accept receipt audit metadata at their exact boundaries
   plan.source = 's'.repeat(16000);
   plan.summary = 'm'.repeat(16000);
   plan.approval.approvedBy = 'a'.repeat(16000);
-  plan.approval.attestation = {
-    scheme: 'ed25519-sha256',
-    keyId: 'k'.repeat(MAX_STATE_BOUND_ID_LENGTH),
-    publicKeyPem: 'public-key',
-    payload: {
-      type: 'gatefile-approval-v1',
-      planId: plan.id,
-      approvedBy: 'bounds-reviewer',
-      approvedAt: plan.createdAt,
-      approvedPlanHash: plan.integrity.planHash
-    },
-    signature: 'signature'
-  };
 
   assert.doesNotThrow(() => validatePlanFile(plan));
   const validateSchema = schemaValidator();

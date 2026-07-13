@@ -39,7 +39,7 @@ Rejected.
 
 ## Configuration and notifications
 
-`GatefileConfig` has one strict runtime and JSON Schema contract:
+`GatefileConfig` has one strict structural runtime and JSON Schema contract:
 
 - `signers` configures trusted signer key IDs and public keys.
 - `hooks.beforeApprove` and `hooks.beforeApply` are blocking authorization
@@ -47,6 +47,11 @@ Rejected.
 - `notifications.onPlanCreated` and `notifications.onPlanApproved` are
   best-effort adapter notifications using HTTP(S) webhooks and/or non-empty
   shell commands.
+
+Webhook URL validation is deliberately layered: the schema provides a portable
+lowercase HTTP(S) lexical prefilter, while the runtime additionally parses the
+authority and port with Node.js before dispatch so undispatchable values fail
+closed.
 
 Unknown keys fail closed at every level. Legacy `hooks.onPlanCreated` and
 `hooks.onApprovalNeeded` remain a migration alias for notifications, but cannot
@@ -173,8 +178,8 @@ must not include signing-key material or private state contents.
 
 Tests are written before production changes and cover:
 
-1. runtime/schema config parity, unknown-key rejection, legacy migration, and
-   pinned notification execution;
+1. runtime/schema config shape parity, layered webhook URL validation,
+   unknown-key rejection, legacy migration, and pinned notification execution;
 2. single-snapshot inspect JSON/human parity and foreign-repository rejection;
 3. deterministic pipeline ordering, malformed input, duplicates, cycles, and
    dry-run static-gate reporting;

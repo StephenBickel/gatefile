@@ -10,6 +10,7 @@ import type {
 } from "./types";
 import { sanitizedGitEnvironment } from "./git-environment";
 import {
+  approvalNotificationEventName,
   loadGatefileConfigFromPinnedRoot,
   normalizeGatefileConfig
 } from "./config";
@@ -36,6 +37,7 @@ export interface NotificationDispatchContext {
 interface ResolvedNotificationContext {
   repoRoot: string;
   hooks?: HooksConfig;
+  approvalEvent?: "plan_approved" | "approval_needed";
 }
 
 function resolveNotificationContext(
@@ -52,6 +54,9 @@ function resolveNotificationContext(
   if (!onPlanCreated && !onPlanApproved) return { repoRoot };
   return {
     repoRoot,
+    ...(onPlanApproved
+      ? { approvalEvent: approvalNotificationEventName(config) }
+      : {}),
     hooks: {
       ...(onPlanCreated ? { onPlanCreated } : {}),
       ...(onPlanApproved
@@ -213,7 +218,7 @@ export async function fireOnPlanApproved(
     await executeHookAction(
       resolved.hooks.onPlanApproved,
       plan,
-      "plan_approved",
+      resolved.approvalEvent ?? "plan_approved",
       resolved.repoRoot
     );
   } catch (err) {

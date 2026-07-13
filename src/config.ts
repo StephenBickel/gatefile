@@ -1,18 +1,23 @@
 import { existsSync, readFileSync } from "node:fs";
-import { createPublicKey } from "node:crypto";
 import { resolve } from "node:path";
+import { URL } from "node:url";
 import type {
   GatefileConfig,
   HookCommandConfig,
   NotificationActionConfig,
-  NotificationsConfig
+  NotificationsConfig,
+  PolicyHooksConfig
 } from "./types";
 import { getPinnedRepoRoot, getRepoRoot } from "./state";
+import {
+  canonicalizeApprovalPublicKeyPem,
+  isApprovalKeyId
+} from "./approval-key";
 
 export const DEFAULT_CONFIG_FILE = "gatefile.config.json";
 
-const ED25519_SPKI_PUBLIC_PEM =
-  /^-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=\n-----END PUBLIC KEY-----$/;
+const LEGACY_APPROVAL_NOTIFICATION_CONFIGS = new WeakSet<object>();
+const HTTP_WEBHOOK_PATTERN = /^https?:\/\/[^\s/?#\\]+(?:[/?#][^\s\\]*)?$/;
 
 interface ConfigValidationIssue {
   path: string;
@@ -41,25 +46,23 @@ export function configPath(repoRoot?: string, explicitPath?: string): string {
 }
 
 export function canonicalizePublicKeyPem(value: string): string {
-  const normalized = value.trim().replace(/\r\n/g, "\n");
-  if (!ED25519_SPKI_PUBLIC_PEM.test(normalized)) {
-    throw new Error("must contain one Ed25519 SPKI public PEM block");
-  }
-  const key = createPublicKey({ format: "pem", key: normalized });
-  if (key.asymmetricKeyType !== "ed25519") {
-    throw new Error("must contain an Ed25519 public key");
-  }
-  const canonical = key.export({ format: "pem", type: "spki" }).toString().trim();
-  if (canonical !== normalized) {
-    throw new Error("must use canonical SPKI public PEM encoding");
-  }
-  return canonical;
+  return canonicalizeApprovalPublicKeyPem(value);
+}
+
+/** Preserve the legacy payload identifier without adding provenance to public config data. */
+export function approvalNotificationEventName(
+  config: GatefileConfig
+): "plan_approved" | "approval_needed" {
+  return LEGACY_APPROVAL_NOTIFICATION_CONFIGS.has(config as object)
+    ? "approval_needed"
+    : "plan_approved";
 }
 
 function normalizeStringArray(
   value: unknown,
   path: string,
-  issues: ConfigValidationIssue[]
+  issues: ConfigValidationIssue[],
+  options: { rejectSurroundingWhitespace?: boolean } = {}
 ): string[] {
   if (value === undefined) return [];
   if (!Array.isArray(value)) {
@@ -77,6 +80,13 @@ function normalizeStringArray(
     const trimmed = entry.trim();
     if (trimmed.length === 0) {
       issues.push({ path: `${path}[${i}]`, message: "must not be empty" });
+      continue;
+    }
+    if (options.rejectSurroundingWhitespace && entry !== trimmed) {
+      issues.push({
+        path: `${path}[${i}]`,
+        message: "must not contain leading or trailing whitespace"
+      });
       continue;
     }
     if (entry.includes("\0")) {
@@ -172,17 +182,26 @@ function normalizeNotificationAction(
           message: "must not contain leading or trailing whitespace"
         });
       }
-      if (!candidate.startsWith("http://") && !candidate.startsWith("https://")) {
+      if (!HTTP_WEBHOOK_PATTERN.test(candidate)) {
         issues.push({
           path: `${path}.webhook`,
-          message: "must use a lowercase http or https scheme"
+          message: "must be an absolute URL with a lowercase http or https scheme"
         });
       } else {
         try {
           const parsed = new URL(candidate);
-          webhook = parsed.toString();
+          if (
+            (parsed.protocol !== "http:" && parsed.protocol !== "https:") ||
+            parsed.hostname.length === 0
+          ) {
+            throw new TypeError("invalid HTTP(S) authority");
+          }
+          webhook = candidate;
         } catch {
-          issues.push({ path: `${path}.webhook`, message: "must be a valid HTTP(S) URL" });
+          issues.push({
+            path: `${path}.webhook`,
+            message: "must contain a valid HTTP(S) authority and port"
+          });
         }
       }
     }
@@ -218,6 +237,7 @@ export function normalizeGatefileConfig(rawConfig: unknown, sourceLabel?: string
   }
 
   const config = rawConfig as Record<string, unknown>;
+  const inheritedLegacyApprovalEvent = LEGACY_APPROVAL_NOTIFICATION_CONFIGS.has(config);
   const normalized: GatefileConfig = {};
   rejectUnknownKeys(config, ["signers", "hooks", "notifications"], "$", issues);
 
@@ -233,7 +253,7 @@ export function normalizeGatefileConfig(rawConfig: unknown, sourceLabel?: string
         "hooks",
         issues
       );
-      const hooks: NonNullable<GatefileConfig["hooks"]> = {};
+      const hooks: PolicyHooksConfig = {};
       for (const hookName of ["beforeApprove", "beforeApply"] as const) {
         const hookRaw = hooksRaw[hookName];
         if (hookRaw === undefined) continue;
@@ -317,7 +337,8 @@ export function normalizeGatefileConfig(rawConfig: unknown, sourceLabel?: string
       const trustedKeyIdsRaw = normalizeStringArray(
         signersRaw.trustedKeyIds,
         "signers.trustedKeyIds",
-        issues
+        issues,
+        { rejectSurroundingWhitespace: true }
       );
       const trustedPublicKeysRaw = normalizeStringArray(
         signersRaw.trustedPublicKeys,
@@ -325,7 +346,21 @@ export function normalizeGatefileConfig(rawConfig: unknown, sourceLabel?: string
         issues
       );
 
-      const trustedKeyIds = [...new Set(trustedKeyIdsRaw)];
+      const trustedKeyIds: string[] = [];
+      const seenKeyIds = new Set<string>();
+      trustedKeyIdsRaw.forEach((value, i) => {
+        if (!isApprovalKeyId(value)) {
+          issues.push({
+            path: `signers.trustedKeyIds[${i}]`,
+            message: "must be a derived approval key ID (gfk1_ followed by 16 lowercase hex characters)"
+          });
+          return;
+        }
+        if (!seenKeyIds.has(value)) {
+          seenKeyIds.add(value);
+          trustedKeyIds.push(value);
+        }
+      });
       const trustedPublicKeys: string[] = [];
       const seenPublicKeys = new Set<string>();
       trustedPublicKeysRaw.forEach((value, i) => {
@@ -367,6 +402,12 @@ export function normalizeGatefileConfig(rawConfig: unknown, sourceLabel?: string
 
   if (issues.length > 0) {
     throw new GatefileConfigError(issues, sourceLabel);
+  }
+  if (
+    normalized.notifications?.onPlanApproved &&
+    (inheritedLegacyApprovalEvent || legacyOnPlanApproved !== undefined)
+  ) {
+    LEGACY_APPROVAL_NOTIFICATION_CONFIGS.add(normalized as object);
   }
   return normalized;
 }

@@ -53,20 +53,25 @@
     },
     "httpUrl": {
       "type": "string",
-      "format": "uri",
-      "pattern": "^https?://"
+      "description": "A lowercase HTTP(S) URL. This schema applies a portable lexical prefilter; the runtime additionally parses the authority and port before dispatch.",
+      "pattern": "^https?://[^\\s/?#\\\\]+(?:[/?#][^\\s\\\\]*)?$"
     },
     "publicKeyPem": {
       "type": "string",
       "description": "An Ed25519 public key encoded as one SPKI PEM block.",
       "pattern": "^\\s*-----BEGIN PUBLIC KEY-----\\r?\\nMCowBQYDK2VwAyEA[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=\\r?\\n-----END PUBLIC KEY-----\\s*$"
     },
+    "approvalKeyId": {
+      "type": "string",
+      "description": "A key ID derived from the canonical Ed25519 SPKI public key.",
+      "pattern": "^gfk1_[a-f0-9]{16}$"
+    },
     "signers": {
       "type": "object",
       "properties": {
         "trustedKeyIds": {
           "type": "array",
-          "items": { "$ref": "#/$defs/nonEmptyString" }
+          "items": { "$ref": "#/$defs/approvalKeyId" }
         },
         "trustedPublicKeys": {
           "type": "array",

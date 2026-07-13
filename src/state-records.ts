@@ -13,6 +13,8 @@ import type {
   StateRepositoryBinding
 } from "./state-auth";
 import { unicodeScalarLength } from "./unicode";
+import type { ApplyReceiptAuditMetadata } from "./types";
+import { isApprovalKeyId } from "./approval-key";
 
 export const STATE_RECORD_VERSION = 1 as const;
 
@@ -107,14 +109,7 @@ export interface StateDependencyStatus {
   allSatisfied: boolean;
 }
 
-export interface ReceiptAuditMetadata {
-  summary: string;
-  source: string;
-  approvedBy: string;
-  approvedAt: string;
-  approvalIdentity: "signed" | "unsigned";
-  signerKeyId: string | null;
-}
+export type ReceiptAuditMetadata = ApplyReceiptAuditMetadata;
 
 export interface RollbackRecordEntry {
   snapshotEntryId: string;
@@ -903,24 +898,32 @@ function assertReceiptBody(value: unknown): ReceiptRecordBody {
     const signerKeyId = metadata.signerKeyId === null
       ? null
       : assertBoundId(metadata.signerKeyId, "receipt.audit.signerKeyId");
-    if (metadata.approvalIdentity === "signed" && signerKeyId === null) {
-      throw new StateRecordValidationError(
-        "receipt.audit signed approval must include signerKeyId"
-      );
-    }
-    if (metadata.approvalIdentity === "unsigned" && signerKeyId !== null) {
-      throw new StateRecordValidationError(
-        "receipt.audit unsigned approval may not include signerKeyId"
-      );
-    }
-    audit = {
+    const auditBase = {
       summary: assertText(metadata.summary, "receipt.audit.summary"),
       source: assertText(metadata.source, "receipt.audit.source"),
       approvedBy: assertText(metadata.approvedBy, "receipt.audit.approvedBy"),
-      approvedAt: canonicalizeRfc3339Timestamp(metadata.approvedAt, "receipt.audit.approvedAt"),
-      approvalIdentity: metadata.approvalIdentity,
-      signerKeyId
+      approvedAt: canonicalizeRfc3339Timestamp(metadata.approvedAt, "receipt.audit.approvedAt")
     };
+    if (metadata.approvalIdentity === "signed") {
+      if (signerKeyId === null) {
+        throw new StateRecordValidationError(
+          "receipt.audit signed approval must include signerKeyId"
+        );
+      }
+      if (!isApprovalKeyId(signerKeyId)) {
+        throw new StateRecordValidationError(
+          "receipt.audit.signerKeyId must be a derived approval key ID (gfk1_ followed by 16 lowercase hex characters)"
+        );
+      }
+      audit = { ...auditBase, approvalIdentity: "signed", signerKeyId };
+    } else {
+      if (signerKeyId !== null) {
+        throw new StateRecordValidationError(
+          "receipt.audit unsigned approval may not include signerKeyId"
+        );
+      }
+      audit = { ...auditBase, approvalIdentity: "unsigned", signerKeyId: null };
+    }
   }
 
   return {

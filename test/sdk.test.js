@@ -314,7 +314,7 @@ test('applyPlanFile rejects an unsigned approval under trusted-signer policy wit
     applyPlanFile(f.planPath, {
       repoRoot: f.repoRoot,
       stateHome: f.stateHome,
-      config: { signers: { trustedKeyIds: ['required-sdk-signer'] } }
+      config: { signers: { trustedKeyIds: ['gfk1_6666666666666666'] } }
     }),
     (error) => {
       assert.match(error.message, /Plan failed verification/);

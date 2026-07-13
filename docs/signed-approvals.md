@@ -55,10 +55,14 @@ Gatefile rejects private PEM blocks and non-Ed25519 keys in
 `signers.trustedPublicKeys`; never place the private key in repository config.
 4. Configure repo trust policy in `gatefile.config.json`:
 
+The key ID below is the ID derived from the public key shown with it. Always
+copy both values from your own `generate-attestation-key` output; do not invent
+or relabel a key ID.
+
 ```json
 {
   "signers": {
-    "trustedKeyIds": ["security-team-prod-1"],
+    "trustedKeyIds": ["gfk1_581597490e0f9380"],
     "trustedPublicKeys": [
       "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA3BpXovQEPSywMnUz4IdaCBTGcIH+6gRV9kt1SMjg7bE=\n-----END PUBLIC KEY-----"
     ]

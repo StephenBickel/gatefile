@@ -15,7 +15,7 @@ export function formatDryRunSummary(report: DryRunReport): string {
     `Mode: dry-run preview`,
     `Verification: ${report.verification.status} (approval=${report.verification.approvalStatus})`,
     `Signer Trust: ${report.verification.signerTrustStatus}`,
-    `Ready To Apply: ${report.staticGate.passed ? "yes" : "no"}`,
+    `Ready To Attempt Apply: ${report.staticGate.passed ? "yes" : "no"}`,
     `Static Gate: ${report.staticGate.passed ? "passed" : "failed"}`,
     `Verification Gate: ${report.staticGate.verificationReady ? "ready" : "not-ready"}`,
     `Dependency Gate: ${report.staticGate.dependenciesSatisfied ? "satisfied" : "missing"}`,
