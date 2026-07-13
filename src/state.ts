@@ -1,4 +1,13 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
+import { spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { ApplyReceipt, DependencyStatus, PlanFile, RollbackFileResult, RollbackReport, SnapshotFile } from "./types";
 
@@ -39,6 +48,44 @@ function readJson<T>(path: string): T {
 
 export function getRepoRoot(repoRoot?: string): string {
   return resolve(repoRoot ?? process.cwd());
+}
+
+function gitOutput(repoRoot: string, args: string[]): string | undefined {
+  const result = spawnSync("git", ["-C", repoRoot, ...args], {
+    encoding: "utf8",
+    shell: false,
+    timeout: 5_000
+  });
+  if (result.error || result.status !== 0) return undefined;
+  const output = result.stdout.trim();
+  return output.length > 0 ? output : undefined;
+}
+
+function normalizedRemoteIdentity(remote: string): string {
+  const trimmed = remote.trim().replace(/\/+$/, "").replace(/\.git$/, "");
+  const scp = /^(?:[^@/]+@)?([^:/]+):(.+)$/.exec(trimmed);
+  if (scp && !trimmed.includes("://")) {
+    return `${scp[1].toLowerCase()}/${scp[2].replace(/^\/+/, "")}`;
+  }
+  try {
+    const url = new URL(trimmed);
+    if (url.protocol === "file:") return `file:${url.pathname.replace(/\/+$/, "")}`;
+    const port = url.port ? `:${url.port}` : "";
+    return `${url.hostname.toLowerCase()}${port}/${url.pathname.replace(/^\/+|\/+$/g, "")}`;
+  } catch {
+    return trimmed;
+  }
+}
+
+/** Stable, non-secret identity for binding a plan to its intended repository. */
+export function repositoryIdForRoot(repoRoot?: string): string {
+  const requestedRoot = getRepoRoot(repoRoot);
+  const gitRoot = gitOutput(requestedRoot, ["rev-parse", "--show-toplevel"]);
+  const effectiveRoot = gitRoot ? realpathSync(gitRoot) : realpathSync(requestedRoot);
+  const remote = gitOutput(effectiveRoot, ["config", "--get", "remote.origin.url"]);
+  return remote
+    ? `git:${normalizedRemoteIdentity(remote)}`
+    : `file:${effectiveRoot}`;
 }
 
 export function getStateLayout(repoRoot?: string): StateLayout {

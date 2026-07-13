@@ -1,5 +1,6 @@
 {
-  "source": "agent-v1",
+  "version": "2",
+  "source": "dependency-agent",
   "summary": "Run after baseline migration plan has been applied",
   "dependsOn": ["plan_replace-with-required-plan-id"],
   "operations": [

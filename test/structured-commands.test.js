@@ -32,7 +32,7 @@ function nodeWriteOperation(id, filePath, value, overrides = {}) {
   };
 }
 
-function approvedCommandPlan(operation, execution) {
+function approvedCommandPlan(operation, execution, repoRoot) {
   return approvePlan(
     createPlanFromDraft({
       source: 'structured-command-test',
@@ -40,7 +40,7 @@ function approvedCommandPlan(operation, execution) {
       operations: [operation],
       preconditions: [],
       ...(execution ? { execution } : {})
-    }),
+    }, { repoRoot }),
     'reviewer'
   );
 }
@@ -52,7 +52,7 @@ test('shell metacharacters in arguments remain literal data', () => {
     const injected = path.join(root, 'injected.txt');
     const payload = `literal; touch ${injected}; $(touch ${injected}) > ${injected}`;
     const operation = nodeWriteOperation('literal', marker, payload);
-    const report = applyPlan(approvedCommandPlan(operation), { repoRoot: root });
+    const report = applyPlan(approvedCommandPlan(operation, undefined, root), { repoRoot: root });
 
     assert.equal(report.success, true);
     assert.equal(fs.readFileSync(marker, 'utf8'), payload);
@@ -72,7 +72,7 @@ test('an executable containing spaces is not parsed as a shell command', () => {
       executable: `${process.execPath} -e`,
       args: ['require("node:fs").writeFileSync(process.argv[1], "bad", "utf8")', marker]
     };
-    const report = applyPlan(approvedCommandPlan(operation), { repoRoot: root });
+    const report = applyPlan(approvedCommandPlan(operation, undefined, root), { repoRoot: root });
 
     assert.equal(report.success, false);
     assert.equal(report.results[0].success, false);
@@ -107,7 +107,7 @@ test('nonzero exits stop apply unless allowFailure explicitly permits continuati
         ],
         preconditions: [],
         execution: { filePolicy: { allowedRoots: [root] } }
-      }),
+      }, { repoRoot: root }),
       'reviewer'
     );
     const failed = applyPlan(failingPlan, { repoRoot: root });
@@ -139,7 +139,7 @@ test('nonzero exits stop apply unless allowFailure explicitly permits continuati
         ],
         preconditions: [],
         execution: { filePolicy: { allowedRoots: [root] } }
-      }),
+      }, { repoRoot: root }),
       'reviewer'
     );
     const continued = applyPlan(allowedPlan, { repoRoot: root });
@@ -173,7 +173,7 @@ test('allow policy requires an exact executable and complete argument array', ()
         ]
       }
     };
-    const report = applyPlan(approvedCommandPlan(operation, execution), { repoRoot: root });
+    const report = applyPlan(approvedCommandPlan(operation, execution, root), { repoRoot: root });
 
     assert.equal(report.success, false, 'allowFailure must not waive a policy denial');
     assert.equal(report.results[0].success, false);
@@ -206,7 +206,7 @@ test('allow policy rejects executable and argument near-matches', () => {
     try {
       const plan = approvedCommandPlan(operation, {
         commandPolicy: { mode: 'allow', rules: [rule] }
-      });
+      }, root);
       const report = applyPlan(plan, { repoRoot: root });
       assert.equal(report.success, false, `policy accepted ${operation.id} near-match`);
       assert.match(report.results[0].message, /allow mode/);
@@ -227,14 +227,14 @@ test('deny policy blocks only the exact structured tuple', () => {
         rules: [{ executable: operation.executable, args: [...operation.args] }]
       }
     };
-    const report = applyPlan(approvedCommandPlan(operation, execution), { repoRoot: root });
+    const report = applyPlan(approvedCommandPlan(operation, execution, root), { repoRoot: root });
 
     assert.equal(report.success, false);
     assert.match(report.results[0].message, /deny mode/);
     assert.equal(fs.existsSync(marker), false);
 
     const nearOperation = { ...operation, id: 'deny-near', args: [...operation.args, 'near-match'] };
-    const nearPlan = approvedCommandPlan(nearOperation, execution);
+    const nearPlan = approvedCommandPlan(nearOperation, execution, root);
     const nearReport = applyPlan(nearPlan, { repoRoot: root });
     assert.equal(nearReport.success, true, 'deny mode must block only an exact tuple');
     assert.equal(fs.readFileSync(marker, 'utf8'), 'blocked');
@@ -385,8 +385,9 @@ test('structured executable, arguments, and policy are approval-hash-bound', () 
       rules: [{ executable: process.execPath, args: ['--version'] }]
     }
   });
-  assert.equal(plan.version, '0.1');
-  assert.equal(plan.integrity.canonicalizer, 'gatefile-v1');
+  assert.equal(plan.version, '2');
+  assert.equal(plan.integrity.canonicalizer, 'gatefile-v2');
+  assert.equal(plan.integrity.envelopeVersion, 2);
 
   const mutations = [
     { ...plan, operations: [{ ...plan.operations[0], executable: `${process.execPath}-other` }] },
@@ -425,6 +426,11 @@ test('JSON schema accepts structured commands and rejects legacy command strings
     preconditions: []
   });
   assert.equal(validate(structured), true, JSON.stringify(validate.errors));
+
+  const multiline = JSON.parse(JSON.stringify(structured));
+  multiline.source = '\nagent';
+  multiline.summary = 'line one\nline two';
+  assert.equal(validate(multiline), true, JSON.stringify(validate.errors));
 
   const legacy = JSON.parse(JSON.stringify(structured));
   legacy.operations[0] = {
@@ -468,6 +474,56 @@ test('JSON schema accepts structured commands and rejects legacy command strings
     ]
   ];
   for (const [name, mutate] of invalidMutations) {
+    const invalid = JSON.parse(JSON.stringify(structured));
+    mutate(invalid);
+    assert.equal(validate(invalid), false, `schema accepted ${name}`);
+  }
+
+  const invalidV2Mutations = [
+    ['legacy plan version', (plan) => { plan.version = '0.1'; }],
+    ['date-only createdAt', (plan) => { plan.createdAt = '2024-01-01'; }],
+    ['lowercase timestamp delimiters', (plan) => { plan.createdAt = '2024-01-01t00:00:00z'; }],
+    ['leap-second timestamp', (plan) => { plan.createdAt = '2024-12-31T23:59:60Z'; }],
+    ['missing repository context', (plan) => { delete plan.context; }],
+    ['legacy canonicalizer', (plan) => { plan.integrity.canonicalizer = 'gatefile-v1'; }],
+    ['missing hash envelope version', (plan) => { delete plan.integrity.envelopeVersion; }],
+    [
+      'non-RFC3339 approvedAt',
+      (plan) => {
+        plan.approval = {
+          status: 'approved',
+          approvedBy: 'reviewer',
+          approvedAt: 'tomorrow',
+          approvedPlanHash: plan.integrity.planHash
+        };
+      }
+    ],
+    [
+      'create with forbidden before',
+      (plan) => {
+        plan.operations = [
+          { id: 'create', type: 'file', action: 'create', path: 'a', before: '', after: '' }
+        ];
+      }
+    ],
+    [
+      'update without reviewed before',
+      (plan) => {
+        plan.operations = [
+          { id: 'update', type: 'file', action: 'update', path: 'a', after: '' }
+        ];
+      }
+    ],
+    [
+      'delete with forbidden after',
+      (plan) => {
+        plan.operations = [
+          { id: 'delete', type: 'file', action: 'delete', path: 'a', before: '', after: '' }
+        ];
+      }
+    ]
+  ];
+  for (const [name, mutate] of invalidV2Mutations) {
     const invalid = JSON.parse(JSON.stringify(structured));
     mutate(invalid);
     assert.equal(validate(invalid), false, `schema accepted ${name}`);

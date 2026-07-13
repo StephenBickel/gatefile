@@ -1,14 +1,26 @@
 import { computePlanHash } from "./hash";
-import { GatefileConfig, PlanFile, VerifyPlanReport } from "./types";
+import { GatefileConfig, PLAN_VERSION, PlanFile, VerifyPlanReport } from "./types";
 import { verifyApprovalAttestation } from "./attestation";
 import { canonicalizePublicKeyPem, normalizeGatefileConfig } from "./config";
+import { scoreRisk } from "./risk";
+import { riskProfilesEqual, validatePlanFile } from "./validation";
+import { repositoryIdForRoot } from "./state";
 
 export interface VerifyPlanOptions {
   config?: GatefileConfig;
+  repositoryId?: string;
+  repoRoot?: string;
 }
 
 export function verifyPlan(plan: PlanFile, options: VerifyPlanOptions = {}): VerifyPlanReport {
   const config = normalizeGatefileConfig(options.config);
+  const planVersionSupported = (plan as unknown as { version?: unknown }).version === PLAN_VERSION;
+  if (planVersionSupported) validatePlanFile(plan);
+  const recomputedRisk = planVersionSupported ? scoreRisk(plan.operations) : plan.risk;
+  const riskMatchesRecomputed = planVersionSupported && riskProfilesEqual(plan.risk, recomputedRisk);
+  const runtimeRepositoryId = options.repositoryId ?? repositoryIdForRoot(options.repoRoot);
+  const repositoryContextMatches =
+    planVersionSupported && runtimeRepositoryId === plan.context.repositoryId;
   const currentPlanHash = computePlanHash(plan);
   const recordedPlanHash = plan.integrity?.planHash ?? null;
   const approvedPlanHash = plan.approval.approvedPlanHash ?? null;
@@ -72,6 +84,17 @@ export function verifyPlan(plan: PlanFile, options: VerifyPlanOptions = {}): Ver
   }
 
   const blockers: string[] = [];
+  if (!planVersionSupported) {
+    blockers.push(
+      `Legacy plan version ${String((plan as unknown as { version?: unknown }).version)} is inspectable but cannot be approved or applied; create and re-approve a v2 plan`
+    );
+  }
+  if (planVersionSupported && !riskMatchesRecomputed) {
+    blockers.push("Stored risk profile does not match risk recomputed from operations");
+  }
+  if (planVersionSupported && !repositoryContextMatches) {
+    blockers.push("Plan repository context does not match the runtime repository context");
+  }
   if (!integrityMetadataExists) {
     blockers.push("Missing integrity.planHash metadata");
   }
@@ -112,6 +135,9 @@ export function verifyPlan(plan: PlanFile, options: VerifyPlanOptions = {}): Ver
           : "untrusted";
 
   const readyToApplyFromIntegrityApproval =
+    planVersionSupported &&
+    riskMatchesRecomputed &&
+    repositoryContextMatches &&
     integrityMetadataExists &&
     recordedHashMatchesCurrent &&
     approvalBoundToCurrentHash &&
@@ -143,9 +169,12 @@ export function verifyPlan(plan: PlanFile, options: VerifyPlanOptions = {}): Ver
       approvedPlanHash
     },
     checks: {
+      planVersionSupported,
       integrityMetadataExists,
       recordedHashMatchesCurrent,
       approvalBoundToCurrentHash,
+      riskMatchesRecomputed,
+      repositoryContextMatches,
       approvalAttestationPresent,
       approvalAttestationValid,
       approvalAttestationKeyIdMatches,

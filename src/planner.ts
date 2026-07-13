@@ -1,36 +1,49 @@
 import { randomUUID } from "node:crypto";
-import { PlanFile } from "./types";
+import { PLAN_VERSION, PlanContext, PlanFile } from "./types";
 import { scoreRisk } from "./risk";
 import { computePlanHash, withComputedIntegrity } from "./hash";
 import { createApprovalAttestation } from "./attestation";
-import { validatePlanCommandContract } from "./command";
+import { riskProfilesEqual, validatePlanDraft, validatePlanFile } from "./validation";
+import { repositoryIdForRoot } from "./state";
 
 export type PlanDraft = Omit<
   PlanFile,
-  "id" | "createdAt" | "risk" | "approval" | "version" | "integrity"
+  | "id"
+  | "createdAt"
+  | "context"
+  | "risk"
+  | "approval"
+  | "version"
+  | "integrity"
+  | "preconditions"
 > & {
-  version?: string;
+  version?: typeof PLAN_VERSION;
+  preconditions?: PlanFile["preconditions"];
 };
+
+export interface CreatePlanOptions {
+  context?: PlanContext;
+  repoRoot?: string;
+}
 
 export interface ApprovePlanOptions {
   signingPrivateKeyPem?: string;
   signingKeyId?: string;
 }
 
-export function createPlanFromDraft(draft: PlanDraft): PlanFile {
-  if (!draft.operations || draft.operations.length === 0) {
-    throw new Error("Plan draft must include at least one operation");
-  }
-  validatePlanCommandContract(draft);
+export function createPlanFromDraft(draft: PlanDraft, options: CreatePlanOptions = {}): PlanFile {
+  validatePlanDraft(draft);
 
   const risk = scoreRisk(draft.operations);
+  const context = options.context ?? { repositoryId: repositoryIdForRoot(options.repoRoot) };
 
   const planWithoutIntegrity: Omit<PlanFile, "integrity"> = {
-    version: draft.version ?? "0.1",
+    version: PLAN_VERSION,
     id: `plan_${randomUUID()}`,
     createdAt: new Date().toISOString(),
     source: draft.source,
     summary: draft.summary,
+    context,
     ...(draft.dependsOn ? { dependsOn: draft.dependsOn } : {}),
     operations: draft.operations,
     preconditions: draft.preconditions ?? [],
@@ -44,7 +57,7 @@ export function createPlanFromDraft(draft: PlanDraft): PlanFile {
     planWithoutIntegrity.execution = draft.execution;
   }
 
-  return withComputedIntegrity(planWithoutIntegrity);
+  return validatePlanFile(withComputedIntegrity(planWithoutIntegrity));
 }
 
 export function approvePlan(
@@ -52,7 +65,11 @@ export function approvePlan(
   approvedBy: string,
   options: ApprovePlanOptions = {}
 ): PlanFile {
-  validatePlanCommandContract(plan);
+  validatePlanFile(plan);
+  const recomputedRisk = scoreRisk(plan.operations);
+  if (!riskProfilesEqual(plan.risk, recomputedRisk)) {
+    throw new Error("Cannot approve plan: stored risk does not match risk recomputed from operations");
+  }
   const currentHash = computePlanHash(plan);
   const shouldSign = Boolean(options.signingPrivateKeyPem);
   if (
@@ -77,7 +94,7 @@ export function approvePlan(
       )
     : undefined;
 
-  return withComputedIntegrity({
+  return validatePlanFile(withComputedIntegrity({
     ...plan,
     approval: {
       status: "approved",
@@ -86,5 +103,5 @@ export function approvePlan(
       approvedPlanHash: currentHash,
       ...(attestation ? { attestation } : {})
     }
-  });
+  }));
 }

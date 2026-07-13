@@ -1,5 +1,5 @@
 {
-  "version": "0.1",
+  "version": "2",
   "source": "ops-agent",
   "summary": "Rotate app config and validate health",
   "operations": [
@@ -8,6 +8,7 @@
       "type": "file",
       "action": "update",
       "path": "infra/app.env",
+      "before": "FEATURE_FLAG_X=false\nROTATION_EPOCH=2026-01-01\n",
       "after": "FEATURE_FLAG_X=true\nROTATION_EPOCH=2026-03-16\n"
     },
     {

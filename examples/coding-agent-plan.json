@@ -1,5 +1,5 @@
 {
-  "version": "0.1",
+  "version": "2",
   "source": "coding-agent",
   "summary": "Add risk scoring notes and run typecheck",
   "operations": [
@@ -8,6 +8,7 @@
       "type": "file",
       "action": "update",
       "path": "README.md",
+      "before": "# gatefile\n\n",
       "after": "# gatefile\n\nUpdated by coding agent plan example.\n"
     },
     {

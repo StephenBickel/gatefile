@@ -65,7 +65,7 @@ function makeApprovedFilePlan(root, options = {}) {
   };
 
   return {
-    plan: approvePlan(createPlanFromDraft(draft), 'ci-user'),
+    plan: approvePlan(createPlanFromDraft(draft, { repoRoot: root }), 'ci-user'),
     files: { updatePath, deletePath, createPath }
   };
 }
@@ -191,7 +191,7 @@ test('beforeApprove hook from gatefile.config.json can block approve-plan CLI', 
       preconditions: []
     };
 
-    const plan = createPlanFromDraft(draft);
+    const plan = createPlanFromDraft(draft, { repoRoot: root });
     fs.writeFileSync(planPath, JSON.stringify(plan, null, 2), 'utf8');
     fs.writeFileSync(
       configPath,

@@ -70,6 +70,33 @@ test('adaptAgentInputToDraft supports generic envelope input with agent source f
   assert.equal(draft.source, 'agent:builder');
   assert.equal(draft.operations.length, 1);
   assert.equal(draft.operations[0].type, 'file');
+  assert.equal('before' in draft.operations[0], false);
+  assert.equal(draft.operations[0].after, 'ok\n');
+});
+
+test('adapter emits action-specific create and delete fields without explicit undefined values', () => {
+  const draft = adaptAgentInputToDraft({
+    summary: 'Preserve discriminated file operation shapes',
+    fileChanges: [
+      { action: 'create', path: 'created.txt', after: '' },
+      { action: 'delete', path: 'deleted.txt', before: '' }
+    ]
+  });
+
+  assert.deepEqual(draft.operations[0], {
+    id: 'op_file_1',
+    type: 'file',
+    action: 'create',
+    path: 'created.txt',
+    after: ''
+  });
+  assert.deepEqual(draft.operations[1], {
+    id: 'op_file_2',
+    type: 'file',
+    action: 'delete',
+    path: 'deleted.txt',
+    before: ''
+  });
 });
 
 test('adapt-agent CLI produces a draft that create-plan and verify-plan accept', (t) => {

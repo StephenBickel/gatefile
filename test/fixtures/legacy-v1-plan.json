@@ -1,0 +1,28 @@
+{
+  "version": "0.1",
+  "id": "plan_legacy-v1-fixture",
+  "createdAt": "2025-01-02T03:04:05.000Z",
+  "source": "legacy-agent",
+  "summary": "Inspect a real pre-v2 command artifact",
+  "operations": [
+    {
+      "id": "legacy-command",
+      "type": "command",
+      "command": "node --version"
+    }
+  ],
+  "preconditions": [],
+  "risk": {
+    "score": 1,
+    "level": "low",
+    "reasons": ["Command execution requested"]
+  },
+  "integrity": {
+    "algorithm": "sha256",
+    "canonicalizer": "gatefile-v1",
+    "planHash": "9c4bc764f5bf03563dfdecf4faf6a7da9a4670a0f98360bf8afa36d2cb661d4d"
+  },
+  "approval": {
+    "status": "pending"
+  }
+}
