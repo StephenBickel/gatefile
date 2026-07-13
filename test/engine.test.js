@@ -71,6 +71,29 @@ test('GatefileEngine pins repository context and enforces its signer policy', (t
   );
 });
 
+test('GatefileEngine context binding cannot be replaced to redirect authority', (t) => {
+  const { repoRoot, otherRepoRoot, stateHome } = makeFixture(t, 'gatefile-engine-context-binding-');
+  const engine = new GatefileEngine({
+    repoRoot,
+    repositoryId: 'repo:engine-test',
+    stateHome
+  });
+  const originalContext = engine.context;
+
+  try {
+    engine.context = {
+      repoRoot: fs.realpathSync(otherRepoRoot),
+      repositoryId: 'repo:redirected-engine',
+      stateHome: path.join(path.dirname(stateHome), 'redirected-state')
+    };
+  } catch {
+    // Strict-mode assignment to a non-writable binding may throw.
+  }
+
+  assert.equal(engine.context, originalContext);
+  assert.equal(engine.createPlan(makeDraft('Preserve authority')).context.repositoryId, 'repo:engine-test');
+});
+
 test('GatefileEngine reloads the default repository config for each operation', (t) => {
   const { repoRoot, stateHome } = makeFixture(t, 'gatefile-engine-config-reload-');
   const engine = new GatefileEngine({

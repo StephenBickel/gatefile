@@ -60,6 +60,7 @@ export class GatefileEngine {
       repositoryId: options.repositoryId ?? repositoryIdForRoot(repoRoot),
       stateHome: resolveStateHome(options.stateHome)
     });
+    Object.defineProperty(this, "context", { writable: false, configurable: false });
     this.explicitConfig = options.config === undefined
       ? undefined
       : normalizeGatefileConfig(options.config);
