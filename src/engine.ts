@@ -37,9 +37,9 @@ export interface GatefileEngineOptions {
 }
 
 export interface GatefileEngineContext {
-  repoRoot: string;
-  repositoryId: string;
-  stateHome: string;
+  readonly repoRoot: string;
+  readonly repositoryId: string;
+  readonly stateHome: string;
 }
 
 export interface EnginePlanOptions {
@@ -50,9 +50,29 @@ export interface EngineApproveOptions extends ApprovePlanOptions {
   planPath?: string;
 }
 
+interface GatefileEnginePrivateState {
+  readonly explicitConfig: GatefileConfig | undefined;
+}
+
+const enginePrivateState = new WeakMap<object, GatefileEnginePrivateState>();
+
+function privateStateFor(engine: GatefileEngine): GatefileEnginePrivateState {
+  const state = enginePrivateState.get(engine);
+  if (state === undefined) {
+    throw new TypeError("GatefileEngine method called with an invalid receiver");
+  }
+  return state;
+}
+
+function policyConfigFor(engine: GatefileEngine): GatefileConfig {
+  const state = privateStateFor(engine);
+  return state.explicitConfig === undefined
+    ? loadGatefileConfig(engine.context.repoRoot)
+    : normalizeGatefileConfig(state.explicitConfig);
+}
+
 export class GatefileEngine {
   readonly context: GatefileEngineContext;
-  readonly #explicitConfig?: GatefileConfig;
 
   constructor(options: GatefileEngineOptions = {}) {
     const repoRoot = getRepoRoot(options.repoRoot);
@@ -62,19 +82,15 @@ export class GatefileEngine {
       stateHome: resolveStateHome(options.stateHome)
     });
     Object.defineProperty(this, "context", { writable: false, configurable: false });
-    this.#explicitConfig = options.config === undefined
-      ? undefined
-      : normalizeGatefileConfig(options.config);
-  }
-
-  private policyConfig(): GatefileConfig {
-    return this.#explicitConfig === undefined
-      ? loadGatefileConfig(this.context.repoRoot)
-      : normalizeGatefileConfig(this.#explicitConfig);
+    enginePrivateState.set(this, Object.freeze({
+      explicitConfig: options.config === undefined
+        ? undefined
+        : normalizeGatefileConfig(options.config)
+    }));
   }
 
   createPlan(draft: PlanDraft): PlanFile {
-    this.policyConfig();
+    policyConfigFor(this);
     return createPlanFromDraft(draft, {
       context: { repositoryId: this.context.repositoryId },
       repoRoot: this.context.repoRoot
@@ -82,7 +98,7 @@ export class GatefileEngine {
   }
 
   inspectPlan(plan: PlanFile): InspectReport {
-    const config = this.policyConfig();
+    const config = policyConfigFor(this);
     return buildInspectReport(plan, {
       repoRoot: this.context.repoRoot,
       repositoryId: this.context.repositoryId,
@@ -92,7 +108,7 @@ export class GatefileEngine {
   }
 
   formatInspectPlan(plan: PlanFile, report: InspectReport): string {
-    const config = this.policyConfig();
+    const config = policyConfigFor(this);
     return formatInspectSummary(plan, report, {
       repoRoot: this.context.repoRoot,
       repositoryId: this.context.repositoryId,
@@ -112,7 +128,7 @@ export class GatefileEngine {
       );
     }
 
-    const config = this.policyConfig();
+    const config = policyConfigFor(this);
     runPolicyHook(config, "beforeApprove", plan, {
       repoRoot: this.context.repoRoot,
       planPath: options.planPath
@@ -122,7 +138,7 @@ export class GatefileEngine {
   }
 
   verifyPlan(plan: PlanFile): VerifyPlanReport {
-    const config = this.policyConfig();
+    const config = policyConfigFor(this);
     return verifyPlanKernel(plan, {
       repoRoot: this.context.repoRoot,
       repositoryId: this.context.repositoryId,
@@ -131,7 +147,7 @@ export class GatefileEngine {
   }
 
   previewPlan(plan: PlanFile, options: EnginePlanOptions = {}): DryRunReport {
-    const config = this.policyConfig();
+    const config = policyConfigFor(this);
     return previewPlanKernel(plan, {
       repoRoot: this.context.repoRoot,
       repositoryId: this.context.repositoryId,
@@ -142,7 +158,7 @@ export class GatefileEngine {
   }
 
   applyPlan(plan: PlanFile, options: EnginePlanOptions = {}): ApplyReport {
-    const config = this.policyConfig();
+    const config = policyConfigFor(this);
     return applyPlanKernel(plan, {
       repoRoot: this.context.repoRoot,
       repositoryId: this.context.repositoryId,
@@ -153,12 +169,11 @@ export class GatefileEngine {
   }
 
   rollbackApply(receiptId: string): RollbackReport {
-    const config = this.policyConfig();
+    privateStateFor(this);
     return rollbackApplyKernel(receiptId, {
       repoRoot: this.context.repoRoot,
       repositoryId: this.context.repositoryId,
-      stateHome: this.context.stateHome,
-      config
+      stateHome: this.context.stateHome
     });
   }
 }

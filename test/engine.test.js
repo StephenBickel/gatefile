@@ -159,6 +159,42 @@ test('GatefileEngine keeps explicit policy in runtime-private pinned state', (t)
   assert.equal(report.status, 'not-ready');
 });
 
+test('GatefileEngine policy resolution cannot be shadowed through JavaScript properties', (t) => {
+  const { repoRoot, stateHome } = makeFixture(t, 'gatefile-engine-private-resolver-');
+  const engine = new GatefileEngine({
+    repoRoot,
+    repositoryId: 'repo:private-resolver-test',
+    stateHome,
+    config: { signers: { trustedKeyIds: ['trusted-key'] } }
+  });
+  const unsignedPlan = engine.approvePlan(
+    engine.createPlan(makeDraft('Preserve private policy resolution')),
+    'reviewer'
+  );
+  const originalPrototypeDescriptor = Object.getOwnPropertyDescriptor(
+    GatefileEngine.prototype,
+    'policyConfig'
+  );
+  t.after(() => {
+    if (originalPrototypeDescriptor === undefined) {
+      delete GatefileEngine.prototype.policyConfig;
+    } else {
+      Object.defineProperty(
+        GatefileEngine.prototype,
+        'policyConfig',
+        originalPrototypeDescriptor
+      );
+    }
+  });
+
+  engine.policyConfig = () => ({});
+  GatefileEngine.prototype.policyConfig = () => ({});
+
+  const report = engine.verifyPlan(unsignedPlan);
+  assert.equal(report.signerTrust.policyConfigured, true);
+  assert.equal(report.status, 'not-ready');
+});
+
 test('GatefileEngine validates approval input before running policy hooks', (t) => {
   const { repoRoot, stateHome } = makeFixture(t, 'gatefile-engine-approval-order-');
   const markerPath = path.join(repoRoot, 'malformed-hook-ran');
@@ -282,4 +318,26 @@ test('GatefileEngine reloads the default repository config for each operation', 
   const afterPolicy = engine.verifyPlan(unsignedPlan);
   assert.equal(afterPolicy.signerTrust.policyConfigured, true);
   assert.equal(afterPolicy.status, 'not-ready');
+});
+
+test('GatefileEngine rollback remains available when repository config becomes invalid', (t) => {
+  const { repoRoot, stateHome } = makeFixture(t, 'gatefile-engine-rollback-config-');
+  const engine = new GatefileEngine({
+    repoRoot,
+    repositoryId: 'repo:rollback-config-test',
+    stateHome
+  });
+  const approvedPlan = engine.approvePlan(
+    engine.createPlan(makeDraft('Recover despite broken config')),
+    'reviewer'
+  );
+  const applied = engine.applyPlan(approvedPlan);
+  assert.equal(applied.success, true);
+  assert.equal(fs.existsSync(path.join(repoRoot, 'engine-output.txt')), true);
+
+  fs.writeFileSync(path.join(repoRoot, 'gatefile.config.json'), '{', 'utf8');
+
+  const rolledBack = engine.rollbackApply(applied.receipt.id);
+  assert.equal(rolledBack.success, true);
+  assert.equal(fs.existsSync(path.join(repoRoot, 'engine-output.txt')), false);
 });

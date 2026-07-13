@@ -27,6 +27,24 @@ const PURE_VALUE_IMPORTS = new Map([
   ['./inspect', new Set(['formatInspectSummary'])]
 ]);
 
+function kernelModuleFor(file, moduleName) {
+  if (!moduleName.startsWith('.')) return undefined;
+  const withoutRuntimeExtension = moduleName.replace(/\.(?:[cm]?js|[cm]?ts)$/, '');
+  const normalizedDirect = path.posix.normalize(withoutRuntimeExtension);
+  const directCandidate = normalizedDirect.startsWith('.')
+    ? normalizedDirect
+    : `./${normalizedDirect}`;
+  if (KERNEL_MODULES.has(directCandidate)) return directCandidate;
+
+  const resolvedCandidate = path.posix.normalize(
+    path.posix.join(path.posix.dirname(file), withoutRuntimeExtension)
+  );
+  for (const kernelModule of KERNEL_MODULES) {
+    if (resolvedCandidate === `src/${kernelModule.slice(2)}`) return kernelModule;
+  }
+  return undefined;
+}
+
 function stripComments(source) {
   const scanner = ts.createScanner(
     ts.ScriptTarget.Latest,
@@ -73,7 +91,8 @@ function boundaryViolations(file, source) {
     }
 
     const moduleName = statement.moduleSpecifier.text;
-    if (!KERNEL_MODULES.has(moduleName)) continue;
+    const kernelModule = kernelModuleFor(file, moduleName);
+    if (kernelModule === undefined) continue;
 
     const clause = statement.importClause;
     if (!clause || clause.isTypeOnly) continue;
@@ -93,7 +112,7 @@ function boundaryViolations(file, source) {
     for (const element of bindings.elements) {
       if (element.isTypeOnly) continue;
       const importedName = (element.propertyName ?? element.name).text;
-      if (PURE_VALUE_IMPORTS.get(moduleName)?.has(importedName)) continue;
+      if (PURE_VALUE_IMPORTS.get(kernelModule)?.has(importedName)) continue;
       violations.push(`${file}: value import ${importedName} from ${moduleName}`);
     }
   }
@@ -102,7 +121,11 @@ function boundaryViolations(file, source) {
     if (ts.isCallExpression(node)) {
       const callee = node.expression;
       const [specifier] = node.arguments;
-      if (specifier && ts.isStringLiteral(specifier) && KERNEL_MODULES.has(specifier.text)) {
+      if (
+        specifier &&
+        ts.isStringLiteral(specifier) &&
+        kernelModuleFor(file, specifier.text) !== undefined
+      ) {
         if (ts.isIdentifier(callee) && callee.text === 'require') {
           violations.push(`${file}: CommonJS load from ${specifier.text}`);
         }
@@ -168,5 +191,19 @@ test('boundary reports CommonJS and dynamic lifecycle-kernel loads', () => {
     'fixture.ts: CommonJS load from ./verify',
     'fixture.ts: CommonJS load from ./applier',
     'fixture.ts: dynamic import from ./planner'
+  ]);
+});
+
+test('boundary rejects explicit JavaScript kernel paths with aliased lifecycle symbols', () => {
+  const source = `
+    import { applyPlan as rawApply } from "./applier.js";
+    const { verifyPlan: rawVerify } = require("./verify.js");
+    rawApply(plan);
+    rawVerify(plan);
+  `;
+
+  assert.deepEqual(boundaryViolations('src/fixture.ts', source), [
+    'src/fixture.ts: value import applyPlan from ./applier.js',
+    'src/fixture.ts: CommonJS load from ./verify.js'
   ]);
 });

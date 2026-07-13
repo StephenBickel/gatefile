@@ -70,6 +70,8 @@ const engine = new GatefileEngine({
   stateHome: '/consumer/state',
   config: {}
 });
+// @ts-expect-error GatefileEngineContext is an immutable authority snapshot.
+engine.context.repoRoot = '/redirected';
 const pending = engine.createPlan({
   source: 'packed-types',
   summary: 'Compile the public engine lifecycle',
