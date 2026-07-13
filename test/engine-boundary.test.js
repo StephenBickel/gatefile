@@ -45,15 +45,27 @@ function kernelModuleFor(file, moduleName) {
   return undefined;
 }
 
+function unwrapExpression(node) {
+  let current = node;
+  while (
+    ts.isParenthesizedExpression(current) ||
+    ts.isAsExpression(current) ||
+    ts.isTypeAssertionExpression(current) ||
+    ts.isSatisfiesExpression(current) ||
+    ts.isNonNullExpression(current)
+  ) {
+    current = current.expression;
+  }
+  return current;
+}
+
 function staticStringValue(node, bindings = new Map()) {
+  node = unwrapExpression(node);
   if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
     return node.text;
   }
   if (ts.isIdentifier(node)) {
     return bindings.get(node.text);
-  }
-  if (ts.isParenthesizedExpression(node)) {
-    return staticStringValue(node.expression, bindings);
   }
   if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
     const left = staticStringValue(node.left, bindings);
@@ -119,9 +131,10 @@ function boundaryViolations(file, source) {
           staticStrings.set(node.name.text, value);
           bindingsChanged = true;
         }
+        const initializer = unwrapExpression(node.initializer);
         if (
-          ts.isIdentifier(node.initializer) &&
-          requireAliases.has(node.initializer.text) &&
+          ts.isIdentifier(initializer) &&
+          requireAliases.has(initializer.text) &&
           !requireAliases.has(node.name.text)
         ) {
           requireAliases.add(node.name.text);
@@ -134,6 +147,46 @@ function boundaryViolations(file, source) {
   } while (bindingsChanged);
 
   for (const statement of parsed.statements) {
+    if (
+      ts.isImportEqualsDeclaration(statement) &&
+      !statement.isTypeOnly &&
+      ts.isExternalModuleReference(statement.moduleReference) &&
+      statement.moduleReference.expression !== undefined
+    ) {
+      const moduleName = staticStringValue(
+        statement.moduleReference.expression,
+        staticStrings
+      );
+      if (moduleName !== undefined && kernelModuleFor(file, moduleName) !== undefined) {
+        violations.push(`${file}: import-equals load from ${moduleName}`);
+      }
+      continue;
+    }
+
+    if (
+      ts.isExportDeclaration(statement) &&
+      statement.moduleSpecifier !== undefined &&
+      ts.isStringLiteral(statement.moduleSpecifier)
+    ) {
+      const moduleName = statement.moduleSpecifier.text;
+      const kernelModule = kernelModuleFor(file, moduleName);
+      if (kernelModule === undefined || statement.isTypeOnly) continue;
+      const clause = statement.exportClause;
+      if (clause === undefined) {
+        violations.push(`${file}: value star re-export from ${moduleName}`);
+      } else if (ts.isNamespaceExport(clause)) {
+        violations.push(`${file}: value namespace re-export from ${moduleName}`);
+      } else {
+        for (const element of clause.elements) {
+          if (element.isTypeOnly) continue;
+          const importedName = (element.propertyName ?? element.name).text;
+          if (PURE_VALUE_IMPORTS.get(kernelModule)?.has(importedName)) continue;
+          violations.push(`${file}: value re-export ${importedName} from ${moduleName}`);
+        }
+      }
+      continue;
+    }
+
     if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) {
       continue;
     }
@@ -167,7 +220,7 @@ function boundaryViolations(file, source) {
 
   function visit(node) {
     if (ts.isCallExpression(node)) {
-      const callee = node.expression;
+      const callee = unwrapExpression(node.expression);
       const [specifier] = node.arguments;
       const moduleName = specifier === undefined
         ? undefined
@@ -288,5 +341,20 @@ test('boundary follows static module and CommonJS loader aliases', () => {
     'src/fixture.ts: CommonJS load from ./applier',
     'src/fixture.ts: CommonJS load from ./verify',
     'src/fixture.ts: dynamic import from ./planner'
+  ]);
+});
+
+test('boundary rejects TypeScript import-equals, assertions, and kernel re-exports', () => {
+  const source = `
+    import raw = require("./applier.js");
+    raw.applyPlan(plan);
+    const verifier = require("./verify" as string);
+    export { approvePlan as rawApprove } from "./planner.js";
+  `;
+
+  assert.deepEqual(boundaryViolations('src/fixture.ts', source), [
+    'src/fixture.ts: import-equals load from ./applier.js',
+    'src/fixture.ts: value re-export approvePlan from ./planner.js',
+    'src/fixture.ts: CommonJS load from ./verify'
   ]);
 });
