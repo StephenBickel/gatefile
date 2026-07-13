@@ -1,6 +1,21 @@
 # Coding Agent Demo: Verify, Approve, Detect Tampering
 
-This demo shows a realistic handoff between an autonomous coding agent and a human reviewer.
+This demo shows a realistic handoff between an autonomous coding agent and a
+human reviewer using only the public CLI and the example shipped in the npm
+package.
+
+Confirm that npm's `next` tag resolves to `0.3.0-alpha.0`, then install it
+locally:
+
+```bash
+npm view gatefile@next version
+npm install --save-dev gatefile@0.3.0-alpha.0
+mkdir -p .plan
+cp node_modules/gatefile/examples/coding-agent-plan.json .plan/coding-agent-plan.json
+```
+
+If the registry does not return that exact version, use a source checkout and
+copy `examples/coding-agent-plan.json` to `.plan/coding-agent-plan.json` instead.
 
 ## Scenario
 
@@ -14,22 +29,22 @@ This demo shows a realistic handoff between an autonomous coding agent and a hum
 
 ```bash
 # Agent phase: create a concrete plan artifact
-npm run cli -- create-plan --from examples/coding-agent-plan.json --out .plan/agent-demo.json
+npx --no-install gatefile create-plan --from .plan/coding-agent-plan.json --out .plan/agent-demo.json
 
 # Review phase: inspect readable details
-npm run cli -- inspect-plan .plan/agent-demo.json
+npx --no-install gatefile inspect-plan .plan/agent-demo.json
 
 # Optional CI/policy inspect output
-npm run cli -- inspect-plan .plan/agent-demo.json --json
+npx --no-install gatefile inspect-plan .plan/agent-demo.json --json
 
 # Verify phase before approval (expected: status "not-ready")
-npm run cli -- verify-plan .plan/agent-demo.json
+npx --no-install gatefile verify-plan .plan/agent-demo.json
 
 # Approval phase
-npm run cli -- approve-plan .plan/agent-demo.json --by steve
+npx --no-install gatefile approve-plan .plan/agent-demo.json --by steve
 
 # Verify phase after approval (expected: status "ready")
-npm run cli -- verify-plan .plan/agent-demo.json
+npx --no-install gatefile verify-plan .plan/agent-demo.json
 ```
 
 ## Tampering Check
@@ -39,10 +54,10 @@ npm run cli -- verify-plan .plan/agent-demo.json
 node -e 'const fs=require("fs");const p=".plan/agent-demo.json";const j=JSON.parse(fs.readFileSync(p,"utf8"));j.summary="tampered after approval";fs.writeFileSync(p,JSON.stringify(j,null,2)+"\n");'
 
 # Verify now reports not-ready with hash/approval mismatch blockers
-npm run cli -- verify-plan .plan/agent-demo.json
+npx --no-install gatefile verify-plan .plan/agent-demo.json
 
 # Apply also fails for the same reason
-npm run cli -- apply-plan .plan/agent-demo.json --yes
+npx --no-install gatefile apply-plan .plan/agent-demo.json --yes
 ```
 
 ## What `verify-plan` Guarantees
@@ -50,6 +65,11 @@ npm run cli -- apply-plan .plan/agent-demo.json --yes
 - Integrity metadata exists
 - Recorded hash matches current normalized plan content
 - Approval is bound to the current hash
-- A single boolean (`readyToApplyFromIntegrityApproval`) for "safe to apply right now" from integrity/approval checks
+- A single boolean (`readyToApplyFromIntegrityApproval`) for integrity/approval
+  readiness. It is not the final runtime apply decision: dependencies, operation
+  policy, filesystem state, and runtime preconditions are checked separately.
 
-MVP note: this is deterministic local hashing and hash-bound approval, not remote signing or identity attestation.
+This particular walkthrough uses an unsigned local approval. Gatefile can also
+attach an Ed25519 attestation. That signature proves possession of the signing
+key; the repository trust policy, not the signature alone, maps the public key
+to an operator-defined person or role.

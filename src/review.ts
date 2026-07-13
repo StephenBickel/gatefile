@@ -1,9 +1,12 @@
-import { readFileSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { GatefileEngine } from "./engine";
 import { scoreRisk } from "./risk";
 import { formatCommandInvocation, validatePlanCommandContract } from "./command";
 import type { CommandOperation, FileOperation, PlanFile } from "./types";
+import {
+  readJsonArtifact,
+  writeJsonArtifactAtomic
+} from "./artifact-io";
+import type { ArtifactRevision } from "./artifact-io";
 
 // ── ANSI helpers ──────────────────────────────────────────────────────
 
@@ -146,6 +149,7 @@ function buildSections(plan: PlanFile): Section[] {
 interface TUIState {
   plan: PlanFile;
   planPath: string;
+  planRevision: ArtifactRevision;
   sections: Section[];
   allLines: string[];         // flattened renderable lines
   sectionOffsets: number[];   // line index where each section starts
@@ -303,8 +307,9 @@ export async function reviewPlan(
   planPath: string,
   options: ReviewPlanOptions = {}
 ): Promise<void> {
-  const fullPath = resolve(planPath);
-  const plan: PlanFile = JSON.parse(readFileSync(fullPath, "utf-8"));
+  const planRead = readJsonArtifact<PlanFile>(planPath, { label: "Review plan" });
+  const fullPath = planRead.absolutePath;
+  const plan = planRead.value;
   validatePlanCommandContract(plan);
   const engine = options.engine ?? new GatefileEngine();
 
@@ -325,6 +330,7 @@ export async function reviewPlan(
   const state: TUIState = {
     plan,
     planPath: fullPath,
+    planRevision: planRead.revision,
     sections,
     allLines: [],
     sectionOffsets: [],
@@ -417,7 +423,10 @@ export async function reviewPlan(
           const approved = engine.approvePlan(state.plan, process.env.USER ?? "reviewer", {
             planPath: state.planPath
           });
-          writeFileSync(state.planPath, JSON.stringify(approved, null, 2) + "\n", "utf-8");
+          writeJsonArtifactAtomic(state.planPath, approved, {
+            expectedRevision: state.planRevision,
+            label: "Review plan"
+          });
           const hash = approved.approval.approvedPlanHash;
           console.log(`${GREEN}${BOLD}Plan approved.${RESET}`);
           console.log(`Approved by: ${approved.approval.approvedBy}`);

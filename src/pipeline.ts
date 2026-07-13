@@ -1,8 +1,9 @@
-import { lstatSync, readFileSync, readdirSync } from "node:fs";
+import { readdirSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { PLAN_VERSION, type ApplyReport, type DryRunReport, type PlanFile } from "./types";
 import { GatefileEngine, type GatefileEngineOptions } from "./engine";
 import { validatePlanFile } from "./validation";
+import { readUtf8Artifact } from "./artifact-io";
 
 // ── Types ─────────────────────────────────────────────────────
 
@@ -85,19 +86,23 @@ function readPlanEntries(dir: string): { entries: PlanEntry[]; inputErrors: Pipe
 
   for (const file of files) {
     const fullPath = join(absDir, file);
-    const stat = lstatSync(fullPath);
-    if (!stat.isFile()) {
+    let contents: string;
+    try {
+      contents = readUtf8Artifact(fullPath, {
+        label: `Pipeline JSON entry ${file}`
+      }).contents;
+    } catch (error) {
       inputErrors.push({
         file,
         code: "unsafe-entry",
-        message: `Pipeline JSON entry must be a regular file, not a symlink or special file: ${file}`
+        message: (error as Error).message
       });
       continue;
     }
 
     let raw: unknown;
     try {
-      raw = JSON.parse(readFileSync(fullPath, "utf-8")) as unknown;
+      raw = JSON.parse(contents) as unknown;
     } catch (error) {
       inputErrors.push({
         file,

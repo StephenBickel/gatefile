@@ -118,12 +118,13 @@ function fireWebhook(url: string, payload: string): Promise<void> {
       );
 
       req.on("error", (err) => {
-        console.warn(`[gatefile hooks] webhook error for ${url}: ${err.message}`);
+        const reason = (err as NodeJS.ErrnoException).code ?? err.name;
+        console.warn(`[gatefile hooks] webhook error for configured endpoint (${reason})`);
         resolvePromise();
       });
 
       req.on("timeout", () => {
-        console.warn(`[gatefile hooks] webhook timeout for ${url}`);
+        console.warn("[gatefile hooks] webhook timeout for configured endpoint");
         req.destroy();
         resolvePromise();
       });
@@ -131,7 +132,8 @@ function fireWebhook(url: string, payload: string): Promise<void> {
       req.write(payload);
       req.end();
     } catch (err) {
-      console.warn(`[gatefile hooks] webhook error: ${(err as Error).message}`);
+      const reason = (err as NodeJS.ErrnoException).code ?? (err as Error).name;
+      console.warn(`[gatefile hooks] webhook error for configured endpoint (${reason})`);
       resolvePromise();
     }
   });

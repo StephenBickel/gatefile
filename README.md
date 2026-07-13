@@ -7,17 +7,17 @@
 
 **Status: Experimental alpha — not production-ready.** Gatefile is under stabilization; interfaces, file formats, and security behavior may change before a stable release. Evaluate it in controlled environments, and do not rely on it as the sole security boundary for production agent execution.
 
-![gatefile demo](demo.gif)
+![gatefile demo](https://raw.githubusercontent.com/StephenBickel/gatefile/bc8177d0bd9f0e3e28bdab3dbf4a3bbc31db3ee8/demo.gif)
 
 Your AI agent wants to edit 14 files and run 3 commands. Do you trust it?
 
 `gatefile` makes agent side effects explicit, reviewable, and approvable — before anything executes.
 
 ```bash
-npx gatefile review .plan/plan.json          # interactive TUI: inspect, approve, or reject
-npx gatefile inspect-plan .plan/plan.json    # see exactly what the agent wants to do
-npx gatefile approve-plan .plan/plan.json    # approve the hash-locked plan
-npx gatefile apply-plan .plan/plan.json --yes # execute with safety guardrails
+npx --no-install gatefile review .plan/plan.json           # interactive TUI
+npx --no-install gatefile inspect-plan .plan/plan.json     # inspect intent
+npx --no-install gatefile approve-plan .plan/plan.json     # approve exact hash
+npx --no-install gatefile apply-plan .plan/plan.json --yes # guarded execution
 ```
 
 ## Why
@@ -43,7 +43,7 @@ Agent emits plan → Human reviews → Approve hash → Apply with guardrails �
 
 **DevOps teams building AI-powered CI/CD.** When an agent is part of your pipeline — auto-fix, auto-refactor, auto-migrate — you need a machine-readable checkpoint between "agent proposed this" and "this actually ran." Gatefile is that checkpoint, with a GitHub Action ready to drop into any workflow.
 
-**Regulated industries.** Finance, healthcare, government — anywhere an auditor asks "who authorized this change?" Gatefile's signed attestations give you cryptographic proof of who approved what, when, bound to the exact plan hash.
+**Regulated industries.** Finance, healthcare, government — anywhere an auditor asks "which trusted credential authorized this change?" Gatefile's signed attestations prove that the private key corresponding to a configured trusted public key signed an approval bound to the exact plan hash. Mapping that key to a person or organizational role remains an operator responsibility.
 
 **Not for you if:** you're a solo developer comfortable with Claude Code or Codex full-auto on low-stakes code. If the blast radius is small and reversible, you don't need governance — just `git revert`.
 
@@ -54,7 +54,7 @@ Agent emits plan → Human reviews → Approve hash → Apply with guardrails �
 | **Scope** | Interactive session approval | Code diffs only | File edits + structured commands + preconditions |
 | **Durability** | Disappears with the session | Commit history | Persistent plan artifact on disk |
 | **Tamper detection** | None | Git hash (post-merge) | Hash-locked before execution |
-| **Identity proof** | None | GitHub commit signing | Ed25519 signed attestation |
+| **Credential proof** | None | GitHub commit signing | Ed25519 proof of signing-key possession |
 | **Audit trail** | Terminal scrollback | PR comments | Structured receipts + snapshots |
 | **CI integration** | Manual | Native | Native (GitHub Action included) |
 | **Agent-agnostic** | Tied to one agent | N/A | Any agent, any framework |
@@ -63,68 +63,96 @@ Claude Code asks "can I run this?" and you click yes. Gatefile makes the "yes" a
 
 ## Quick Start
 
+This source tree targets `0.3.0-alpha.0`, distributed through npm's `next`
+prerelease channel. Confirm registry availability before choosing an install
+path:
+
 ```bash
-npm install gatefile
+npm view gatefile@next version
 ```
 
-### See It Work (30 seconds)
+Do not use an unversioned install or `npx gatefile` when evaluating the hardened
+0.3 contract; the unversioned `latest` channel has a separate stability policy.
+
+### Source Checkout
+
+Use a source checkout:
 
 ```bash
 git clone https://github.com/StephenBickel/gatefile.git
-cd gatefile && npm install
+cd gatefile
+npm ci
 npm run demo:e2e
 ```
 
-The demo runs the full flow: create → inspect → verify → approve → dry-run → denied unsafe path → safe apply → PR gate.
+### Published Prerelease
+
+If the registry check returns `0.3.0-alpha.0`, install it locally and use
+`--no-install` so `npx` cannot silently download another version:
+
+```bash
+npm install --save-dev gatefile@0.3.0-alpha.0
+npx --no-install gatefile lint-config
+```
+
+The source demo runs the full flow: create → inspect → verify → approve →
+dry-run → denied unsafe path → safe apply → PR gate.
 
 ### Basic Flow
 
 ```bash
-# 1. Agent creates a plan declaring its intended side effects
-gatefile create-plan --from examples/coding-agent-plan.json --out .plan/plan.json
+# 1. Copy a reviewed example shipped in the npm package
+mkdir -p .plan/public-launch-demo/workspace
+GATEFILE_EXAMPLES=node_modules/gatefile/examples
+test -d "$GATEFILE_EXAMPLES" || GATEFILE_EXAMPLES=examples
+cp "$GATEFILE_EXAMPLES/public-launch-safe-draft.json" .plan/draft.json
+
+# 2. Create a plan declaring its intended side effects
+npx --no-install gatefile create-plan --from .plan/draft.json --out .plan/plan.json
 
 # Interactive review (TUI with diff preview, approve/reject)
-gatefile review .plan/plan.json
+npx --no-install gatefile review .plan/plan.json
 
 # Non-interactive inspection
-gatefile inspect-plan .plan/plan.json
+npx --no-install gatefile inspect-plan .plan/plan.json
 
 # 3. Machine-readable for CI
-gatefile inspect-plan .plan/plan.json --json
+npx --no-install gatefile inspect-plan .plan/plan.json --json
 
 # 4. Check integrity
-gatefile verify-plan .plan/plan.json
+npx --no-install gatefile verify-plan .plan/plan.json
 
 # 5. Preview without executing
-gatefile apply-plan .plan/plan.json --dry-run
+npx --no-install gatefile apply-plan .plan/plan.json --dry-run
 
 # 6. Approve — binds to exact plan hash
-gatefile approve-plan .plan/plan.json --by steve
+npx --no-install gatefile approve-plan .plan/plan.json --by steve
 
 # 7. Execute with guardrails
-gatefile apply-plan .plan/plan.json --yes
+npx --no-install gatefile apply-plan .plan/plan.json --yes
 
 # 8. Roll back file operations if needed
-gatefile rollback-apply <receipt-id> --yes
+npx --no-install gatefile rollback-apply <receipt-id> --yes
 ```
 
 ### With Signed Approvals
 
-For environments that need cryptographic proof of who approved:
+For environments that need proof that a trusted signing key authorized the
+exact plan hash:
 
 ```bash
 # Generate a signing key
 install -d -m 700 "$HOME/.config/gatefile"
-gatefile generate-attestation-key \
+npx --no-install gatefile generate-attestation-key \
   --out-private "$HOME/.config/gatefile/approval-key.pem" \
   --out-public .gatefile/approval-key.pub.pem
 
 # Approve with signature
-gatefile approve-plan .plan/plan.json --by steve \
+npx --no-install gatefile approve-plan .plan/plan.json --by steve \
   --signing-key "$HOME/.config/gatefile/approval-key.pem"
 
 # Validate config + trust policy
-gatefile lint-config
+npx --no-install gatefile lint-config
 ```
 
 ## Real-World Use Cases
@@ -143,15 +171,18 @@ An agent opens PRs autonomously. Your CI pipeline runs `gatefile verify-plan` as
 
 ### 4. Compliance Audit Trail
 
-Post-incident, the security team needs to prove what was authorized. Gatefile's plan and signed approval prove authorization of the exact plan hash; its authenticated apply receipt and pre-apply snapshot make local execution state tampering evident while Gatefile's owner-controlled state key remains trusted.
+Post-incident, the security team needs to reconstruct what was authorized. Gatefile's plan and signed approval prove that a configured key signed the exact plan hash; the operator's trust policy supplies the key-to-role mapping. Its authenticated apply receipt and pre-apply snapshot make local execution state tampering evident while Gatefile's owner-controlled state key remains trusted.
 
 ### Agent Adapter
 
 When an external agent emits proposal-style JSON instead of Gatefile's native format:
 
 ```bash
-gatefile adapt-agent --from examples/agent-adapter-input.json --out .plan/adapter-draft.json
-gatefile create-plan --from .plan/adapter-draft.json --out .plan/plan.json
+GATEFILE_EXAMPLES=node_modules/gatefile/examples
+test -d "$GATEFILE_EXAMPLES" || GATEFILE_EXAMPLES=examples
+cp "$GATEFILE_EXAMPLES/agent-adapter-input.json" .plan/agent-adapter-input.json
+npx --no-install gatefile adapt-agent --from .plan/agent-adapter-input.json --out .plan/adapter-draft.json
+npx --no-install gatefile create-plan --from .plan/adapter-draft.json --out .plan/plan.json
 ```
 
 See [docs/agent-adapter.md](docs/agent-adapter.md) for supported input formats.
@@ -164,6 +195,7 @@ See [docs/agent-adapter.md](docs/agent-adapter.md) for supported input formats.
 |-------|-------------|
 | **Hash binding** | Approval locks to exact plan content — any tampering blocks execution |
 | **Signer trust policy** | Trusted signer allowlist via `gatefile.config.json` |
+| **Artifact I/O** | File-backed JSON inputs are bounded regular files; new outputs are create-only; approvals use revision-checked atomic replacement |
 | **File sandboxing** | Canonical-root confinement, ancestor/final symlink rejection, exact-byte checks, and atomic replacement |
 | **Command policy** | Exact executable + ordered-argument allow/deny rules; execution uses `shell: false` |
 | **Timeouts** | Default 10s per command, configurable per-operation or plan-wide |
@@ -232,7 +264,8 @@ preview tools. They do not expose approve, apply, or rollback.
 
 ### Configure in Claude Desktop
 
-Add to your `claude_desktop_config.json`:
+After `npm view gatefile@next version` confirms `0.3.0-alpha.0`, add that exact
+version to your `claude_desktop_config.json`:
 
 ```json
 {
@@ -445,7 +478,7 @@ See [schema/gatefile.config.schema.json](schema/gatefile.config.schema.json) for
 | **Risk Profile** | Heuristic score + rationale per operation |
 | **Preconditions** | Guards that must pass before apply |
 | **Approval** | Hash-bound human or policy gate |
-| **Attestation** | Optional Ed25519 signature proving approval identity |
+| **Attestation** | Optional Ed25519 signature proving possession of a signing key; trust policy maps the key to an operator-defined identity |
 | **Apply Receipt** | Structured record of what executed, for rollback and audit |
 
 ## Docs
@@ -458,6 +491,9 @@ See [schema/gatefile.config.schema.json](schema/gatefile.config.schema.json) for
 - [Use Cases](docs/use-cases.md)
 - [GitHub PR Gate](docs/github-pr-gate-example.md)
 - [Product Roadmap](docs/product-roadmap.md)
+- [Changelog](CHANGELOG.md)
+- [Migrating to 0.3](docs/migrating-to-0.3.md)
+- [Security Policy](SECURITY.md)
 
 ## Roadmap
 
@@ -481,6 +517,10 @@ Gatefile is in an alpha stabilization freeze. Contributions are limited to secur
 1. Open an issue describing stabilization work
 2. Keep changes focused and documented
 3. Include examples when behavior changes
+
+Potential vulnerabilities need a non-public handoff. Follow
+[SECURITY.md](SECURITY.md) and never put vulnerability details, exploit code,
+credentials, or sensitive logs in a public issue.
 
 ## License
 

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { lstatSync } from "node:fs";
 import { resolve } from "node:path";
 import { URL } from "node:url";
 import type {
@@ -13,6 +13,7 @@ import {
   canonicalizeApprovalPublicKeyPem,
   isApprovalKeyId
 } from "./approval-key";
+import { readUtf8Artifact } from "./artifact-io";
 
 export const DEFAULT_CONFIG_FILE = "gatefile.config.json";
 
@@ -425,12 +426,16 @@ export function loadGatefileConfigFromPinnedRoot(repoRoot: string): GatefileConf
 }
 
 function loadGatefileConfigAtPath(path: string): GatefileConfig {
-  if (!existsSync(path)) {
-    return {};
+  try {
+    lstatSync(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
+    throw error;
   }
 
   try {
-    return normalizeGatefileConfig(JSON.parse(readFileSync(path, "utf8")), path);
+    const contents = readUtf8Artifact(path, { label: "Gatefile config" }).contents;
+    return normalizeGatefileConfig(JSON.parse(contents), path);
   } catch (error) {
     if (error instanceof GatefileConfigError) throw error;
     throw new GatefileConfigError(

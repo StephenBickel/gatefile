@@ -23,7 +23,12 @@
   "files": [
     "dist",
     "schema",
-    "demo.gif",
+    "examples/agent-adapter-input.json",
+    "examples/coding-agent-plan.json",
+    "examples/dependent-plan.json",
+    "examples/ops-plan.json",
+    "examples/public-launch-safe-draft.json",
+    "examples/public-launch-unsafe-draft.json",
     "docs/agent-adapter.md",
     "docs/architecture.md",
     "docs/changeset-spec.md",
@@ -32,12 +37,14 @@
     "docs/examples/github-native-signed-approval-fork-sign.yml",
     "docs/examples/github-pr-gate.inlined.yml",
     "docs/examples/github-pr-gate.yml",
-    "docs/examples/github-pr-review-comment.yml",
     "docs/github-pr-gate-example.md",
+    "docs/migrating-to-0.3.md",
     "docs/product-roadmap.md",
     "docs/signed-approvals.md",
     "docs/use-cases.md",
+    "CHANGELOG.md",
     "README.md",
+    "SECURITY.md",
     "LICENSE"
   ],
   "scripts": {
@@ -48,8 +55,10 @@
     "demo:playwright": "mkdir -p demo/output && npx playwright test -c demo/playwright.config.cjs",
     "demo:playwright:install": "npx playwright install chromium",
     "prepack": "npm run build",
+    "prepublishOnly": "node scripts/run-release-verification.cjs",
     "test": "npm run build && node --require ./test-support/test-env.cjs --test",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "verify:release": "npm run typecheck && npm test && npm run demo:e2e && npm pack --dry-run"
   },
   "keywords": [
     "agents",
@@ -64,11 +73,11 @@
     "cli"
   ],
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2",
-    "@types/node": "^20.17.30",
+    "@types/node": "^22.0.0",
     "ajv": "^8.17.1",
     "ajv-formats": "^3.0.1",
     "ts-node": "^10.9.2",
@@ -76,11 +85,17 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/StephenBickel/gatefile.git"
+    "url": "git+https://github.com/StephenBickel/gatefile.git"
   },
   "homepage": "https://github.com/StephenBickel/gatefile",
   "bugs": {
     "url": "https://github.com/StephenBickel/gatefile/issues"
   },
-  "author": "Stephen Bickel"
+  "author": "Stephen Bickel",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/",
+    "tag": "next",
+    "provenance": true
+  }
 }

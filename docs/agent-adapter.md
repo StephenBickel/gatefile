@@ -40,18 +40,28 @@ It does not change gatefile schema or apply semantics; it feeds the existing flo
 }
 ```
 
-See `examples/agent-adapter-input.json` for a complete sample.
+The npm package ships a complete sample at
+`node_modules/gatefile/examples/agent-adapter-input.json`. In a source checkout,
+the same file is available at `examples/agent-adapter-input.json`.
 
 ## Workflow
 
 ```bash
+# Confirm and install the exact prerelease from npm's `next` channel
+npm view gatefile@next version
+npm install --save-dev gatefile@0.3.0-alpha.0
+mkdir -p .plan
+GATEFILE_EXAMPLES=node_modules/gatefile/examples
+test -d "$GATEFILE_EXAMPLES" || GATEFILE_EXAMPLES=examples
+
 # 1) Convert agent output into a standard plan draft
-gatefile adapt-agent --from examples/agent-adapter-input.json --out .plan/adapter-draft.json
+cp "$GATEFILE_EXAMPLES/agent-adapter-input.json" .plan/agent-adapter-input.json
+npx --no-install gatefile adapt-agent --from .plan/agent-adapter-input.json --out .plan/adapter-draft.json
 
 # 2) Use existing gatefile create/inspect/verify/apply flow
-gatefile create-plan --from .plan/adapter-draft.json --out .plan/plan.json
-gatefile inspect-plan .plan/plan.json
-gatefile verify-plan .plan/plan.json
-gatefile approve-plan .plan/plan.json --by reviewer
-gatefile apply-plan .plan/plan.json --yes
+npx --no-install gatefile create-plan --from .plan/adapter-draft.json --out .plan/plan.json
+npx --no-install gatefile inspect-plan .plan/plan.json
+npx --no-install gatefile verify-plan .plan/plan.json
+npx --no-install gatefile approve-plan .plan/plan.json --by reviewer
+npx --no-install gatefile apply-plan .plan/plan.json --yes
 ```

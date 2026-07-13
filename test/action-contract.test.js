@@ -15,18 +15,17 @@ const EXPECTED_ACTION_SHAS = new Map([
   ['actions/upload-artifact', '330a01c490aca151604b8cf639adc76d48f6c5d4'],
   ['actions/download-artifact', '634f93cb2916e3fdff6788551b99b062d0335ce0'],
   ['actions/github-script', 'ed597411d8f924073f98dfc5c65a23a2325f34cd'],
-  ['marocchino/sticky-pull-request-comment', '773744901bac0e8cbb5a0dc842800d45e9b2b405'],
   ['StephenBickel/gatefile/.github/actions/gatefile-pr-gate', PINNED_GATEFILE_ACTION_SHA]
 ]);
 
 const REVIEWED_WORKFLOW_FILES = [
   '.github/actions/gatefile-pr-gate/action.yml',
   '.github/workflows/ci.yml',
+  '.github/workflows/release.yml',
   'docs/examples/github-native-signed-approval-fork-request.yml',
   'docs/examples/github-native-signed-approval-fork-sign.yml',
   'docs/examples/github-pr-gate.yml',
-  'docs/examples/github-pr-gate.inlined.yml',
-  'docs/examples/github-pr-review-comment.yml'
+  'docs/examples/github-pr-gate.inlined.yml'
 ];
 
 function sha256(bytes) {
@@ -160,53 +159,6 @@ function readActionOutputs(result) {
       return [line.slice(0, separator), line.slice(separator + 1)];
     });
   return Object.fromEntries(entries);
-}
-
-function workflowStepRunScript(workflow, stepName) {
-  const lines = workflow.split('\n');
-  const stepStart = lines.findIndex((line) => line.trim() === `- name: ${stepName}`);
-  assert.notEqual(stepStart, -1, `workflow step not found: ${stepName}`);
-  const stepIndent = lines[stepStart].match(/^ */)[0].length;
-  const runIndex = lines.findIndex((line, index) => (
-    index > stepStart &&
-    /^ *run: \|[-+]?\s*$/.test(line) &&
-    line.match(/^ */)[0].length > stepIndent
-  ));
-  assert.notEqual(runIndex, -1, `workflow run block not found: ${stepName}`);
-  const runIndent = lines[runIndex].match(/^ */)[0].length;
-  const script = [];
-  for (let index = runIndex + 1; index < lines.length; index += 1) {
-    const line = lines[index];
-    const indentation = line.match(/^ */)[0].length;
-    if (line.trim() !== '' && indentation <= runIndent) break;
-    script.push(line.slice(Math.min(line.length, runIndent + 2)));
-  }
-  return script.join('\n');
-}
-
-function runReviewExampleEnforcement(t, verify, dryRun) {
-  const workflow = fs.readFileSync(
-    path.join(projectRoot, 'docs/examples/github-pr-review-comment.yml'),
-    'utf8'
-  );
-  const script = workflowStepRunScript(workflow, 'Enforce plan ready state');
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'gatefile-review-example-'));
-  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
-  fs.writeFileSync(
-    path.join(directory, 'verify-report.json'),
-    `${JSON.stringify(verify)}\n`,
-    'utf8'
-  );
-  fs.writeFileSync(
-    path.join(directory, 'dry-run-report.json'),
-    `${JSON.stringify(dryRun)}\n`,
-    'utf8'
-  );
-  return spawnSync('bash', ['-euo', 'pipefail', '-c', script], {
-    cwd: directory,
-    encoding: 'utf8',
-    shell: false
-  });
 }
 
 function workflowActionReferences(workflow, relativePath) {
@@ -454,31 +406,21 @@ test('workflow dependency audit includes quoted and list-form uses references', 
   );
 });
 
-test('PR review example requires both verification readiness and a passing static gate', (t) => {
-  const ready = { status: 'ready', blockers: [], signerTrust: { status: 'trusted' } };
-  const notReady = {
-    status: 'not-ready',
-    blockers: ['Plan is not approved'],
-    signerTrust: { status: 'unsigned' }
-  };
-  const allowed = { staticGate: { passed: true } };
-  const denied = { staticGate: { passed: false } };
-
-  const accepted = runReviewExampleEnforcement(t, ready, allowed);
-  assert.equal(accepted.status, 0, accepted.stderr);
-
-  const rejectedVerification = runReviewExampleEnforcement(t, notReady, allowed);
-  assert.notEqual(rejectedVerification.status, 0, 'not-ready verification passed the example gate');
-
-  const rejectedStaticGate = runReviewExampleEnforcement(t, ready, denied);
-  assert.notEqual(rejectedStaticGate.status, 0, 'policy-denied dry-run passed the example gate');
+test('unsafe pull-request comment workflow is not shipped', () => {
+  const relativePath = 'docs/examples/github-pr-review-comment.yml';
+  assert.equal(fs.existsSync(path.join(projectRoot, relativePath)), false);
+  const manifest = JSON.parse(fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf8'));
+  assert.equal(manifest.files.includes(relativePath), false);
 });
 
-test('CI verifies every supported Node release and audits the full dependency tree', () => {
+test('CI verifies every supported Node release and audits the full dependency tree once', () => {
   const workflow = fs.readFileSync(path.join(projectRoot, '.github/workflows/ci.yml'), 'utf8');
-  assert.match(workflow, /uses:\s*actions\/checkout@[0-9a-f]{40}[\s\S]*?with:\s*\n\s*fetch-depth:\s*0/);
-  assert.match(workflow, /node-version:\s*\["18",\s*"20",\s*"22"\]/);
+  assert.match(workflow, /uses:\s*actions\/checkout@[0-9a-f]{40}[\s\S]*?with:\s*\n\s*fetch-depth:\s*0\s*\n\s*persist-credentials:\s*false/);
+  assert.match(workflow, /- os:\s*ubuntu-latest\s*\n\s*node-version:\s*"22"/);
+  assert.match(workflow, /- os:\s*ubuntu-latest\s*\n\s*node-version:\s*"24"/);
+  assert.match(workflow, /- os:\s*macos-latest\s*\n\s*node-version:\s*"24"/);
   assert.match(workflow, /node-version:\s*\$\{\{ matrix\.node-version \}\}/);
   assert.match(workflow, /run:\s*npm audit(?:\s|$)/);
+  assert.equal((workflow.match(/run:\s*npm audit(?:\s|$)/g) ?? []).length, 1);
   assert.doesNotMatch(workflow, /npm audit\s+--omit/);
 });

@@ -2,20 +2,39 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test-and-typecheck:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     strategy:
+      fail-fast: false
       matrix:
-        node-version: ["18", "20", "22"]
+        include:
+          - os: ubuntu-latest
+            node-version: "22"
+            release-checks: false
+          - os: ubuntu-latest
+            node-version: "24"
+            release-checks: true
+          - os: macos-latest
+            node-version: "24"
+            release-checks: false
     steps:
       - name: Checkout
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Setup Node.js
         uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
@@ -24,18 +43,23 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: |
-          if [ -f package-lock.json ] || [ -f npm-shrinkwrap.json ]; then
-            npm ci
-          else
-            npm install
-          fi
-
-      - name: Audit dependencies
-        run: npm audit
+        run: npm ci --ignore-scripts
 
       - name: Run tests
         run: npm test
 
       - name: Run typecheck
+        if: ${{ matrix.release-checks }}
         run: npm run typecheck
+
+      - name: Audit dependencies
+        if: ${{ matrix.release-checks }}
+        run: npm audit
+
+      - name: Verify package contents
+        if: ${{ matrix.release-checks }}
+        run: npm pack --dry-run
+
+      - name: Verify the complete npm publication lifecycle
+        if: ${{ matrix.release-checks }}
+        run: npm publish --access public --tag next --provenance --dry-run

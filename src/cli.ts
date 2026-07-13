@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { formatApplySummary, formatDryRunSummary, formatRollbackSummary } from "./apply-format";
 import { adaptAgentInputToDraft } from "./adapter";
@@ -23,15 +22,32 @@ import {
   prepareKeyOutputPath,
   writeKeyOutputFile
 } from "./key-output";
+import {
+  MAX_PRIVATE_KEY_BYTES,
+  readJsonArtifact,
+  readUtf8Artifact,
+  writeJsonArtifactAtomic,
+  writeUtf8ArtifactAtomic
+} from "./artifact-io";
+import type { ArtifactRevision } from "./artifact-io";
 
 function readJson<T>(path: string): T {
-  const full = resolve(path);
-  return JSON.parse(readFileSync(full, "utf-8")) as T;
+  return readJsonArtifact<T>(path, { label: "JSON input" }).value;
 }
 
 function writeJson(path: string, value: unknown): void {
-  const full = resolve(path);
-  writeFileSync(full, JSON.stringify(value, null, 2) + "\n", "utf-8");
+  writeJsonArtifactAtomic(path, value, { label: "JSON output" });
+}
+
+function replaceJson(
+  path: string,
+  value: unknown,
+  expectedRevision: ArtifactRevision
+): void {
+  writeJsonArtifactAtomic(path, value, {
+    expectedRevision,
+    label: "Plan file"
+  });
 }
 
 function arg(args: string[], name: string): string | undefined {
@@ -174,20 +190,24 @@ async function main(): Promise<void> {
       throw new Error("--key-id requires --signing-key");
     }
 
-    const plan = readJson<PlanFile>(planPath);
+    const planRead = readJsonArtifact<PlanFile>(planPath, { label: "Plan file" });
+    const plan = planRead.value;
     validatePlanFile(plan);
     const repoRoot = getRepoRoot();
     const config = loadGatefileConfig(repoRoot);
     const engine = new GatefileEngine({ repoRoot, config });
     const signingPrivateKeyPem = signingKeyPath
-      ? readFileSync(resolve(signingKeyPath), "utf-8")
+      ? readUtf8Artifact(signingKeyPath, {
+          label: "Signing private key",
+          maxBytes: MAX_PRIVATE_KEY_BYTES
+        }).contents
       : undefined;
     const next = engine.approvePlan(plan, by, {
       planPath: resolve(planPath),
       signingPrivateKeyPem,
       signingKeyId
     });
-    writeJson(planPath, next);
+    replaceJson(planPath, next, planRead.revision);
     console.log(`Plan approved by ${by}: ${planPath}`);
     await fireOnPlanApproved(next, {
       repoRoot: engine.context.repoRoot,
@@ -293,7 +313,9 @@ async function main(): Promise<void> {
     });
 
     if (outPath) {
-      writeFileSync(resolve(outPath), `${markdown}\n`, "utf-8");
+      writeUtf8ArtifactAtomic(outPath, `${markdown}\n`, {
+        label: "PR comment output"
+      });
       console.log(`PR comment markdown written: ${outPath}`);
       return;
     }

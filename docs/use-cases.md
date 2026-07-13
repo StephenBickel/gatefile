@@ -1,10 +1,14 @@
 # Use Cases
 
+**Status: Experimental alpha — controlled evaluation only.** These scenarios
+describe intended workflows, not a recommendation to use Gatefile as the sole
+production security boundary.
+
 ## 1. Coding Agent in a Monorepo
 
 **Who:** Engineering teams with 5+ developers using autonomous coding agents (Codex, Claude Code, Cursor, custom agents) on shared repos.
 
-**Problem:** The agent proposes a refactor touching 30 files across 4 packages. Today you either read every diff interactively (slow) or trust full-auto mode (risky). There's no durable record of what was proposed, who approved it, or what actually executed.
+**Problem:** The agent proposes a refactor touching 30 files across 4 packages. Today you either read every diff interactively (slow) or trust full-auto mode (risky). There's no durable record of what was proposed, which approval label or trusted signing credential authorized it, or what actually executed.
 
 **With Gatefile:**
 - Agent emits a plan JSON declaring every file edit and command it wants to run
@@ -15,9 +19,12 @@
 
 **Key features used:** `create-plan`, `inspect-plan`, `approve-plan`, `apply-plan`, risk scoring, file sandboxing.
 
-## 2. Production Ops Automation
+## 2. Future Production Ops Automation
 
 **Who:** Platform/DevOps teams running agents that manage infrastructure — config rotation, service restarts, health checks.
+
+During alpha, evaluate this scenario only with inert services and disposable
+state.
 
 **Problem:** Operational scripts run with too much implicit behavior. An ops agent decides to rotate a config, restart a service, and curl a health endpoint. If something breaks at step 2, what was the state before? Who said this was okay to run?
 
@@ -39,9 +46,10 @@
 - CI runs `gatefile verify-plan` as a required status check
 - PR includes machine-readable intent (`inspect-plan --json`) so reviewers see the full blast radius
 - No approved plan = no merge
-- GitHub Action drops into any existing workflow in 3 lines
+- The commit-pinned reusable Action evaluates a tracked plan against a trusted policy snapshot before consumer PR code runs
 
-**Key features used:** `verify-plan`, `inspect-plan --json`, GitHub PR gate action, branch protection integration.
+**Key features used:** `verify-plan`, `inspect-plan --json`, the GitHub PR gate
+Action, and an operator-configured protected required workflow or ruleset.
 
 ## 4. Compliance and Audit Trail
 
@@ -51,7 +59,7 @@
 
 **With Gatefile:**
 - Plan = machine-readable intent record
-- Signed approval = cryptographic proof of who approved, when, bound to the exact plan hash
+- Signed approval = proof that the holder of a configured private key signed the exact plan hash; the operator's trust policy maps that key to a person or role
 - Apply receipt = authenticated record of what executed and the exact before/after file states
 - The local chain (plan → attestation → receipt → snapshot) is tamper-evident while
   Gatefile's external, owner-controlled state key remains trusted

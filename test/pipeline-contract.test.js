@@ -92,6 +92,23 @@ test('pipeline reports malformed JSON before any plan mutation', (t) => {
   assert.equal(fs.existsSync(path.join(f.repoRoot, 'valid.txt')), false);
 });
 
+test('pipeline reports oversized JSON as an unsafe entry before parsing', (t) => {
+  const f = fixture(t);
+  fs.writeFileSync(
+    path.join(f.plansDir, 'oversized.json'),
+    Buffer.alloc(16 * 1024 * 1024 + 1, 0x20)
+  );
+
+  const result = runPipeline(f.plansDir, { dryRun: true, repoRoot: f.repoRoot });
+
+  assert.equal(result.success, false);
+  assert.deepEqual(result.order, []);
+  assert.deepEqual(result.results, []);
+  assert.equal(result.inputErrors[0].file, 'oversized.json');
+  assert.equal(result.inputErrors[0].code, 'unsafe-entry');
+  assert.match(result.inputErrors[0].message, /16777216-byte read limit/i);
+});
+
 test('pipeline rejects malformed plan-like JSON but ignores unrelated valid JSON', (t) => {
   const f = fixture(t);
   fs.writeFileSync(path.join(f.plansDir, 'notes.json'), '{"owner":"release"}\n');

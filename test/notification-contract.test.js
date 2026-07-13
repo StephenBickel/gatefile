@@ -136,6 +136,39 @@ test('deprecated fireOnApprovalNeeded preserves its legacy webhook event name', 
   ]);
 });
 
+test('webhook failures never log URL credentials, paths, or query secrets', async (t) => {
+  const probe = http.createServer((request) => request.socket.destroy());
+  await new Promise((resolve) => probe.listen(0, '127.0.0.1', resolve));
+  const { port } = probe.address();
+  t.after(() => new Promise((resolve) => probe.close(resolve)));
+
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (...values) => warnings.push(values.join(' '));
+  t.after(() => { console.warn = originalWarn; });
+
+  const secretPath = 'slack-services-T000-B000-SECRET';
+  const secretQuery = 'token=QUERY_SECRET';
+  await fireOnPlanApproved(planSummary(), {
+    repoRoot: fs.realpathSync(os.tmpdir()),
+    config: {
+      notifications: {
+        onPlanApproved: {
+          webhook: `http://user:password@127.0.0.1:${port}/${secretPath}?${secretQuery}`
+        }
+      }
+    }
+  });
+
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /webhook error/i);
+  assert.doesNotMatch(warnings[0], /user|password|slack-services|QUERY_SECRET|token=/);
+
+  const hooksSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'hooks.ts'), 'utf8');
+  assert.doesNotMatch(hooksSource, /console\.warn\([^\n]*\$\{url\}/);
+  assert.match(hooksSource, /webhook timeout for configured endpoint/);
+});
+
 test('approve-plan CLI preserves the legacy webhook event for legacy config', async (t) => {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gatefile-legacy-event-cli-'));
   t.after(() => fs.rmSync(repoRoot, { recursive: true, force: true }));
