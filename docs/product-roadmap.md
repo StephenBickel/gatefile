@@ -63,8 +63,8 @@ Rationale: product adoption depends on easy integration across agent ecosystems.
 
 Rationale: production usage needs stronger tamper evidence and recoverability.
 
-- Snapshot integrity chaining (hash-linked receipts/snapshots)
-- Optional signed apply receipts for audit replay
+- Authenticated snapshot/receipt chaining with repository and plan binding (alpha implemented)
+- Replay-resistant rollback receipts and post-apply drift checks (alpha implemented)
 - Better command-side recovery support (operator-defined compensating actions)
 - Integrity and rollback diagnostics in inspect/verify outputs
 

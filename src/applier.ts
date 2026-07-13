@@ -1,28 +1,29 @@
+import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { resolve } from "node:path";
 import {
   ApplyOperationResult,
-  ApplyReceipt,
   ApplyReport,
   DryRunOperationPreview,
   DryRunReport,
   GatefileConfig,
   PlanFile,
-  RollbackReport,
-  SnapshotFile
+  RollbackReport
 } from "./types";
 import { checkPreconditions } from "./preconditions";
 import { verifyPlan } from "./verify";
 import {
   dependencyStatus,
+  getStateLayout,
   getRepoRoot,
   makeReceiptId,
+  preflightStateForApply,
+  prepareStateForApply,
+  replaceReceipt,
   rollbackByReceipt,
   snapshotPath,
   writeReceipt,
-  writeSnapshot,
-  receiptPath
+  writeSnapshot
 } from "./state";
 import { runPolicyHook } from "./hooks";
 import {
@@ -30,9 +31,39 @@ import {
   formatCommandInvocation,
   validatePlanCommandContract
 } from "./command";
-import { validatePlanFile } from "./validation";
+import {
+  APPLY_RECEIPT_WORST_CASE_BUDGET_BYTES,
+  STATE_RECORD_TEXT_MAX_LENGTH,
+  validatePlanFile
+} from "./validation";
+import {
+  createSafeFsContext,
+  preflightFileOperations,
+  resolveSafeTarget,
+  safeCreate,
+  safeDelete,
+  safeUpdate,
+  SafeFsPostCommitError
+} from "./safe-fs";
+import type {
+  BeforeFileCommit,
+  CompactFileState,
+  PreparedFileOperation,
+  SafeFileMutationResult,
+  SafeFsContext
+} from "./safe-fs";
+import { exactFileStateToStored } from "./state-records";
+import type {
+  ReceiptRecordBody,
+  RollbackRecordEntry,
+  SnapshotRecordBody
+} from "./state-records";
 
 const DEFAULT_COMMAND_TIMEOUT_MS = 10_000;
+
+type PendingApplyOperationResult = Omit<ApplyOperationResult, "mutationStatus"> & {
+  mutationStatus?: ApplyOperationResult["mutationStatus"];
+};
 
 interface FilePathSafetyResult {
   allowed: boolean;
@@ -44,111 +75,130 @@ interface FilePathSafetyResult {
 export interface PlanRuntimeOptions {
   repoRoot?: string;
   repositoryId?: string;
+  /** Trusted operator override for external authenticated state. */
+  stateHome?: string;
   planPath?: string;
   config?: GatefileConfig;
 }
 
-function effectiveAllowedRoots(plan: PlanFile): string[] {
+function effectiveAllowedRoots(plan: PlanFile, repoRoot: string): string[] {
   const rawRoots = plan.execution?.filePolicy?.allowedRoots
     ?.map((root) => root.trim())
     .filter((root) => root.length > 0);
-
-  const roots = rawRoots && rawRoots.length > 0 ? rawRoots : [process.cwd()];
-  const deduped = new Set<string>();
-  for (const root of roots) {
-    deduped.add(resolve(root));
-  }
-  return [...deduped];
+  return rawRoots && rawRoots.length > 0 ? [...new Set(rawRoots)] : [repoRoot];
 }
 
-function isPathWithinRoot(resolvedPath: string, root: string): boolean {
-  const rel = relative(root, resolvedPath);
-  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
-}
-
-function evaluateFilePathSafety(plan: PlanFile, rawPath: string): FilePathSafetyResult {
-  if (rawPath.trim().length === 0) {
-    const allowedRoots = effectiveAllowedRoots(plan);
+function evaluateFilePathSafety(
+  plan: PlanFile,
+  op: Extract<PlanFile["operations"][number], { type: "file" }>,
+  repoRoot: string,
+  reservedRoots: readonly string[] = []
+): FilePathSafetyResult {
+  const configuredRoots = effectiveAllowedRoots(plan, repoRoot);
+  const fallbackPath = resolve(repoRoot, op.path);
+  try {
+    const context = createSafeFsContext(repoRoot, configuredRoots, reservedRoots);
+    const target = resolveSafeTarget(context, op.path, op.action);
+    return {
+      allowed: true,
+      resolvedPath: target.targetPath,
+      allowedRoots: context.allowedRoots
+    };
+  } catch (error) {
     return {
       allowed: false,
-      resolvedPath: resolve(rawPath),
-      allowedRoots,
-      reason: "path is empty"
+      resolvedPath: fallbackPath,
+      allowedRoots: configuredRoots,
+      reason: (error as Error).message
     };
   }
-
-  const resolvedPath = resolve(rawPath);
-  const allowedRoots = effectiveAllowedRoots(plan);
-  const allowed = allowedRoots.some((root) => isPathWithinRoot(resolvedPath, root));
-  if (allowed) {
-    return { allowed: true, resolvedPath, allowedRoots };
-  }
-
-  return {
-    allowed: false,
-    resolvedPath,
-    allowedRoots,
-    reason: `resolved path is outside allowed roots [${allowedRoots.join(", ")}]`
-  };
 }
 
 function applyFileOperation(
-  plan: PlanFile,
-  op: Extract<PlanFile["operations"][number], { type: "file" }>
-): ApplyOperationResult {
-  const pathSafety = evaluateFilePathSafety(plan, op.path);
-  if (!pathSafety.allowed) {
-    return {
-      operationId: op.id,
-      success: false,
-      message: `file path denied by policy: ${op.path} -> ${pathSafety.resolvedPath} (${pathSafety.reason})`
-    };
-  }
-
+  context: SafeFsContext,
+  prepared: PreparedFileOperation,
+  beforeCommit?: BeforeFileCommit
+): { result: PendingApplyOperationResult; mutation?: SafeFileMutationResult } {
+  const op = prepared.operation;
   try {
     if (op.action === "create") {
-      mkdirSync(dirname(pathSafety.resolvedPath), { recursive: true });
-      writeFileSync(pathSafety.resolvedPath, op.after, { encoding: "utf-8", flag: "wx" });
-      return { operationId: op.id, success: true, message: `create ${op.path}` };
+      const mutation = safeCreate(
+        context,
+        prepared.target,
+        prepared.beforeState,
+        op.after,
+        0o600,
+        beforeCommit
+      );
+      return {
+        result: {
+          operationId: op.id,
+          success: true,
+          message: `create ${op.path}`,
+          mutationStatus: "committed"
+        },
+        mutation
+      };
     }
 
     if (op.action === "update") {
-      const stat = lstatSync(pathSafety.resolvedPath);
-      if (!stat.isFile()) {
-        throw new Error("update destination is not a regular file");
-      }
-      const current = readFileSync(pathSafety.resolvedPath);
-      if (!current.equals(Buffer.from(op.before, "utf-8"))) {
-        throw new Error("update destination no longer matches reviewed before content");
-      }
-      writeFileSync(pathSafety.resolvedPath, op.after, "utf-8");
-      return { operationId: op.id, success: true, message: `update ${op.path}` };
+      const mutation = safeUpdate(
+        context,
+        prepared.target,
+        prepared.beforeState,
+        op.after,
+        beforeCommit
+      );
+      return {
+        result: {
+          operationId: op.id,
+          success: true,
+          message: `update ${op.path}`,
+          mutationStatus: "committed"
+        },
+        mutation
+      };
     }
 
     if (op.action === "delete") {
-      const stat = lstatSync(pathSafety.resolvedPath);
-      if (!stat.isFile()) {
-        throw new Error("delete destination is not a regular file");
-      }
-      const current = readFileSync(pathSafety.resolvedPath);
-      if (!current.equals(Buffer.from(op.before, "utf-8"))) {
-        throw new Error("delete destination no longer matches reviewed before content");
-      }
-      unlinkSync(pathSafety.resolvedPath);
-      return { operationId: op.id, success: true, message: `delete ${op.path}` };
+      const mutation = safeDelete(context, prepared.target, prepared.beforeState, beforeCommit);
+      return {
+        result: {
+          operationId: op.id,
+          success: true,
+          message: `delete ${op.path}`,
+          mutationStatus: "committed"
+        },
+        mutation
+      };
     }
 
     const unsupported = op as unknown as { id?: unknown; action?: unknown };
     return {
-      operationId: typeof unsupported.id === "string" ? unsupported.id : "unknown-operation",
-      success: false,
-      message: `Unsupported file action: ${String(unsupported.action)}`
+      result: {
+        operationId: typeof unsupported.id === "string" ? unsupported.id : "unknown-operation",
+        success: false,
+        message: `Unsupported file action: ${String(unsupported.action)}`
+      }
     };
   } catch (error) {
+    if (error instanceof SafeFsPostCommitError) {
+      return {
+        result: {
+          operationId: op.id,
+          success: false,
+          message: `File op committed but finalization failed; authenticated rollback is required: ${error.message}`,
+          mutationStatus: "committed"
+        },
+        mutation: error.committed
+      };
+    }
     return {
-      operationId: op.id,
-      success: false,
-      message: `File op failed: ${(error as Error).message}`
+      result: {
+        operationId: op.id,
+        success: false,
+        message: `File op failed: ${(error as Error).message}`
+      }
     };
   }
 }
@@ -202,8 +252,9 @@ function formatCommandFailureMessage(error: unknown, timeoutMs: number): string 
 
 function applyCommandOperation(
   plan: PlanFile,
-  op: Extract<PlanFile["operations"][number], { type: "command" }>
-): ApplyOperationResult {
+  op: Extract<PlanFile["operations"][number], { type: "command" }>,
+  repoRoot: string
+): PendingApplyOperationResult {
   const timeoutMs = commandTimeoutMs(plan, op);
   const invocation = formatCommandInvocation(op);
   const policyResult = checkCommandPolicy(plan, op);
@@ -217,7 +268,7 @@ function applyCommandOperation(
 
   try {
     const result = spawnSync(op.executable, op.args, {
-      cwd: op.cwd,
+      cwd: resolve(repoRoot, op.cwd ?? "."),
       stdio: "inherit",
       timeout: timeoutMs,
       shell: false
@@ -263,9 +314,11 @@ function pathSafetyDetails(pathSafety: FilePathSafetyResult): string {
 
 function describeFilePreview(
   plan: PlanFile,
-  op: Extract<PlanFile["operations"][number], { type: "file" }>
+  op: Extract<PlanFile["operations"][number], { type: "file" }>,
+  repoRoot: string,
+  reservedRoots: readonly string[]
 ): DryRunOperationPreview {
-  const pathSafety = evaluateFilePathSafety(plan, op.path);
+  const pathSafety = evaluateFilePathSafety(plan, op, repoRoot, reservedRoots);
   const deniedSuffix = pathSafety.allowed ? "" : " [DENIED by file policy]";
 
   if (op.action === "create") {
@@ -301,9 +354,10 @@ function describeFilePreview(
 
 function describeCommandPreview(
   plan: PlanFile,
-  op: Extract<PlanFile["operations"][number], { type: "command" }>
+  op: Extract<PlanFile["operations"][number], { type: "command" }>,
+  repoRoot: string
 ): DryRunOperationPreview {
-  const cwd = op.cwd ?? process.cwd();
+  const cwd = resolve(repoRoot, op.cwd ?? ".");
   const allowFailure = op.allowFailure === true ? "yes" : "no";
   const timeoutMs = commandTimeoutMs(plan, op);
   const policy = plan.execution?.commandPolicy;
@@ -320,6 +374,26 @@ function describeCommandPreview(
 
 function unique<T>(items: T[]): T[] {
   return [...new Set(items)];
+}
+
+function quotePosixCliArg(value: string): string {
+  if (/^[A-Za-z0-9_./:@%+=,-]+$/.test(value)) return value;
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function rollbackCommand(context: ApplyReport["rollbackContext"]): string {
+  return [
+    "gatefile",
+    "rollback-apply",
+    quotePosixCliArg(context.receiptId),
+    "--yes",
+    "--repo-root",
+    quotePosixCliArg(context.repoRoot),
+    "--repository-id",
+    quotePosixCliArg(context.repositoryId),
+    "--state-home",
+    quotePosixCliArg(context.stateHome)
+  ].join(" ");
 }
 
 function operationGuidance(op: PlanFile["operations"][number]): string {
@@ -356,7 +430,7 @@ function buildDryRunRecovery(plan: PlanFile): DryRunReport["recovery"] {
     })),
     notes: [
       "Dry-run executes nothing; use this preview to prepare manual rollback before real apply.",
-      "Real apply creates a pre-apply file snapshot under .gatefile/state.",
+      "Real apply creates an authenticated pre-apply snapshot in the external Gatefile state home.",
       "gatefile does not provide transactional rollback."
     ]
   };
@@ -392,6 +466,7 @@ function buildApplyRecovery(plan: PlanFile, results: ApplyOperationResult[]): Ap
         operationId: op.id,
         type: op.type,
         status,
+        ...(result?.mutationStatus ? { mutationStatus: result.mutationStatus } : {}),
         path: op.type === "file" ? op.path : undefined,
         guidance: operationGuidance(op)
       };
@@ -400,173 +475,438 @@ function buildApplyRecovery(plan: PlanFile, results: ApplyOperationResult[]): Ap
       failedOperationId
         ? `Apply stopped at operation ${failedOperationId}; later operations were not run.`
         : "Apply completed all operations in order.",
-      "Rollback restores Gatefile-managed file operations from .gatefile/state snapshots.",
-      "Command side effects are not automatically rollbackable in this MVP.",
+      "Rollback restores Gatefile-managed file operations from authenticated external snapshots.",
+      "Command side effects are not automatically rollbackable in this alpha.",
       "gatefile does not provide transactional rollback."
     ]
   };
 }
 
-function createPreApplySnapshot(plan: PlanFile, repoRoot: string, snapshotId: string): SnapshotFile {
-  const seen = new Set<string>();
-  const files: SnapshotFile["files"] = [];
+function snapshotEntryId(prepared: PreparedFileOperation, index: number): string {
+  const suffix = createHash("sha256")
+    .update(`${prepared.operation.id}\0${prepared.target.allowedRoot}\0${prepared.target.relativePath}`)
+    .digest("hex")
+    .slice(0, 16);
+  return `entry_${index + 1}_${suffix}`;
+}
 
-  for (const op of plan.operations) {
-    if (op.type !== "file") continue;
+function createPreApplySnapshot(
+  plan: PlanFile,
+  snapshotId: string,
+  repository: ReturnType<typeof getStateLayout>["repository"],
+  prepared: PreparedFileOperation[],
+  createdAt: string
+): SnapshotRecordBody {
+  return {
+    type: "gatefile-rollback-snapshot",
+    stateVersion: 1,
+    id: snapshotId,
+    repository,
+    plan: {
+      id: plan.id,
+      hash: plan.integrity.planHash
+    },
+    createdAt,
+    entries: prepared.map((entry, index) => ({
+      id: snapshotEntryId(entry, index),
+      operationId: entry.operation.id,
+      action: entry.operation.action,
+      // Persist the canonical target spelling. The approved plan still retains
+      // the review-facing path, while rollback is independent of platform
+      // prefix aliases such as macOS /var -> /private/var.
+      requestedPath: entry.target.targetPath,
+      allowedRoot: entry.target.allowedRoot,
+      relativePath: entry.target.relativePath,
+      directoryChain: entry.target.directoryChain,
+      before: exactFileStateToStored(entry.beforeState)
+    }))
+  };
+}
 
-    const pathSafety = evaluateFilePathSafety(plan, op.path);
-    if (!pathSafety.allowed) {
-      continue;
-    }
+function stateOptionsForPlan(
+  plan: PlanFile,
+  options: PlanRuntimeOptions,
+  repoRoot: string
+): { repoRoot: string; repositoryId: string; stateHome?: string } {
+  return {
+    repoRoot,
+    repositoryId: plan.context.repositoryId,
+    stateHome: options.stateHome
+  };
+}
 
-    if (seen.has(pathSafety.resolvedPath)) {
-      continue;
-    }
-
-    seen.add(pathSafety.resolvedPath);
-    let existedBefore = false;
-    let contentBefore: string | undefined;
-    try {
-      const stat = lstatSync(pathSafety.resolvedPath);
-      if (op.action === "create") {
-        // Exclusive create will reject this destination without changing it,
-        // so no rollback entry should ever rewrite its pre-existing contents.
-        continue;
-      }
-      if (!stat.isFile()) {
-        // The operation itself will reject non-regular destinations. Do not follow
-        // symlinks or read directories while preparing rollback state.
-        continue;
-      }
-      existedBefore = true;
-      contentBefore = readFileSync(pathSafety.resolvedPath, "utf8");
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      if (op.action !== "create") continue;
-    }
-    files.push({
-      operationId: op.id,
-      path: op.path,
-      resolvedPath: pathSafety.resolvedPath,
-      existedBefore,
-      contentBefore
+function rollbackEntriesForApply(
+  snapshot: ReturnType<typeof writeSnapshot>["record"],
+  mutationByOperation: Map<string, SafeFileMutationResult>
+): RollbackRecordEntry[] {
+  const entries: RollbackRecordEntry[] = [];
+  for (const snapshotEntry of snapshot.entries) {
+    const mutation = mutationByOperation.get(snapshotEntry.operationId);
+    if (!mutation) continue;
+    entries.push({
+      snapshotEntryId: snapshotEntry.id,
+      operationId: snapshotEntry.operationId,
+      action: snapshotEntry.action,
+      requestedPath: snapshotEntry.requestedPath,
+      allowedRoot: mutation.target.allowedRoot,
+      relativePath: mutation.target.relativePath,
+      directoryChain: mutation.target.directoryChain,
+      after: mutation.afterState,
+      cleanupResidues: mutation.cleanupResidues
     });
   }
+  return entries;
+}
 
+function boundOperationResult(result: PendingApplyOperationResult): ApplyOperationResult {
+  const normalized = {
+    ...result,
+    mutationStatus: result.mutationStatus ?? "none" as const
+  };
+  if (normalized.message.length <= STATE_RECORD_TEXT_MAX_LENGTH) return normalized;
+  const suffix = "…[truncated for authenticated receipt]";
   return {
-    id: snapshotId,
-    planId: plan.id,
-    createdAt: new Date().toISOString(),
-    repoRoot,
-    files
+    ...normalized,
+    message: `${normalized.message.slice(0, STATE_RECORD_TEXT_MAX_LENGTH - suffix.length)}${suffix}`
+  };
+}
+
+function assertPreparedReceiptFits(
+  plan: PlanFile,
+  receiptId: string,
+  layout: ReturnType<typeof getStateLayout>,
+  snapshot: SnapshotRecordBody,
+  dependencies: ApplyReport["dependencies"],
+  preparedFiles: PreparedFileOperation[],
+  appliedAt: string
+): void {
+  const preparedById = new Map(preparedFiles.map((entry) => [entry.operation.id, entry]));
+  const pessimisticMessage = "\u0001".repeat(STATE_RECORD_TEXT_MAX_LENGTH);
+  const pessimisticResults = plan.operations.map((operation) => ({
+    operationId: operation.id,
+    success: false,
+    message: pessimisticMessage,
+    mutationStatus: operation.type === "file" ? "intended" : "none"
+  }));
+  const pessimisticRollbackEntries = snapshot.entries.map((snapshotEntry) => {
+    const prepared = preparedById.get(snapshotEntry.operationId);
+    if (!prepared) throw new Error(`Missing prepared file operation ${snapshotEntry.operationId}`);
+    const after: CompactFileState = prepared.operation.action === "delete"
+      ? { kind: "absent" }
+      : {
+          kind: "regular",
+          sha256: "f".repeat(64),
+          byteLength: Buffer.byteLength(prepared.operation.after ?? "", "utf8"),
+          mode: 0o7777,
+          uid: "9".repeat(40),
+          gid: "9".repeat(40),
+          identity: { device: "9".repeat(40), inode: "9".repeat(40) }
+        };
+    return {
+      snapshotEntryId: snapshotEntry.id,
+      operationId: snapshotEntry.operationId,
+      action: snapshotEntry.action,
+      requestedPath: snapshotEntry.requestedPath,
+      allowedRoot: prepared.target.allowedRoot,
+      relativePath: prepared.target.relativePath,
+      directoryChain: prepared.target.directoryChain,
+      after,
+      cleanupResidues: prepared.operation.action === "create" || prepared.operation.action === "update"
+        ? [{
+            path: resolve(
+              prepared.target.parentPath,
+              `.${prepared.target.basename}.gatefile-${"f".repeat(32)}.tmp`
+            ),
+            identity: after.kind === "regular"
+              ? { ...after.identity }
+              : { device: "9".repeat(40), inode: "9".repeat(40) }
+          }]
+        : []
+    };
+  });
+  const pessimisticRecord = {
+    type: "gatefile-apply-receipt",
+    stateVersion: 1,
+    id: receiptId,
+    repository: layout.repository,
+    plan: { id: plan.id, hash: plan.integrity.planHash },
+    appliedAt,
+    snapshotId: snapshot.id,
+    snapshotDigest: "d".repeat(64),
+    success: false,
+    results: pessimisticResults,
+    dependencies,
+    rollbackEntries: pessimisticRollbackEntries,
+    authentication: {
+      scheme: "hmac-sha256",
+      envelopeVersion: 1,
+      keyId: "k".repeat(43),
+      tag: "t".repeat(43)
+    }
+  };
+  const byteLength = Buffer.byteLength(`${JSON.stringify(pessimisticRecord, null, 2)}\n`, "utf8");
+  if (byteLength > APPLY_RECEIPT_WORST_CASE_BUDGET_BYTES) {
+    throw new Error(
+      `Prepared authenticated receipt could require ${byteLength} bytes, exceeding the pre-mutation budget ${APPLY_RECEIPT_WORST_CASE_BUDGET_BYTES}`
+    );
+  }
+}
+
+function receiptBodyForApply(
+  plan: PlanFile,
+  receiptId: string,
+  layout: ReturnType<typeof getStateLayout>,
+  snapshot: ReturnType<typeof writeSnapshot>,
+  appliedAt: string,
+  success: boolean,
+  results: ApplyOperationResult[],
+  dependencies: ApplyReport["dependencies"],
+  mutations: Map<string, SafeFileMutationResult>
+): ReceiptRecordBody {
+  return {
+    type: "gatefile-apply-receipt",
+    stateVersion: 1,
+    id: receiptId,
+    repository: layout.repository,
+    plan: { id: plan.id, hash: plan.integrity.planHash },
+    appliedAt,
+    snapshotId: snapshot.record.id,
+    snapshotDigest: snapshot.digest,
+    success,
+    results: results.map((result) => ({
+      ...result,
+      mutationStatus: result.mutationStatus ?? "none"
+    })),
+    dependencies,
+    rollbackEntries: rollbackEntriesForApply(snapshot.record, mutations)
   };
 }
 
 function applyCore(plan: PlanFile, options: PlanRuntimeOptions): ApplyReport {
   const repoRoot = getRepoRoot(options.repoRoot);
-  const dependencies = dependencyStatus(plan, repoRoot);
+  const stateOptions = stateOptionsForPlan(plan, options, repoRoot);
+  const layout = getStateLayout(stateOptions);
+  const dependencies = dependencyStatus(plan, stateOptions);
   if (!dependencies.allSatisfied) {
     throw new Error(
       `Plan dependencies are not satisfied: missing successful apply for [${dependencies.missingPlanIds.join(", ")}]`
     );
   }
 
-  if (options.config) {
+  const appliedAt = new Date().toISOString();
+  const receiptId = makeReceiptId(plan.id, appliedAt);
+  const fileOperations = plan.operations.filter(
+    (op): op is Extract<PlanFile["operations"][number], { type: "file" }> => op.type === "file"
+  );
+  let fileContext: SafeFsContext | undefined;
+  let preparedFiles: PreparedFileOperation[] = [];
+  let preflightFailure: { operationId: string; message: string } | undefined;
+  const deniedCommand = plan.operations
+    .filter((op): op is Extract<PlanFile["operations"][number], { type: "command" }> =>
+      op.type === "command"
+    )
+    .map((operation) => ({ operation, policy: checkCommandPolicy(plan, operation) }))
+    .find(({ policy }) => !policy.allowed);
+  if (deniedCommand && !deniedCommand.policy.allowed) {
+    preflightFailure = {
+      operationId: deniedCommand.operation.id,
+      message: deniedCommand.policy.message
+    };
+  }
+  if (!preflightFailure && fileOperations.length > 0) {
+    try {
+      fileContext = createSafeFsContext(
+        repoRoot,
+        effectiveAllowedRoots(plan, repoRoot),
+        [layout.stateHome]
+      );
+      preparedFiles = preflightFileOperations(fileContext, fileOperations);
+    } catch (error) {
+      const message = (error as Error).message;
+      const failedOperation = fileOperations.find(
+        (operation) => message.includes(operation.id) || message.includes(operation.path)
+      ) ?? fileOperations[0];
+      preflightFailure = {
+        operationId: failedOperation.id,
+        message: `file path denied by policy or secure preflight: ${message}`
+      };
+    }
+  }
+
+  const snapshotBody = createPreApplySnapshot(
+    plan,
+    receiptId,
+    layout.repository,
+    preparedFiles,
+    appliedAt
+  );
+  assertPreparedReceiptFits(
+    plan,
+    receiptId,
+    layout,
+    snapshotBody,
+    dependencies,
+    preparedFiles,
+    appliedAt
+  );
+  preflightStateForApply(stateOptions, plan.id, receiptId);
+
+  if (!preflightFailure && options.config) {
     runPolicyHook(options.config, "beforeApply", plan, {
       repoRoot,
       planPath: options.planPath
     });
   }
 
-  const appliedAt = new Date().toISOString();
-  const receiptId = makeReceiptId(plan.id, appliedAt);
-  const snapshot = createPreApplySnapshot(plan, repoRoot, receiptId);
-  const snapshotFilePath = writeSnapshot(repoRoot, snapshot);
+  prepareStateForApply(stateOptions, plan.id, receiptId);
+  const persistedSnapshot = writeSnapshot(stateOptions, snapshotBody);
+  let persistedReceipt = writeReceipt(
+    stateOptions,
+    receiptBodyForApply(
+      plan,
+      receiptId,
+      layout,
+      persistedSnapshot,
+      appliedAt,
+      false,
+      [],
+      dependencies,
+      new Map()
+    ),
+    persistedSnapshot.record
+  );
   const results: ApplyOperationResult[] = [];
+  const mutationByOperation = new Map<string, SafeFileMutationResult>();
+  const preparedByOperation = new Map(
+    preparedFiles.map((prepared) => [prepared.operation.id, prepared])
+  );
 
-  for (const op of plan.operations) {
-    let result: ApplyOperationResult;
-    if (op.type === "file") {
-      result = applyFileOperation(plan, op);
-    } else if (op.type === "command") {
-      result = applyCommandOperation(plan, op);
-    } else {
-      const unsupported = op as unknown as { id?: unknown; type?: unknown };
-      result = {
-        operationId: typeof unsupported.id === "string" ? unsupported.id : "unknown-operation",
-        success: false,
-        message: `Unsupported operation type: ${String(unsupported.type)}`
-      };
-    }
-    results.push(result);
-
-    if (!result.success) {
-      const report: ApplyReport = {
-        planId: plan.id,
-        appliedAt,
-        success: false,
-        results,
-        recovery: buildApplyRecovery(plan, results),
-        dependencies,
-        snapshot: {
-          id: snapshot.id,
-          path: snapshotFilePath,
-          fileCount: snapshot.files.length
-        },
-        receipt: {
-          id: receiptId,
-          path: receiptPath(repoRoot, receiptId)
-        },
-        rollbackCommand: `gatefile rollback-apply ${receiptId} --yes`
-      };
-
-      const receipt: ApplyReceipt = {
-        id: receiptId,
-        planId: plan.id,
-        planHash: plan.integrity.planHash,
-        appliedAt,
-        success: false,
-        snapshotId: snapshot.id,
-        operationResults: results,
-        dependencies
-      };
-      writeReceipt(repoRoot, receipt);
-      return report;
+  if (preflightFailure) {
+    results.push(boundOperationResult({
+      operationId: preflightFailure.operationId,
+      success: false,
+      message: preflightFailure.message
+    }));
+  } else {
+    for (const op of plan.operations) {
+      let result: PendingApplyOperationResult;
+      if (op.type === "file") {
+        const prepared = preparedByOperation.get(op.id);
+        if (!fileContext || !prepared) {
+          result = {
+            operationId: op.id,
+            success: false,
+            message: "File op failed: secure preflight result is missing"
+          };
+        } else {
+          let intendedMutation: SafeFileMutationResult | undefined;
+          const applied = applyFileOperation(fileContext, prepared, (intent) => {
+            const intendedMutations = new Map(mutationByOperation);
+            intendedMutations.set(op.id, intent);
+            const intentResult = boundOperationResult({
+              operationId: op.id,
+              success: false,
+              message: "Authenticated write-ahead file mutation intent; commit outcome requires filesystem verification",
+              mutationStatus: "intended"
+            });
+            persistedReceipt = replaceReceipt(
+              stateOptions,
+              receiptBodyForApply(
+                plan,
+                receiptId,
+                layout,
+                persistedSnapshot,
+                appliedAt,
+                false,
+                [...results, intentResult],
+                dependencies,
+                intendedMutations
+              ),
+              persistedSnapshot.record
+            );
+            mutationByOperation.set(op.id, intent);
+            intendedMutation = intent;
+          });
+          result = applied.result;
+          if (applied.mutation) {
+            mutationByOperation.set(op.id, applied.mutation);
+          } else if (intendedMutation) {
+            result = { ...result, mutationStatus: "intended" };
+          }
+        }
+      } else if (op.type === "command") {
+        result = applyCommandOperation(plan, op, repoRoot);
+      } else {
+        const unsupported = op as unknown as { id?: unknown; type?: unknown };
+        result = {
+          operationId: typeof unsupported.id === "string" ? unsupported.id : "unknown-operation",
+          success: false,
+          message: `Unsupported operation type: ${String(unsupported.type)}`
+        };
+      }
+      const normalizedResult = boundOperationResult(result);
+      results.push(normalizedResult);
+      if (!normalizedResult.success) break;
     }
   }
 
-  const report: ApplyReport = {
+  const success =
+    results.length === plan.operations.length && results.every((result) => result.success);
+  let receiptPersistenceError: string | undefined;
+  try {
+    persistedReceipt = replaceReceipt(
+      stateOptions,
+      receiptBodyForApply(
+        plan,
+        receiptId,
+        layout,
+        persistedSnapshot,
+        appliedAt,
+        success,
+        results,
+        dependencies,
+        mutationByOperation
+      ),
+      persistedSnapshot.record
+    );
+  } catch (error) {
+    receiptPersistenceError =
+      `Final receipt publication failed; the authenticated write-ahead receipt remains the rollback authority: ${(error as Error).message}`;
+  }
+  const warnings = [persistedReceipt.warning, receiptPersistenceError].filter(
+    (warning): warning is string => Boolean(warning)
+  );
+  const reportSuccess =
+    success &&
+    receiptPersistenceError === undefined &&
+    persistedReceipt.planStateUpdated;
+  const rollbackContext: ApplyReport["rollbackContext"] = {
+    receiptId,
+    repoRoot: layout.repoRoot,
+    repositoryId: layout.repository.repositoryId,
+    stateHome: layout.stateHome
+  };
+
+  return {
     planId: plan.id,
     appliedAt,
-    success: true,
+    success: reportSuccess,
     results,
     recovery: buildApplyRecovery(plan, results),
     dependencies,
     snapshot: {
-      id: snapshot.id,
-      path: snapshotFilePath,
-      fileCount: snapshot.files.length
+      id: persistedSnapshot.record.id,
+      path: persistedSnapshot.path,
+      fileCount: persistedSnapshot.record.entries.length
     },
     receipt: {
-      id: receiptId,
-      path: receiptPath(repoRoot, receiptId)
+      id: persistedReceipt.record.id,
+      path: persistedReceipt.path
     },
-    rollbackCommand: `gatefile rollback-apply ${receiptId} --yes`
+    rollbackContext,
+    ...(warnings.length > 0 ? { warnings } : {}),
+    rollbackCommand: rollbackCommand(rollbackContext)
   };
-
-  const receipt: ApplyReceipt = {
-    id: receiptId,
-    planId: plan.id,
-    planHash: plan.integrity.planHash,
-    appliedAt,
-    success: true,
-    snapshotId: snapshot.id,
-    operationResults: results,
-    dependencies
-  };
-  writeReceipt(repoRoot, receipt);
-
-  return report;
 }
 
 export function previewPlan(plan: PlanFile, options: PlanRuntimeOptions = {}): DryRunReport {
@@ -576,10 +916,18 @@ export function previewPlan(plan: PlanFile, options: PlanRuntimeOptions = {}): D
     repositoryId: options.repositoryId,
     repoRoot: options.repoRoot
   });
-  const dependencies = dependencyStatus(plan, options.repoRoot);
+  const repoRoot = getRepoRoot(options.repoRoot);
+  const stateOptions = stateOptionsForPlan(plan, options, repoRoot);
+  const layout = getStateLayout(stateOptions);
+  const dependencies = dependencyStatus(
+    plan,
+    stateOptions
+  );
 
   const results = plan.operations.map((op) =>
-    op.type === "file" ? describeFilePreview(plan, op) : describeCommandPreview(plan, op)
+    op.type === "file"
+      ? describeFilePreview(plan, op, repoRoot, [layout.stateHome])
+      : describeCommandPreview(plan, op, repoRoot)
   );
 
   return {
@@ -620,9 +968,23 @@ export function applyPlan(plan: PlanFile, options: PlanRuntimeOptions = {}): App
 }
 
 export function rollbackApply(receiptId: string, options: PlanRuntimeOptions = {}): RollbackReport {
-  return rollbackByReceipt(options.repoRoot, receiptId);
+  return rollbackByReceipt(
+    {
+      repoRoot: options.repoRoot,
+      repositoryId: options.repositoryId,
+      stateHome: options.stateHome
+    },
+    receiptId
+  );
 }
 
 export function snapshotFilePathForReceipt(receiptId: string, options: PlanRuntimeOptions = {}): string {
-  return snapshotPath(options.repoRoot, receiptId);
+  return snapshotPath(
+    {
+      repoRoot: options.repoRoot,
+      repositoryId: options.repositoryId,
+      stateHome: options.stateHome
+    },
+    receiptId
+  );
 }

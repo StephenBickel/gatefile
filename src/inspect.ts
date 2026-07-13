@@ -5,6 +5,8 @@ import { dependencyStatus } from "./state";
 
 interface InspectOptions {
   repoRoot?: string;
+  repositoryId?: string;
+  stateHome?: string;
   config?: GatefileConfig;
 }
 
@@ -38,7 +40,11 @@ export function buildInspectReport(plan: PlanFile, options: InspectOptions = {})
   const approvalBound =
     plan.approval.status === "approved" &&
     plan.approval.approvedPlanHash === currentHash;
-  const dependencies = dependencyStatus(plan, options.repoRoot);
+  const dependencies = dependencyStatus(plan, {
+    repoRoot: options.repoRoot,
+    repositoryId: options.repositoryId ?? plan.context?.repositoryId,
+    stateHome: options.stateHome
+  });
 
   return {
     id: plan.id,
@@ -63,9 +69,17 @@ export function buildInspectReport(plan: PlanFile, options: InspectOptions = {})
 export function formatInspectSummary(
   plan: PlanFile,
   report: InspectReport,
-  options: { config?: GatefileConfig } = {}
+  options: {
+    config?: GatefileConfig;
+    repoRoot?: string;
+    repositoryId?: string;
+  } = {}
 ): string {
-  const verify = verifyPlan(plan, { config: options.config });
+  const verify = verifyPlan(plan, {
+    config: options.config,
+    repoRoot: options.repoRoot,
+    repositoryId: options.repositoryId
+  });
   const trustSuffix = verify.signerTrust.policyConfigured
     ? `, trust: ${verify.signerTrust.status}`
     : "";

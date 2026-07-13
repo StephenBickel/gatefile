@@ -17,7 +17,7 @@ Your AI agent wants to edit 14 files and run 3 commands. Do you trust it?
 npx gatefile review .plan/plan.json          # interactive TUI: inspect, approve, or reject
 npx gatefile inspect-plan .plan/plan.json    # see exactly what the agent wants to do
 npx gatefile approve-plan .plan/plan.json    # approve the hash-locked plan
-npx gatefile apply-plan .plan/plan.json      # execute with safety guardrails
+npx gatefile apply-plan .plan/plan.json --yes # execute with safety guardrails
 ```
 
 ## Why
@@ -114,10 +114,14 @@ For environments that need cryptographic proof of who approved:
 
 ```bash
 # Generate a signing key
-gatefile generate-attestation-key --out-private .gatefile/approval-key.pem --out-public .gatefile/approval-key.pub.pem
+install -d -m 700 "$HOME/.config/gatefile"
+gatefile generate-attestation-key \
+  --out-private "$HOME/.config/gatefile/approval-key.pem" \
+  --out-public .gatefile/approval-key.pub.pem
 
 # Approve with signature
-gatefile approve-plan .plan/plan.json --by steve --signing-key .gatefile/approval-key.pem
+gatefile approve-plan .plan/plan.json --by steve \
+  --signing-key "$HOME/.config/gatefile/approval-key.pem"
 
 # Validate config + trust policy
 gatefile lint-config
@@ -139,7 +143,7 @@ An agent opens PRs autonomously. Your CI pipeline runs `gatefile verify-plan` as
 
 ### 4. Compliance Audit Trail
 
-Post-incident, the security team needs to prove what was authorized. Gatefile's plan + signed approval + apply receipt + pre-apply snapshot chain gives them a complete, cryptographically verifiable record from intent to execution.
+Post-incident, the security team needs to prove what was authorized. Gatefile's plan and signed approval prove authorization of the exact plan hash; its authenticated apply receipt and pre-apply snapshot make local execution state tampering evident while Gatefile's owner-controlled state key remains trusted.
 
 ### Agent Adapter
 
@@ -160,15 +164,63 @@ See [docs/agent-adapter.md](docs/agent-adapter.md) for supported input formats.
 |-------|-------------|
 | **Hash binding** | Approval locks to exact plan content — any tampering blocks execution |
 | **Signer trust policy** | Trusted signer allowlist via `gatefile.config.json` |
-| **File sandboxing** | Writes restricted to workspace root (configurable via `filePolicy.allowedRoots`) |
+| **File sandboxing** | Canonical-root confinement, ancestor/final symlink rejection, exact-byte checks, and atomic replacement |
 | **Command policy** | Exact executable + ordered-argument allow/deny rules; execution uses `shell: false` |
 | **Timeouts** | Default 10s per command, configurable per-operation or plan-wide |
 | **Preconditions** | Guard checks (branch, clean tree, env vars) must pass before apply |
 | **Policy hooks** | Optional `beforeApprove`/`beforeApply` hooks |
-| **Dependencies** | `dependsOn` requires prior successful apply receipts |
+| **Dependencies** | `dependsOn` requires authenticated prior successful apply state |
 | **Dry-run** | Preview everything without executing — works before or after approval |
-| **Snapshots + receipts** | Pre-apply file snapshots and structured apply receipts |
-| **Rollback** | `rollback-apply` restores files from snapshot (commands are not auto-reverted) |
+| **Snapshots + receipts** | Versioned, HMAC-authenticated before/after state bound to repository, plan, and receipt |
+| **Rollback** | Whole-operation drift/symlink preflight plus replay protection; commands are not auto-reverted |
+
+Gatefile keeps rollback records, authentication keys, and replay claims in the
+current user's platform state directory, outside the repository. Set
+`GATEFILE_STATE_HOME` to an absolute owner-controlled directory to override the
+default. The HMAC key provides local integrity, not protection from a process
+already running as the same OS user. Snapshot contents are authenticated but not
+encrypted.
+
+Alpha filesystem contract: file execution is POSIX-only; authenticated state
+also fails closed on Windows until private DACL enforcement exists. Relative
+paths and command working directories are anchored to the canonical Git
+top-level (or the selected real directory outside Git). Every target parent
+must already exist. Managed directories/files must be owned by the effective
+user and may not be group/world writable; extended ACLs are rejected. Creates
+publish mode `0600`. macOS targets with security-sensitive extended attributes
+(including quarantine) are refused; Linux updates copy extended attributes or
+fail closed. These restrictions are intentional alpha compatibility breaks.
+
+Apply writes an authenticated receipt before each file commit. Once that
+write-ahead record is durable, it binds the authenticated before-state, expected
+post-state, and any possible staging residue; a later crash or receipt-finalization
+error therefore retains rollback authority. A crash during private staging before
+the write-ahead record is durable can leave an owner-only temporary file that is
+not rollback-managed.
+
+Successful dependency publication is guarded by a durable deny marker written
+before the final success receipt and plan-state cache. Dependency checks fail
+closed while that marker exists, including after an ambiguous cache `fsync`.
+A successful authenticated rollback removes the matching marker and permits a
+fresh apply of the same plan ID. If marker-removal durability is ambiguous, the
+apply/rollback authority remains valid but a restart may conservatively restore
+the marker and block dependencies until operator recovery verifies the completed
+rollback and removes the matching marker. A marker whose digest differs from the
+durable write-ahead receipt is cleared only when no older plan-state cache could
+be exposed; otherwise dependency use and re-apply remain blocked for operator
+recovery.
+
+Rollback remains non-transactional across multiple files and never reverses
+command side effects. Claiming a receipt immediately invalidates dependency state
+and prevents replay; if rollback then fails or the process crashes, Gatefile does
+not automatically resume that claimed receipt in this alpha. State is also bound
+to the checkout's canonical path plus directory device/inode, so moving or
+replacing a live checkout makes its old rollback state inaccessible. Portable
+Node.js does not expose inode generations: if a checkout is deleted and its
+directory inode is immediately reused at the same path, use a fresh state home
+because Gatefile cannot distinguish that reuse from the original checkout.
+Legacy unsigned `.gatefile/state` records are not migrated and cannot satisfy
+dependencies or be used for authenticated rollback.
 
 ## MCP Server
 
@@ -183,7 +235,7 @@ Add to your `claude_desktop_config.json`:
   "mcpServers": {
     "gatefile": {
       "command": "npx",
-      "args": ["gatefile-mcp"]
+      "args": ["--yes", "--package", "gatefile", "gatefile-mcp"]
     }
   }
 }
@@ -193,12 +245,15 @@ Add to your `claude_desktop_config.json`:
 
 | Tool | Description |
 |------|------------|
-| `gatefile_inspect` | Inspect a plan — returns operations, risk level, integrity, and approval state |
-| `gatefile_verify` | Verify plan integrity — hash match, approval binding, ready/not-ready status |
-| `gatefile_approve` | Approve a plan — binds approval to the exact plan hash |
-| `gatefile_apply` | Apply a plan with safety guardrails (defaults to dry-run mode) |
+| `inspect_plan` | Inspect a plan — returns operations, risk level, integrity, approval, and dependency state |
+| `create_plan` | Create a hash-bound plan from a draft and write it to disk |
+| `approve_plan` | Approve a plan and optionally attach an Ed25519 attestation |
+| `verify_plan` | Verify integrity, approval binding, signer trust, and repository context |
+| `dry_run_plan` | Preview operations without executing them |
+| `apply_plan` | Execute an approved plan and return authenticated rollback context |
+| `rollback_apply` | Restore file operations from an authenticated apply receipt |
 
-The `gatefile_apply` tool defaults to `dryRun: true` for safety. Set `dryRun: false` to execute real changes.
+`apply_plan` performs a real apply. Use `dry_run_plan` when the caller must remain side-effect free.
 
 ## Programmatic API
 
@@ -249,7 +304,9 @@ Use `gatefile.config.json` to enforce policy hooks and signer trust:
 }
 ```
 
-Hooks receive structured JSON on stdin and env vars (`GATEFILE_HOOK_EVENT`, `GATEFILE_PLAN_ID`, `GATEFILE_PLAN_HASH`, `GATEFILE_REPO_ROOT`). Non-zero exit blocks the action. Validate anytime with `gatefile lint-config`.
+Policy hooks run operator-defined commands synchronously; a non-zero exit blocks
+the action. This alpha does not yet define a structured stdin/environment payload
+contract for policy hooks. Validate configuration anytime with `gatefile lint-config`.
 
 ## Hooks
 

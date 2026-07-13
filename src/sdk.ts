@@ -18,6 +18,10 @@ export interface CreateOptions {
 export interface InspectOptions {
   /** Repository root used to resolve dependency state. */
   repoRoot?: string;
+  /** Explicit repository identity override for non-filesystem integrations. */
+  repositoryId?: string;
+  /** Trusted operator override for external authenticated state. */
+  stateHome?: string;
 }
 
 export interface ApproveOptions {
@@ -32,6 +36,8 @@ export interface ApplyOptions {
   repoRoot?: string;
   /** Explicit repository identity override for non-filesystem integrations. */
   repositoryId?: string;
+  /** Trusted operator override for external authenticated state. */
+  stateHome?: string;
 }
 
 export interface VerifyOptions {
@@ -41,11 +47,23 @@ export interface VerifyOptions {
   repositoryId?: string;
 }
 
+/** Complete, reusable runtime binding for rolling back an SDK apply receipt. */
+export interface RollbackContext {
+  receiptId: string;
+  repoRoot: string;
+  repositoryId: string;
+  stateHome: string;
+}
+
 // ── Result types ──────────────────────────────────────────────
 
 export interface ApprovalResult {
   plan: PlanFile;
   approvedPlanHash: string;
+}
+
+export interface SdkApplyReport extends ApplyReport {
+  rollbackContext: RollbackContext;
 }
 
 export type InspectResult = InspectReport;
@@ -88,7 +106,11 @@ export async function inspectPlan(
   options?: InspectOptions
 ): Promise<InspectResult> {
   const plan = readPlan(planPath);
-  return buildInspectReport(plan, { repoRoot: options?.repoRoot });
+  return buildInspectReport(plan, {
+    repoRoot: options?.repoRoot,
+    repositoryId: options?.repositoryId,
+    stateHome: options?.stateHome
+  });
 }
 
 /**
@@ -127,16 +149,18 @@ export async function verifyPlan(
 export async function applyPlan(
   planPath: string,
   options?: ApplyOptions
-): Promise<ApplyReport | DryRunReport> {
+): Promise<SdkApplyReport | DryRunReport> {
   const plan = readPlan(planPath);
   if (options?.dryRun) {
     return previewPlan(plan, {
       repoRoot: options.repoRoot,
-      repositoryId: options.repositoryId
+      repositoryId: options.repositoryId,
+      stateHome: options.stateHome
     });
   }
   return applyInMemory(plan, {
     repoRoot: options?.repoRoot,
-    repositoryId: options?.repositoryId
+    repositoryId: options?.repositoryId,
+    stateHome: options?.stateHome
   });
 }

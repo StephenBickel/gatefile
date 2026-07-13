@@ -5,6 +5,7 @@
   "license": "MIT",
   "type": "commonjs",
   "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "bin": {
     "gatefile": "dist/cli.js",
     "gatefile-mcp": "dist/mcp-server.js"
@@ -22,7 +23,8 @@
     "demo:e2e": "bash demo/public-launch-e2e.sh",
     "demo:playwright": "mkdir -p demo/output && npx playwright test -c demo/playwright.config.cjs",
     "demo:playwright:install": "npx playwright install chromium",
-    "test": "npm run build && node --test",
+    "prepack": "npm run build",
+    "test": "npm run build && node --require ./test-support/test-env.cjs --test",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "keywords": [
@@ -43,6 +45,8 @@
   "devDependencies": {
     "@playwright/test": "^1.58.2",
     "@types/node": "^20.17.30",
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1",
     "ts-node": "^10.9.2",
     "typescript": "^5.8.2"
   },
@@ -54,8 +58,5 @@
   "bugs": {
     "url": "https://github.com/StephenBickel/gatefile/issues"
   },
-  "author": "Stephen Bickel",
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.27.1"
-  }
+  "author": "Stephen Bickel"
 }

@@ -133,20 +133,77 @@ field is required; field presence is distinct from an omitted field.
 At apply time:
 
 - `create` succeeds only when the destination does not already exist. The
-  exclusive create also rejects an existing file, directory, or final-component
-  symlink.
+  completed file is published atomically and exclusively with mode `0600`.
+- Every target parent directory must already exist; apply and rollback do not
+  recursively create or recreate parent directories.
 - `update` and `delete` require an existing regular file. Gatefile compares its
   bytes with the UTF-8 encoding of `before` and refuses the operation if they
   differ.
+- Allowed roots are anchored to the selected repository. Gatefile rejects a
+  symlinked root, every symlink below the root, and its reserved internal state
+  namespace. Canonical duplicate and ancestor-overlapping targets are rejected
+  before execution.
+- Updates use same-directory atomic replacement. This preserves reviewed POSIX
+  mode/owner/group and prevents an in-root hard link from modifying its outside
+  peer. Linux extended attributes are copied or execution fails closed.
+- The repository root, allowed roots, ancestors, and existing targets must be
+  owned by the effective user and not group/world writable. Extended ACLs are
+  rejected. On macOS, targets with security-sensitive extended attributes are
+  rejected rather than silently stripping attributes such as quarantine.
+- Directory chains are bounded to 128 entries, and snapshot plus pessimistic
+  receipt sizes are checked before the first mutation.
+- All command-policy decisions are preflighted before file execution. Relative
+  file paths and command `cwd` values use the canonical Git top-level as their
+  stable base.
 - A drift failure stops the apply sequence, so later file and command operations
   do not run.
 
-Known v2-alpha limitation: the current checks protect the final path component,
-but ancestor-directory symlinks and time-of-check/time-of-use path swaps are not
-yet fully contained. Update writes are not an atomic compare-and-swap. That
-symlink-safe, descriptor-relative, atomic hardening is a planned follow-up; do
-not treat the current file policy as the sole boundary against a hostile local
-filesystem.
+Before each file commit, Gatefile replaces the authenticated receipt with a
+write-ahead mutation intent containing the authenticated before-state, expected
+inode/content after-state, and any staged-file cleanup residue. Named staged
+bytes remain mode `0600` until that intent is durable. Recovery accepts either
+the exact after-state (restore required) or, for a failed `intended`/durability-
+ambiguous `committed` result, the exact before-state (commit did not occur;
+residue cleanup plus a no-op). Any third state is drift and fails closed. Final
+receipt publication errors therefore return a
+failed report while retaining the durable write-ahead record. Results distinguish
+`none`, `intended`, and `committed`; a committed operation can still report
+failure when durability finalization fails.
+
+Before the final success receipt and authenticated plan-state cache are
+published, Gatefile durably creates a deny-only pending marker for that plan ID.
+Dependency checks treat any such marker as missing state. The marker is removed
+only after both success records are durable; a plan-state post-commit `fsync`
+failure therefore cannot authorize a dependent even if the new cache is visible.
+A successful authenticated rollback clears a matching stale marker and enables
+re-apply. Ambiguous marker-removal durability is reported while remaining
+crash-conservative: the marker may reappear and deny dependencies after restart.
+If the marker is bound to a different receipt digest (for example, final receipt
+replacement failed before commit), automatic cleanup removes it only when no
+older plan-state cache exists. Otherwise the plan ID remains blocked for operator
+recovery rather than exposing older success state.
+
+The rollback claim is persisted before restoration and is not resumable in this
+alpha. A crash or failure after the claim prevents automatic retry and already
+invalidates that plan for direct and transitive dependency checks. State is bound
+to the canonical checkout path and directory device/inode, so moving or replacing
+a live checkout intentionally makes its previous state unusable. Portable Node.js
+does not expose inode generations; after deleting or recloning a checkout,
+operators must use a fresh state home because immediate same-path inode reuse is
+indistinguishable from the original checkout.
+
+Gatefile's portable Node implementation is symlink-resistant on local POSIX
+filesystems, but Node 18 does not expose descriptor-relative `openat2`,
+`renameat`, or `unlinkat` operations. An actor with permission to mutate the
+directory namespace can still race an ancestor-directory swap between the final
+identity check and a path-based mutation. Gatefile rejects group/world-writable
+allowed-root components, but the owning user remains able to race its own
+directories. Concurrent namespace writers are outside the alpha threat model;
+deployments that include them need a native broker or sandbox.
+
+File execution and authenticated state are POSIX-only in this alpha. Windows
+fails closed until equivalent owner-private DACL checks are implemented. Legacy
+unsigned repo-local state is intentionally not migrated.
 
 ### Command Operation
 
@@ -188,8 +245,8 @@ Optional top-level `execution` supports command and file boundaries:
 - `cwd` is hash-bound plan content but is not part of a command-policy rule. Use
   a trusted working directory.
 - `filePolicy.allowedRoots`: a non-empty list of allowed roots for file
-  operations. If `filePolicy` is omitted, the current working directory is the
-  apply-time default.
+  operations. If `filePolicy` is omitted, the canonical Git top-level selected
+  for apply is the default root.
 
 ## Preconditions
 

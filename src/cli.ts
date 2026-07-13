@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { applyPlan, previewPlan, rollbackApply } from "./applier";
 import { formatApplySummary, formatDryRunSummary, formatRollbackSummary } from "./apply-format";
@@ -18,6 +18,11 @@ import { getRepoRoot } from "./state";
 import { generateApprovalAttestationKeyPair } from "./attestation";
 import { startMcpServer } from "./mcp";
 import { validatePlanFile } from "./validation";
+import {
+  assertDistinctKeyOutputPaths,
+  prepareKeyOutputPath,
+  writeKeyOutputFile
+} from "./key-output";
 
 function readJson<T>(path: string): T {
   const full = resolve(path);
@@ -62,11 +67,12 @@ function usage(): void {
   lint-config [--config <path>]
   verify-plan <plan.json>
   approve-plan <plan.json> --by <name>
+  generate-attestation-key --out-private <key.pem> [--out-public <key.pub.pem>] [--force]
   review <plan.json>
   apply-plan <plan.json> [--yes] [--dry-run] [--human]
-  rollback-apply <receipt-id> [--yes] [--human]
+  rollback-apply <receipt-id> [--yes] [--human] [--repo-root <path>] [--repository-id <id>] [--state-home <path>]
   audit [--since <duration>] [--plan <planId>] [--json]
-  run-pipeline <dir> [--dry-run] [--continue-on-error] [--json]
+  run-pipeline <dir> [--dry-run] [--continue-on-error] [--json] [--repo-root <path>] [--repository-id <id>] [--state-home <path>]
   render-pr-comment <plan.json> [--inspect <inspect.json>] [--verify <verify.json>] [--dry-run <dry-run.json>] [--out <comment.md>]
   mcp                                Start MCP server (stdio transport)`);
 
@@ -183,14 +189,16 @@ async function main(): Promise<void> {
     const outPublic = arg(args, "--out-public");
     const force = hasFlag(args, "--force");
     if (!outPrivate) throw new Error("generate-attestation-key requires --out-private");
-    if (!force && (existsSync(resolve(outPrivate)) || (outPublic && existsSync(resolve(outPublic))))) {
-      throw new Error("Refusing to overwrite key files without --force");
-    }
+    const privatePath = prepareKeyOutputPath(outPrivate, "private key output", force);
+    const publicPath = outPublic
+      ? prepareKeyOutputPath(outPublic, "public key output", force)
+      : undefined;
+    if (publicPath) assertDistinctKeyOutputPaths(privatePath, publicPath);
 
     const keys = generateApprovalAttestationKeyPair();
-    writeFileSync(resolve(outPrivate), keys.privateKeyPem, "utf-8");
-    if (outPublic) {
-      writeFileSync(resolve(outPublic), keys.publicKeyPem, "utf-8");
+    writeKeyOutputFile(privatePath, keys.privateKeyPem, 0o600, "private key output", force);
+    if (publicPath) {
+      writeKeyOutputFile(publicPath, keys.publicKeyPem, 0o644, "public key output", force);
     }
     console.log(
       `Attestation key generated: keyId=${keys.keyId}, private=${outPrivate}${outPublic ? `, public=${outPublic}` : ""}`
@@ -229,19 +237,25 @@ async function main(): Promise<void> {
 
     const report = applyPlan(plan, { repoRoot, planPath: resolve(planPath), config });
     console.log(human ? formatApplySummary(report) : JSON.stringify(report, null, 2));
+    if (!report.success) process.exitCode = 1;
     return;
   }
 
   if (cmd === "rollback-apply") {
     const args = process.argv.slice(3);
-    const receiptId = positionalPath(args);
+    const receiptId = positionalPath(args, ["--repo-root", "--repository-id", "--state-home"]);
     const yes = hasFlag(args, "--yes");
     const human = hasFlag(args, "--human");
     if (!receiptId) throw new Error("rollback-apply requires a receipt id");
     if (!yes) throw new Error("Refusing to rollback without --yes");
 
-    const report = rollbackApply(receiptId, { repoRoot: getRepoRoot() });
+    const report = rollbackApply(receiptId, {
+      repoRoot: getRepoRoot(arg(args, "--repo-root")),
+      repositoryId: arg(args, "--repository-id"),
+      stateHome: arg(args, "--state-home")
+    });
     console.log(human ? formatRollbackSummary(report) : JSON.stringify(report, null, 2));
+    if (!report.success) process.exitCode = 1;
     return;
   }
 
@@ -292,13 +306,15 @@ async function main(): Promise<void> {
 
   if (cmd === "run-pipeline") {
     const args = process.argv.slice(3);
-    const dir = positionalPath(args);
+    const dir = positionalPath(args, ["--repo-root", "--repository-id", "--state-home"]);
     if (!dir) throw new Error("run-pipeline requires a directory path");
 
     const result = runPipeline(dir, {
       dryRun: hasFlag(args, "--dry-run"),
       continueOnError: hasFlag(args, "--continue-on-error"),
-      repoRoot: getRepoRoot()
+      repoRoot: getRepoRoot(arg(args, "--repo-root")),
+      repositoryId: arg(args, "--repository-id"),
+      stateHome: arg(args, "--state-home")
     });
 
     if (hasFlag(args, "--json")) {

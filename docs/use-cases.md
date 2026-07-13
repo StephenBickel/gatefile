@@ -52,8 +52,9 @@
 **With Gatefile:**
 - Plan = machine-readable intent record
 - Signed approval = cryptographic proof of who approved, when, bound to the exact plan hash
-- Apply receipt = structured record of what executed and what the file state was before
-- The full chain (plan → attestation → receipt → snapshot) is tamper-evident and stored locally
+- Apply receipt = authenticated record of what executed and the exact before/after file states
+- The local chain (plan → attestation → receipt → snapshot) is tamper-evident while
+  Gatefile's external, owner-controlled state key remains trusted
 
 **Key features used:** Signed attestation (Ed25519), signer trust policy, apply receipts, pre-apply snapshots, `lint-config`.
 

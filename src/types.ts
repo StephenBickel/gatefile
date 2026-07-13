@@ -146,6 +146,7 @@ export interface ApplyOperationResult {
   operationId: string;
   success: boolean;
   message: string;
+  mutationStatus: "none" | "intended" | "committed";
 }
 
 export type RecoveryOperationStatus = "planned" | "succeeded" | "failed" | "not-run";
@@ -154,6 +155,7 @@ export interface RecoveryOperationGuidance {
   operationId: string;
   type: Operation["type"];
   status: RecoveryOperationStatus;
+  mutationStatus?: ApplyOperationResult["mutationStatus"];
   path?: string;
   guidance: string;
 }
@@ -186,6 +188,13 @@ export interface ApplyReceiptInfo {
   path: string;
 }
 
+export interface ApplyRollbackContext {
+  receiptId: string;
+  repoRoot: string;
+  repositoryId: string;
+  stateHome: string;
+}
+
 export interface ApplyReport {
   planId: string;
   appliedAt: string;
@@ -195,6 +204,8 @@ export interface ApplyReport {
   dependencies: DependencyStatus;
   snapshot: SnapshotInfo;
   receipt: ApplyReceiptInfo;
+  rollbackContext: ApplyRollbackContext;
+  warnings?: string[];
   rollbackCommand: string;
 }
 
@@ -252,36 +263,113 @@ export interface HookContext {
   planPath?: string;
 }
 
+export interface StateFileIdentity {
+  device: string;
+  inode: string;
+}
+
+export interface StateDirectoryIdentity {
+  relativePath: string;
+  identity: StateFileIdentity;
+}
+
+export interface StateAbsentFile {
+  kind: "absent";
+}
+
+export interface StateCompactRegularFile {
+  kind: "regular";
+  sha256: string;
+  byteLength: number;
+  mode: number;
+  uid: string;
+  gid: string;
+  identity: StateFileIdentity;
+}
+
+export interface StateExactRegularFile extends StateCompactRegularFile {
+  contentBase64: string;
+}
+
+export type SnapshotStoredFileState = StateAbsentFile | StateExactRegularFile;
+export type ReceiptStoredFileState = StateAbsentFile | StateCompactRegularFile;
+
+export interface StateAuthenticationTag {
+  scheme: "hmac-sha256";
+  envelopeVersion: 1;
+  keyId: string;
+  tag: string;
+}
+
+export interface StateRepositoryIdentity {
+  repositoryId: string;
+  repoInstanceId: string;
+}
+
+export interface StatePlanIdentity {
+  id: string;
+  hash: string;
+}
+
 export interface SnapshotFileEntry {
+  id: string;
   operationId: string;
-  path: string;
-  resolvedPath: string;
-  existedBefore: boolean;
-  contentBefore?: string;
+  action: FileAction;
+  requestedPath: string;
+  allowedRoot: string;
+  relativePath: string;
+  directoryChain: StateDirectoryIdentity[];
+  before: SnapshotStoredFileState;
 }
 
 export interface SnapshotFile {
+  type: "gatefile-rollback-snapshot";
+  stateVersion: 1;
   id: string;
-  planId: string;
+  repository: StateRepositoryIdentity;
+  plan: StatePlanIdentity;
   createdAt: string;
-  repoRoot: string;
-  files: SnapshotFileEntry[];
+  entries: SnapshotFileEntry[];
+  authentication: StateAuthenticationTag;
+}
+
+export interface RollbackCleanupResidue {
+  path: string;
+  identity: StateFileIdentity;
+}
+
+export interface RollbackEntry {
+  snapshotEntryId: string;
+  operationId: string;
+  action: FileAction;
+  requestedPath: string;
+  allowedRoot: string;
+  relativePath: string;
+  directoryChain: StateDirectoryIdentity[];
+  after: ReceiptStoredFileState;
+  cleanupResidues: RollbackCleanupResidue[];
 }
 
 export interface ApplyReceipt {
+  type: "gatefile-apply-receipt";
+  stateVersion: 1;
   id: string;
-  planId: string;
-  planHash: string;
+  repository: StateRepositoryIdentity;
+  plan: StatePlanIdentity;
   appliedAt: string;
-  success: boolean;
   snapshotId: string;
-  operationResults: ApplyOperationResult[];
+  snapshotDigest: string;
+  success: boolean;
+  results: Array<Required<ApplyOperationResult>>;
   dependencies: DependencyStatus;
+  rollbackEntries: RollbackEntry[];
+  authentication: StateAuthenticationTag;
 }
 
 export interface RollbackFileResult {
   path: string;
   restored: boolean;
+  durabilityConfirmed?: boolean;
   action: "rewritten" | "deleted" | "unchanged";
   message: string;
 }

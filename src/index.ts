@@ -29,11 +29,19 @@ export type {
   ApproveOptions,
   ApplyOptions,
   VerifyOptions,
+  RollbackContext,
+  SdkApplyReport,
   ApprovalResult,
   InspectResult,
   VerifyResult
 } from "./sdk";
 export { generateApprovalAttestationKeyPair, createApprovalAttestation, verifyApprovalAttestation } from "./attestation";
 export { normalizeGatefileConfig } from "./config";
-export { repositoryIdForRoot } from "./state";
 export { startMcpServer } from "./mcp";
+
+import { repositoryIdForRoot as resolveRepositoryIdForRoot } from "./state";
+
+/** Stable, non-secret identity for binding a plan to its intended repository. */
+export function repositoryIdForRoot(repoRoot?: string): string {
+  return resolveRepositoryIdForRoot(repoRoot);
+}

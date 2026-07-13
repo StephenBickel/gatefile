@@ -1,6 +1,6 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { resolve, join } from "node:path";
-import { PlanFile } from "./types";
+import { ApplyReport, PlanFile } from "./types";
 import { applyPlan, previewPlan } from "./applier";
 import { verifyPlan } from "./verify";
 
@@ -10,6 +10,10 @@ export interface PipelineOptions {
   dryRun?: boolean;
   continueOnError?: boolean;
   repoRoot?: string;
+  /** Explicit repository identity override for non-filesystem integrations. */
+  repositoryId?: string;
+  /** Trusted operator override for external authenticated state. */
+  stateHome?: string;
 }
 
 export type PipelinePlanStatus = "passed" | "failed" | "skipped";
@@ -19,6 +23,8 @@ export interface PipelinePlanResult {
   file: string;
   status: PipelinePlanStatus;
   message: string;
+  /** Complete apply outcome, including authenticated rollback authority. */
+  applyReport?: ApplyReport;
 }
 
 export interface PipelineResult {
@@ -123,7 +129,11 @@ export function runPipeline(dir: string, options?: PipelineOptions): PipelineRes
 
     if (options?.dryRun) {
       try {
-        previewPlan(entry.plan, { repoRoot: options?.repoRoot });
+        previewPlan(entry.plan, {
+          repoRoot: options?.repoRoot,
+          repositoryId: options?.repositoryId,
+          stateHome: options?.stateHome
+        });
         results.push({
           planId: entry.plan.id,
           file: entry.file,
@@ -144,7 +154,10 @@ export function runPipeline(dir: string, options?: PipelineOptions): PipelineRes
 
     // Real execution
     try {
-      const verification = verifyPlan(entry.plan, { repoRoot: options?.repoRoot });
+      const verification = verifyPlan(entry.plan, {
+        repoRoot: options?.repoRoot,
+        repositoryId: options?.repositoryId
+      });
       if (!verification.readyToApplyFromIntegrityApproval) {
         failed = true;
         results.push({
@@ -156,22 +169,31 @@ export function runPipeline(dir: string, options?: PipelineOptions): PipelineRes
         continue;
       }
 
-      const report = applyPlan(entry.plan, { repoRoot: options?.repoRoot });
+      const report = applyPlan(entry.plan, {
+        repoRoot: options?.repoRoot,
+        repositoryId: options?.repositoryId,
+        stateHome: options?.stateHome
+      });
       if (report.success) {
         results.push({
           planId: entry.plan.id,
           file: entry.file,
           status: "passed",
-          message: "Applied successfully"
+          message: "Applied successfully",
+          applyReport: report
         });
       } else {
         failed = true;
         const failedOp = report.results.find((r) => !r.success);
+        const failureDetail = failedOp?.message
+          ?? report.warnings?.join("; ")
+          ?? "Apply returned a failed report; use applyReport for recovery details";
         results.push({
           planId: entry.plan.id,
           file: entry.file,
           status: "failed",
-          message: `Apply failed: ${failedOp?.message ?? "unknown error"}`
+          message: `Apply failed: ${failureDetail}`,
+          applyReport: report
         });
       }
     } catch (err) {

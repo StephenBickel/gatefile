@@ -1,53 +1,124 @@
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  readdirSync,
-  realpathSync,
-  rmSync,
-  writeFileSync
-} from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
+import { existsSync, lstatSync, realpathSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { dirname, resolve } from "node:path";
-import { ApplyReceipt, DependencyStatus, PlanFile, RollbackFileResult, RollbackReport, SnapshotFile } from "./types";
+import { dirname, join, resolve } from "node:path";
+import {
+  ApplyReceipt,
+  DependencyStatus,
+  PlanFile,
+  RollbackFileResult,
+  RollbackReport,
+  SnapshotFile
+} from "./types";
+import {
+  assertSafeStateId,
+  claimRollbackMarker,
+  completeRollbackMarker,
+  createStateRepositoryBinding,
+  ensurePrivateStateDirectory,
+  getOrCreateStateAuthKey,
+  inspectPrivateStateDirectoryIfPresent,
+  loadStateAuthKey,
+  preflightStateAuthForWrite,
+  readPrivateStateFile,
+  readRollbackMarker,
+  removePrivateStateFile,
+  replacePrivateStateFile,
+  resolveStateHome,
+  rollbackMarkerPath,
+  StateAuthenticationPostCommitError,
+  stateRecordsRoot,
+  writeExclusivePrivateStateFile
+} from "./state-auth";
+import type { StateAuthKey, StateRepositoryBinding } from "./state-auth";
+import {
+  assertPlanStateReceiptLink,
+  assertReceiptSnapshotLink,
+  computeReceiptRecordDigest,
+  computeSnapshotRecordDigest,
+  createPlanStateRecord,
+  createReceiptRecord,
+  createSnapshotRecord,
+  decodeStoredExactFileState,
+  extractUntrustedStateRecordHeader,
+  parseAndVerifyPlanStateRecord,
+  parseAndVerifyReceiptRecord,
+  parseAndVerifySnapshotRecord
+} from "./state-records";
+import type {
+  AuthenticatedPlanStateRecord,
+  AuthenticatedReceiptRecord,
+  AuthenticatedSnapshotRecord,
+  PlanStateRecordBody,
+  ReceiptRecordBody,
+  SnapshotRecordBody,
+  StateRecordRepository,
+  StoredCompactFileState
+} from "./state-records";
+import {
+  captureCompactCurrentState,
+  compactFileState,
+  createSafeFsContext,
+  safeCleanupResidue,
+  SafeFsPostCommitError,
+  safeRestore,
+  verifyCleanupResidue
+} from "./safe-fs";
+import type {
+  CompactFileState,
+  SafeFsContext,
+  SignedPathMetadata
+} from "./safe-fs";
 
-interface StateLayout {
+export interface StateRuntimeOptions {
+  repoRoot?: string;
+  repositoryId?: string;
+  stateHome?: string;
+}
+
+type StateRuntimeInput = StateRuntimeOptions | string | undefined;
+
+export interface StateLayout {
   repoRoot: string;
-  gatefileRoot: string;
-  stateRoot: string;
+  stateHome: string;
+  repository: StateRecordRepository;
+  binding: StateRepositoryBinding;
+  recordsRoot: string;
   receiptsDir: string;
   snapshotsDir: string;
   plansDir: string;
 }
 
-interface PlanStateRecord {
-  planId: string;
-  lastApplyReceiptId: string;
-  lastAppliedAt: string;
-  lastApplySuccess: boolean;
-  lastSuccessfulReceiptId?: string;
-  lastSuccessfulAppliedAt?: string;
+export interface PersistedSnapshot {
+  record: AuthenticatedSnapshotRecord;
+  path: string;
+  digest: string;
 }
 
-function safePlanId(planId: string): string {
-  return Buffer.from(planId, "utf8").toString("base64url");
+export interface PersistedReceipt {
+  record: AuthenticatedReceiptRecord;
+  path: string;
+  digest: string;
+  planStateUpdated: boolean;
+  warning?: string;
 }
 
-function safeTimestamp(iso: string): string {
-  return iso.replace(/[:.]/g, "-");
+interface LoadedReceiptChain {
+  layout: StateLayout;
+  receipt: AuthenticatedReceiptRecord;
+  receiptKey: StateAuthKey;
+  receiptDigest: string;
+  snapshot: AuthenticatedSnapshotRecord;
 }
 
-function writeJson(path: string, value: unknown): void {
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-}
-
-function readJson<T>(path: string): T {
-  return JSON.parse(readFileSync(path, "utf8")) as T;
+function normalizeStateOptions(input: StateRuntimeInput): StateRuntimeOptions {
+  if (typeof input === "string") return { repoRoot: input };
+  return input ?? {};
 }
 
 export function getRepoRoot(repoRoot?: string): string {
-  return resolve(repoRoot ?? process.cwd());
+  const requestedRoot = resolve(repoRoot ?? process.cwd());
+  return stateRepositoryRoot(requestedRoot);
 }
 
 function gitOutput(repoRoot: string, args: string[]): string | undefined {
@@ -80,127 +151,526 @@ function normalizedRemoteIdentity(remote: string): string {
 /** Stable, non-secret identity for binding a plan to its intended repository. */
 export function repositoryIdForRoot(repoRoot?: string): string {
   const requestedRoot = getRepoRoot(repoRoot);
-  const gitRoot = gitOutput(requestedRoot, ["rev-parse", "--show-toplevel"]);
-  const effectiveRoot = gitRoot ? realpathSync(gitRoot) : realpathSync(requestedRoot);
-  const remote = gitOutput(effectiveRoot, ["config", "--get", "remote.origin.url"]);
+  const remote = gitOutput(requestedRoot, ["config", "--get", "remote.origin.url"]);
   return remote
     ? `git:${normalizedRemoteIdentity(remote)}`
-    : `file:${effectiveRoot}`;
+    : `file:${requestedRoot}`;
 }
 
-export function getStateLayout(repoRoot?: string): StateLayout {
-  const resolvedRepoRoot = getRepoRoot(repoRoot);
-  const gatefileRoot = resolve(resolvedRepoRoot, ".gatefile");
-  const stateRoot = resolve(gatefileRoot, "state");
+function stateRepositoryRoot(requestedRoot: string): string {
+  const gitRoot = gitOutput(requestedRoot, ["rev-parse", "--show-toplevel"]);
+  return gitRoot ? realpathSync(gitRoot) : realpathSync(requestedRoot);
+}
 
+function recordRepository(binding: StateRepositoryBinding): StateRecordRepository {
   return {
-    repoRoot: resolvedRepoRoot,
-    gatefileRoot,
-    stateRoot,
-    receiptsDir: resolve(stateRoot, "receipts"),
-    snapshotsDir: resolve(stateRoot, "snapshots"),
-    plansDir: resolve(stateRoot, "plans")
+    repositoryId: binding.repositoryId,
+    repoInstanceId: binding.repoInstanceId
   };
 }
 
-export function ensureStateLayout(repoRoot?: string): StateLayout {
-  const layout = getStateLayout(repoRoot);
-  mkdirSync(layout.receiptsDir, { recursive: true });
-  mkdirSync(layout.snapshotsDir, { recursive: true });
-  mkdirSync(layout.plansDir, { recursive: true });
-  return layout;
-}
-
-export function makeReceiptId(planId: string, appliedAt: string): string {
-  return `apply_${safeTimestamp(appliedAt)}_${safePlanId(planId)}`;
-}
-
-export function snapshotPath(repoRoot: string | undefined, snapshotId: string): string {
-  return resolve(getStateLayout(repoRoot).snapshotsDir, `${snapshotId}.json`);
-}
-
-export function receiptPath(repoRoot: string | undefined, receiptId: string): string {
-  return resolve(getStateLayout(repoRoot).receiptsDir, `${receiptId}.json`);
-}
-
-function planStatePath(repoRoot: string | undefined, planId: string): string {
-  return resolve(getStateLayout(repoRoot).plansDir, `${safePlanId(planId)}.json`);
-}
-
-export function writeSnapshot(repoRoot: string | undefined, snapshot: SnapshotFile): string {
-  const layout = ensureStateLayout(repoRoot);
-  const path = resolve(layout.snapshotsDir, `${snapshot.id}.json`);
-  writeJson(path, snapshot);
-  return path;
-}
-
-export function writeReceipt(repoRoot: string | undefined, receipt: ApplyReceipt): string {
-  const layout = ensureStateLayout(repoRoot);
-  const path = resolve(layout.receiptsDir, `${receipt.id}.json`);
-  writeJson(path, receipt);
-
-  const statePath = planStatePath(layout.repoRoot, receipt.planId);
-  const current = existsSync(statePath) ? readJson<PlanStateRecord>(statePath) : undefined;
-  const next: PlanStateRecord = {
-    planId: receipt.planId,
-    lastApplyReceiptId: receipt.id,
-    lastAppliedAt: receipt.appliedAt,
-    lastApplySuccess: receipt.success,
-    lastSuccessfulReceiptId: receipt.success
-      ? receipt.id
-      : current?.lastSuccessfulReceiptId,
-    lastSuccessfulAppliedAt: receipt.success
-      ? receipt.appliedAt
-      : current?.lastSuccessfulAppliedAt
+export function getStateLayout(input: StateRuntimeInput = {}): StateLayout {
+  const options = normalizeStateOptions(input);
+  const requestedRoot = getRepoRoot(options.repoRoot);
+  const repositoryId = options.repositoryId ?? repositoryIdForRoot(requestedRoot);
+  const binding = createStateRepositoryBinding(stateRepositoryRoot(requestedRoot), repositoryId);
+  const stateHome = resolveStateHome(options.stateHome);
+  const recordsRoot = stateRecordsRoot(binding, stateHome);
+  return {
+    repoRoot: binding.canonicalRepoRoot,
+    stateHome,
+    repository: recordRepository(binding),
+    binding,
+    recordsRoot,
+    receiptsDir: join(recordsRoot, "receipts"),
+    snapshotsDir: join(recordsRoot, "snapshots"),
+    plansDir: join(recordsRoot, "plans")
   };
-
-  writeJson(statePath, next);
-  return path;
 }
 
-export function readReceipt(repoRoot: string | undefined, receiptId: string): ApplyReceipt {
-  const path = receiptPath(repoRoot, receiptId);
-  if (!existsSync(path)) {
-    throw new Error(`Unknown receipt: ${receiptId} (expected ${path})`);
-  }
-
-  return readJson<ApplyReceipt>(path);
+function ensureWritableState(input: StateRuntimeInput): { layout: StateLayout; key: StateAuthKey } {
+  const options = normalizeStateOptions(input);
+  const layout = getStateLayout(options);
+  const key = getOrCreateStateAuthKey(layout.binding, options.stateHome);
+  ensurePrivateStateDirectory(layout.recordsRoot, layout.recordsRoot);
+  ensurePrivateStateDirectory(layout.recordsRoot, layout.receiptsDir);
+  ensurePrivateStateDirectory(layout.recordsRoot, layout.snapshotsDir);
+  ensurePrivateStateDirectory(layout.recordsRoot, layout.plansDir);
+  return { layout, key };
 }
 
-export function readSnapshot(repoRoot: string | undefined, snapshotId: string): SnapshotFile {
-  const path = snapshotPath(repoRoot, snapshotId);
-  if (!existsSync(path)) {
-    throw new Error(`Missing snapshot: ${snapshotId} (expected ${path})`);
-  }
-
-  return readJson<SnapshotFile>(path);
+export function ensureStateLayout(input: StateRuntimeInput = {}): StateLayout {
+  return ensureWritableState(input).layout;
 }
 
-function successfulPlans(repoRoot?: string): Set<string> {
-  const layout = getStateLayout(repoRoot);
-  if (!existsSync(layout.plansDir)) {
-    return new Set<string>();
-  }
+function safeTimestamp(iso: string): string {
+  return iso.replace(/[:.]/g, "-");
+}
 
-  const entries = readdirSync(layout.plansDir, { withFileTypes: true }).filter((entry) =>
-    entry.isFile() && entry.name.endsWith(".json")
+export function makeReceiptId(_planId: string, appliedAt: string): string {
+  return assertSafeStateId(
+    `apply_${safeTimestamp(appliedAt)}_${randomBytes(12).toString("base64url")}`
   );
+}
 
-  const out = new Set<string>();
-  for (const entry of entries) {
-    const state = readJson<PlanStateRecord>(resolve(layout.plansDir, entry.name));
-    if (state.lastApplySuccess || state.lastSuccessfulReceiptId) {
-      out.add(state.planId);
+function planStateFilename(planId: string): string {
+  return `${createHash("sha256")
+    .update("gatefile-plan-state-path-v1\0", "utf8")
+    .update(planId, "utf8")
+    .digest("hex")}.json`;
+}
+
+export function snapshotPath(input: StateRuntimeInput, snapshotId: string): string {
+  return join(getStateLayout(input).snapshotsDir, `${assertSafeStateId(snapshotId)}.json`);
+}
+
+export function receiptPath(input: StateRuntimeInput, receiptId: string): string {
+  return join(getStateLayout(input).receiptsDir, `${assertSafeStateId(receiptId)}.json`);
+}
+
+function planStatePath(input: StateRuntimeInput, planId: string): string {
+  return join(getStateLayout(input).plansDir, planStateFilename(planId));
+}
+
+function planStatePendingFilename(planId: string): string {
+  return planStateFilename(planId).replace(/\.json$/, ".pending");
+}
+
+function planStatePendingPath(layout: StateLayout, planId: string): string {
+  return join(layout.plansDir, planStatePendingFilename(planId));
+}
+
+function clearMatchingPlanStatePendingMarker(
+  layout: StateLayout,
+  planId: string,
+  receiptId: string,
+  receiptDigest: string
+): boolean {
+  const path = planStatePendingPath(layout, planId);
+  if (!stateDestinationExistsNoFollow(path)) return false;
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readPrivateStateFile(path).toString("utf8"));
+  } catch (error) {
+    throw new Error(
+      `Dependency-state invalidation marker is invalid and was not removed: ${(error as Error).message}`
+    );
+  }
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("Dependency-state invalidation marker is invalid and was not removed");
+  }
+  const record = raw as Record<string, unknown>;
+  const fields = Object.keys(record).sort().join(",");
+  if (
+    fields !== "planId,receiptDigest,receiptId,type,version" ||
+    record.type !== "gatefile-plan-state-pending" ||
+    record.version !== 1 ||
+    record.planId !== planId ||
+    record.receiptId !== receiptId ||
+    typeof record.receiptDigest !== "string" ||
+    !/^[a-f0-9]{64}$/.test(record.receiptDigest)
+  ) {
+    throw new Error(
+      "Dependency-state invalidation marker does not match the authenticated rollback receipt"
+    );
+  }
+  if (
+    record.receiptDigest !== receiptDigest &&
+    stateDestinationExistsNoFollow(join(layout.plansDir, planStateFilename(planId)))
+  ) {
+    throw new Error(
+      "Dependency-state invalidation marker digest differs from the durable receipt and an older plan-state cache still exists"
+    );
+  }
+  removePrivateStateFile(path);
+  return true;
+}
+
+function serializeRecord(record: unknown): string {
+  return `${JSON.stringify(record, null, 2)}\n`;
+}
+
+export function writeSnapshot(
+  input: StateRuntimeInput,
+  body: SnapshotRecordBody
+): PersistedSnapshot {
+  const { layout, key } = ensureWritableState(input);
+  const record = createSnapshotRecord(body, key);
+  const path = join(layout.snapshotsDir, `${record.id}.json`);
+  writeExclusivePrivateStateFile(path, serializeRecord(record));
+  return { record, path, digest: computeSnapshotRecordDigest(record) };
+}
+
+function publishReceipt(
+  input: StateRuntimeInput,
+  body: ReceiptRecordBody,
+  snapshot: AuthenticatedSnapshotRecord,
+  replaceExisting: boolean
+): PersistedReceipt {
+  const options = normalizeStateOptions(input);
+  const { layout, key } = ensureWritableState(options);
+  const record = createReceiptRecord(body, key, snapshot);
+  const path = join(layout.receiptsDir, `${record.id}.json`);
+  const digest = computeReceiptRecordDigest(record);
+  const pendingPath = record.success
+    ? planStatePendingPath(layout, record.plan.id)
+    : undefined;
+  if (pendingPath) {
+    writeExclusivePrivateStateFile(
+      pendingPath,
+      serializeRecord({
+        type: "gatefile-plan-state-pending",
+        version: 1,
+        planId: record.plan.id,
+        receiptId: record.id,
+        receiptDigest: digest
+      })
+    );
+  }
+  if (replaceExisting) {
+    replacePrivateStateFile(path, serializeRecord(record));
+  } else {
+    writeExclusivePrivateStateFile(path, serializeRecord(record));
+  }
+
+  let planStateUpdated = !record.success;
+  let warning: string | undefined;
+  if (record.success) {
+    const planStateBody: PlanStateRecordBody = {
+      type: "gatefile-plan-state",
+      stateVersion: 1,
+      repository: layout.repository,
+      plan: { ...record.plan },
+      receiptId: record.id,
+      receiptDigest: digest,
+      appliedAt: record.appliedAt,
+      success: true
+    };
+    const planState = createPlanStateRecord(planStateBody, key, record);
+    try {
+      replacePrivateStateFile(
+        join(layout.plansDir, planStateFilename(record.plan.id)),
+        serializeRecord(planState)
+      );
+      if (!pendingPath) throw new Error("Missing dependency-state invalidation marker");
+      try {
+        removePrivateStateFile(pendingPath);
+        planStateUpdated = true;
+      } catch (error) {
+        if (error instanceof StateAuthenticationPostCommitError) {
+          planStateUpdated = true;
+          warning =
+            `Dependency-state cache is durable, but invalidation-marker cleanup durability was not confirmed: ${error.message}`;
+        } else {
+          throw error;
+        }
+      }
+    } catch (error) {
+      if (!planStateUpdated) {
+        warning =
+          `Apply receipt is durable and rollbackable, but the dependency-state cache was not updated and remains fail-closed: ${(error as Error).message}`;
+      }
     }
   }
 
-  return out;
+  return {
+    record,
+    path,
+    digest,
+    planStateUpdated,
+    ...(warning ? { warning } : {})
+  };
 }
 
-export function dependencyStatus(plan: PlanFile, repoRoot?: string): DependencyStatus {
-  const requiredPlanIds = [...new Set((plan.dependsOn ?? []).map((value) => value.trim()).filter((value) => value.length > 0))];
-  const success = successfulPlans(repoRoot);
-  const missingPlanIds = requiredPlanIds.filter((planId) => !success.has(planId));
+export function writeReceipt(
+  input: StateRuntimeInput,
+  body: ReceiptRecordBody,
+  snapshot: AuthenticatedSnapshotRecord
+): PersistedReceipt {
+  return publishReceipt(input, body, snapshot, false);
+}
+
+export function replaceReceipt(
+  input: StateRuntimeInput,
+  body: ReceiptRecordBody,
+  snapshot: AuthenticatedSnapshotRecord
+): PersistedReceipt {
+  return publishReceipt(input, body, snapshot, true);
+}
+
+function assertStateDestinationAbsent(path: string, label: string): void {
+  try {
+    lstatSync(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  throw new Error(`${label} destination is already occupied: ${path}`);
+}
+
+function stateDestinationExistsNoFollow(path: string): boolean {
+  try {
+    lstatSync(path);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+function assertHeaderBinding(
+  layout: StateLayout,
+  expectedKind: "snapshot" | "receipt" | "plan-state",
+  expectedId: string,
+  bytes: Buffer
+): ReturnType<typeof extractUntrustedStateRecordHeader> {
+  const header = extractUntrustedStateRecordHeader(bytes);
+  if (header.kind !== expectedKind) {
+    throw new Error(`Expected ${expectedKind} state, received ${header.kind}`);
+  }
+  if (header.id !== expectedId) {
+    throw new Error(`${expectedKind} record ID does not match requested filename/ID`);
+  }
+  if (
+    header.repository.repositoryId !== layout.repository.repositoryId ||
+    header.repository.repoInstanceId !== layout.repository.repoInstanceId
+  ) {
+    throw new Error(`${expectedKind} repository binding does not match the current repository`);
+  }
+  return header;
+}
+
+function loadSnapshot(input: StateRuntimeInput, snapshotId: string): {
+  record: AuthenticatedSnapshotRecord;
+  key: StateAuthKey;
+} {
+  const options = normalizeStateOptions(input);
+  const layout = getStateLayout(options);
+  const safeId = assertSafeStateId(snapshotId);
+  const bytes = readPrivateStateFile(join(layout.snapshotsDir, `${safeId}.json`));
+  const header = assertHeaderBinding(layout, "snapshot", safeId, bytes);
+  const key = loadStateAuthKey(layout.binding, header.authentication.keyId, options.stateHome);
+  return {
+    record: parseAndVerifySnapshotRecord(bytes, key, {
+      repository: layout.repository,
+      id: safeId
+    }),
+    key
+  };
+}
+
+function loadReceipt(input: StateRuntimeInput, receiptId: string): {
+  record: AuthenticatedReceiptRecord;
+  key: StateAuthKey;
+} {
+  const options = normalizeStateOptions(input);
+  const layout = getStateLayout(options);
+  const safeId = assertSafeStateId(receiptId);
+  const bytes = readPrivateStateFile(join(layout.receiptsDir, `${safeId}.json`));
+  const header = assertHeaderBinding(layout, "receipt", safeId, bytes);
+  const key = loadStateAuthKey(layout.binding, header.authentication.keyId, options.stateHome);
+  return {
+    record: parseAndVerifyReceiptRecord(bytes, key, {
+      repository: layout.repository,
+      id: safeId
+    }),
+    key
+  };
+}
+
+function loadReceiptChain(input: StateRuntimeInput, receiptId: string): LoadedReceiptChain {
+  const options = normalizeStateOptions(input);
+  const layout = getStateLayout(options);
+  const loadedReceipt = loadReceipt(options, receiptId);
+  const loadedSnapshot = loadSnapshot(options, loadedReceipt.record.snapshotId);
+  assertReceiptSnapshotLink(loadedReceipt.record, loadedSnapshot.record);
+  return {
+    layout,
+    receipt: loadedReceipt.record,
+    receiptKey: loadedReceipt.key,
+    receiptDigest: computeReceiptRecordDigest(loadedReceipt.record),
+    snapshot: loadedSnapshot.record
+  };
+}
+
+/**
+ * Materialize and verify every deterministic state destination before an apply
+ * is allowed to mutate managed files. Existing plan state is a replaceable
+ * cache, but it must already be a valid authenticated record rather than an
+ * attacker-controlled directory, link, or corrupt file.
+ */
+export function prepareStateForApply(
+  input: StateRuntimeInput,
+  planId: string,
+  receiptId: string
+): StateLayout {
+  const options = normalizeStateOptions(input);
+  const { layout } = ensureWritableState(options);
+  assertApplyStateDestinations(layout, options, planId, receiptId);
+  return layout;
+}
+
+function assertApplyStateDestinations(
+  layout: StateLayout,
+  options: StateRuntimeOptions,
+  planId: string,
+  receiptId: string
+): void {
+  const safeReceiptId = assertSafeStateId(receiptId);
+  assertStateDestinationAbsent(
+    join(layout.snapshotsDir, `${safeReceiptId}.json`),
+    "Snapshot"
+  );
+  assertStateDestinationAbsent(
+    join(layout.receiptsDir, `${safeReceiptId}.json`),
+    "Receipt"
+  );
+
+  const pendingPath = planStatePendingPath(layout, planId);
+  if (stateDestinationExistsNoFollow(pendingPath)) {
+    throw new Error(
+      `Dependency-state invalidation marker is already occupied; apply remains fail-closed: ${pendingPath}`
+    );
+  }
+
+  const existingPlanStatePath = join(layout.plansDir, planStateFilename(planId));
+  if (stateDestinationExistsNoFollow(existingPlanStatePath)) {
+    const bytes = readPrivateStateFile(existingPlanStatePath);
+    const header = assertHeaderBinding(layout, "plan-state", planId, bytes);
+    const key = loadStateAuthKey(
+      layout.binding,
+      header.authentication.keyId,
+      options.stateHome
+    );
+    const state = parseAndVerifyPlanStateRecord(bytes, key, {
+      repository: layout.repository
+    });
+    const chain = loadReceiptChain(options, state.receiptId);
+    assertPlanStateReceiptLink(state, chain.receipt);
+  }
+}
+
+/**
+ * Read-only validation of key/state layout and every deterministic apply
+ * destination. Absent components are allowed and are created only after hooks.
+ */
+export function preflightStateForApply(
+  input: StateRuntimeInput,
+  planId: string,
+  receiptId: string
+): StateLayout {
+  const options = normalizeStateOptions(input);
+  const layout = getStateLayout(options);
+  preflightStateAuthForWrite(layout.binding, options.stateHome);
+  for (const directory of [
+    layout.recordsRoot,
+    layout.receiptsDir,
+    layout.snapshotsDir,
+    layout.plansDir
+  ]) {
+    inspectPrivateStateDirectoryIfPresent(directory);
+  }
+  assertApplyStateDestinations(layout, options, planId, receiptId);
+  return layout;
+}
+
+export function readReceipt(input: StateRuntimeInput, receiptId: string): ApplyReceipt {
+  return loadReceipt(input, receiptId).record;
+}
+
+export function readSnapshot(input: StateRuntimeInput, snapshotId: string): SnapshotFile {
+  return loadSnapshot(input, snapshotId).record;
+}
+
+function missingStateFile(error: unknown): boolean {
+  return /Missing authenticated state file|Missing external Gatefile state-auth key store/.test(
+    (error as Error).message
+  );
+}
+
+function loadSuccessfulPlanState(
+  input: StateRuntimeInput,
+  planId: string,
+  visiting: Set<string> = new Set()
+): AuthenticatedPlanStateRecord | undefined {
+  if (visiting.has(planId)) {
+    throw new Error(`Dependency state contains a cycle at plan ${planId}`);
+  }
+  const nextVisiting = new Set(visiting);
+  nextVisiting.add(planId);
+  const options = normalizeStateOptions(input);
+  const layout = getStateLayout(options);
+  if (stateDestinationExistsNoFollow(planStatePendingPath(layout, planId))) {
+    return undefined;
+  }
+  const path = join(layout.plansDir, planStateFilename(planId));
+  let bytes: Buffer;
+  try {
+    bytes = readPrivateStateFile(path);
+  } catch (error) {
+    if (missingStateFile(error)) return undefined;
+    throw error;
+  }
+
+  const header = assertHeaderBinding(layout, "plan-state", planId, bytes);
+  const key = loadStateAuthKey(layout.binding, header.authentication.keyId, options.stateHome);
+  const state = parseAndVerifyPlanStateRecord(bytes, key, {
+    repository: layout.repository
+  });
+  if (state.plan.id !== planId || !state.success) return undefined;
+  const chain = loadReceiptChain(options, state.receiptId);
+  assertPlanStateReceiptLink(state, chain.receipt);
+  if (!chain.receipt.success) return undefined;
+
+  // A rollback claim is durable invalidation, even if restoration later fails.
+  // This prevents a rolled-back (or partially rolled-back) plan from continuing
+  // to satisfy direct or transitive dependencies.
+  const markerPath = rollbackMarkerPath(
+    chain.layout.binding,
+    chain.receipt.id,
+    options.stateHome
+  );
+  if (stateDestinationExistsNoFollow(markerPath)) {
+    readRollbackMarker(
+      chain.layout.binding,
+      chain.receipt.id,
+      chain.receiptDigest,
+      chain.receiptKey,
+      options.stateHome
+    );
+    return undefined;
+  }
+
+  for (const dependencyPlanId of chain.receipt.dependencies.requiredPlanIds) {
+    if (!loadSuccessfulPlanState(options, dependencyPlanId, nextVisiting)) {
+      return undefined;
+    }
+  }
+  return state;
+}
+
+export function dependencyStatus(
+  plan: PlanFile,
+  input: StateRuntimeInput = {}
+): DependencyStatus {
+  const requiredPlanIds = [
+    ...new Set(
+      (plan.dependsOn ?? [])
+        .map((value) => value.trim())
+        .filter((value) => value.length > 0)
+    )
+  ];
+  const missingPlanIds: string[] = [];
+
+  for (const planId of requiredPlanIds) {
+    try {
+      if (!loadSuccessfulPlanState(input, planId)) missingPlanIds.push(planId);
+    } catch (error) {
+      throw new Error(
+        `Dependency state integrity check failed for plan ${planId}: ${(error as Error).message}`
+      );
+    }
+  }
 
   return {
     requiredPlanIds,
@@ -209,70 +679,261 @@ export function dependencyStatus(plan: PlanFile, repoRoot?: string): DependencyS
   };
 }
 
-function restoreFile(path: string, existedBefore: boolean, contentBefore: string | undefined): RollbackFileResult {
-  try {
-    if (existedBefore) {
-      mkdirSync(dirname(path), { recursive: true });
-      writeFileSync(path, contentBefore ?? "", "utf8");
-      return {
-        path,
-        restored: true,
-        action: "rewritten",
-        message: "restored previous file content"
-      };
-    }
-
-    if (existsSync(path)) {
-      rmSync(path, { force: true, recursive: false });
-      return {
-        path,
-        restored: true,
-        action: "deleted",
-        message: "removed file that did not exist before apply"
-      };
-    }
-
-    return {
-      path,
-      restored: true,
-      action: "unchanged",
-      message: "no file existed before or after apply"
-    };
-  } catch (error) {
-    return {
-      path,
-      restored: false,
-      action: existedBefore ? "rewritten" : "deleted",
-      message: `rollback failed: ${(error as Error).message}`
-    };
-  }
+function compactStatesEqual(
+  actual: CompactFileState,
+  expected: StoredCompactFileState
+): boolean {
+  if (actual.kind !== expected.kind) return false;
+  if (actual.kind === "absent" || expected.kind === "absent") return true;
+  return (
+    actual.sha256 === expected.sha256 &&
+    actual.byteLength === expected.byteLength &&
+    actual.mode === expected.mode &&
+    actual.uid === expected.uid &&
+    actual.gid === expected.gid &&
+    actual.identity.device === expected.identity.device &&
+    actual.identity.inode === expected.identity.inode
+  );
 }
 
-export function rollbackByReceipt(repoRoot: string | undefined, receiptId: string): RollbackReport {
-  const receipt = readReceipt(repoRoot, receiptId);
-  const snapshot = readSnapshot(repoRoot, receipt.snapshotId);
+function targetMetadata(entry: {
+  requestedPath: string;
+  allowedRoot: string;
+  relativePath: string;
+  directoryChain: SignedPathMetadata["directoryChain"];
+}): SignedPathMetadata {
+  return {
+    requestedPath: entry.requestedPath,
+    allowedRoot: entry.allowedRoot,
+    relativePath: entry.relativePath,
+    directoryChain: entry.directoryChain
+  };
+}
 
-  const fileResults = snapshot.files.map((file) =>
-    restoreFile(file.resolvedPath, file.existedBefore, file.contentBefore)
+function preflightRollback(
+  context: SafeFsContext,
+  receipt: AuthenticatedReceiptRecord,
+  snapshot: AuthenticatedSnapshotRecord
+): Map<string, "restore" | "unchanged"> {
+  const decisions = new Map<string, "restore" | "unchanged">();
+  const resultByOperation = new Map(
+    receipt.results.map((result) => [result.operationId, result])
   );
-  const success = fileResults.every((result) => result.restored);
+  const snapshotById = new Map(snapshot.entries.map((entry) => [entry.id, entry]));
+  for (const entry of receipt.rollbackEntries) {
+    const actual = captureCompactCurrentState(context, targetMetadata(entry));
+    const snapshotEntry = snapshotById.get(entry.snapshotEntryId);
+    if (!snapshotEntry) {
+      throw new Error(
+        `Rollback refused: authenticated snapshot entry is missing for ${entry.requestedPath}`
+      );
+    }
+    const before = compactFileState(decodeStoredExactFileState(snapshotEntry.before));
+    const result = resultByOperation.get(entry.operationId);
+    const committed = compactStatesEqual(actual, entry.after);
+    const unchanged =
+      result?.success === false &&
+      (result.mutationStatus === "intended" || result.mutationStatus === "committed") &&
+      compactStatesEqual(actual, before);
+    if (!committed && !unchanged) {
+      throw new Error(
+        `Rollback refused: post-apply state drift for ${entry.requestedPath}`
+      );
+    }
+    for (const residue of entry.cleanupResidues) {
+      verifyCleanupResidue(context, targetMetadata(entry), actual, residue, entry.after);
+    }
+    decisions.set(entry.operationId, unchanged ? "unchanged" : "restore");
+  }
+  return decisions;
+}
+
+function rollbackAction(beforeKind: "absent" | "regular"): RollbackFileResult["action"] {
+  return beforeKind === "absent" ? "deleted" : "rewritten";
+}
+
+export function rollbackByReceipt(
+  input: StateRuntimeInput,
+  receiptId: string
+): RollbackReport {
+  const options = normalizeStateOptions(input);
+  const safeReceiptId = assertSafeStateId(receiptId);
+  const chain = loadReceiptChain(options, safeReceiptId);
+  const markerPath = rollbackMarkerPath(
+    chain.layout.binding,
+    safeReceiptId,
+    options.stateHome
+  );
+  if (stateDestinationExistsNoFollow(markerPath)) {
+    readRollbackMarker(
+      chain.layout.binding,
+      safeReceiptId,
+      chain.receiptDigest,
+      chain.receiptKey,
+      options.stateHome
+    );
+    throw new Error(`Rollback receipt ${safeReceiptId} was already rolled back or claimed; replay refused`);
+  }
+
+  const roots = [...new Set(chain.receipt.rollbackEntries.map((entry) => entry.allowedRoot))];
+  const context = roots.length > 0
+    ? createSafeFsContext(getRepoRoot(options.repoRoot), roots, [chain.layout.stateHome])
+    : undefined;
+
+  const rollbackDecisions = context
+    ? preflightRollback(context, chain.receipt, chain.snapshot)
+    : new Map<string, "restore" | "unchanged">();
+  claimRollbackMarker(
+    chain.layout.binding,
+    safeReceiptId,
+    chain.receiptDigest,
+    chain.receiptKey,
+    options.stateHome
+  );
+
+  const snapshotById = new Map(chain.snapshot.entries.map((entry) => [entry.id, entry]));
+  const fileResults: RollbackFileResult[] = [];
+  if (context) {
+    for (const entry of chain.receipt.rollbackEntries) {
+      const snapshotEntry = snapshotById.get(entry.snapshotEntryId);
+      if (!snapshotEntry) {
+        fileResults.push({
+          path: entry.requestedPath,
+          restored: false,
+          action: "unchanged",
+          message: "rollback failed: authenticated snapshot entry is missing"
+        });
+        break;
+      }
+      try {
+        const before = decodeStoredExactFileState(snapshotEntry.before);
+        const beforeCompact = compactFileState(before);
+        const decision = rollbackDecisions.get(entry.operationId) ?? "restore";
+        const expectedCurrent = decision === "unchanged" ? beforeCompact : entry.after;
+        const actual = captureCompactCurrentState(context, targetMetadata(entry));
+        if (!compactStatesEqual(actual, expectedCurrent)) {
+          throw new Error(`rollback drift: target changed after recovery preflight`);
+        }
+        for (const residue of entry.cleanupResidues) {
+          safeCleanupResidue(
+            context,
+            targetMetadata(entry),
+            actual,
+            residue,
+            entry.after
+          );
+        }
+        if (decision === "unchanged") {
+          const afterCleanup = captureCompactCurrentState(context, targetMetadata(entry));
+          if (!compactStatesEqual(afterCleanup, beforeCompact)) {
+            throw new Error(`rollback drift: unchanged target moved during residue cleanup`);
+          }
+          fileResults.push({
+            path: entry.requestedPath,
+            restored: true,
+            action: "unchanged",
+            message: "failed write-ahead outcome left the authenticated previous file state intact"
+          });
+          continue;
+        }
+        safeRestore(
+          context,
+          targetMetadata(entry),
+          entry.after,
+          before
+        );
+        fileResults.push({
+          path: entry.requestedPath,
+          restored: true,
+          action: rollbackAction(snapshotEntry.before.kind),
+          message: snapshotEntry.before.kind === "absent"
+            ? "removed file created by apply"
+            : "restored authenticated previous file content and metadata"
+        });
+      } catch (error) {
+        if (error instanceof SafeFsPostCommitError) {
+          fileResults.push({
+            path: entry.requestedPath,
+            restored: true,
+            durabilityConfirmed: false,
+            action: rollbackAction(snapshotEntry.before.kind),
+            message:
+              `rollback bytes/metadata committed, but durability finalization failed: ${error.message}`
+          });
+          break;
+        }
+        fileResults.push({
+          path: entry.requestedPath,
+          restored: false,
+          action: rollbackAction(snapshotEntry.before.kind),
+          message: `rollback failed: ${(error as Error).message}`
+        });
+        break;
+      }
+    }
+  }
+
+  let success = fileResults.every(
+    (result) => result.restored && result.durabilityConfirmed !== false
+  );
+  let finalizationWarning: string | undefined;
+  let pendingMarkerWarning: string | undefined;
+  if (success) {
+    try {
+      completeRollbackMarker(
+        chain.layout.binding,
+        safeReceiptId,
+        chain.receiptDigest,
+        chain.receiptKey,
+        options.stateHome
+      );
+    } catch (error) {
+      success = false;
+      finalizationWarning = error instanceof StateAuthenticationPostCommitError
+        ? `Rollback marker replacement committed, but durability was not confirmed: ${error.message}`
+        : `Rollback files were restored, but rollback-marker finalization failed: ${(error as Error).message}`;
+    }
+  }
+
+  if (success) {
+    try {
+      clearMatchingPlanStatePendingMarker(
+        chain.layout,
+        chain.receipt.plan.id,
+        chain.receipt.id,
+        chain.receiptDigest
+      );
+    } catch (error) {
+      if (error instanceof StateAuthenticationPostCommitError) {
+        pendingMarkerWarning =
+          `Rollback is durable, but dependency-state invalidation-marker cleanup durability was not confirmed; a restart may conservatively block re-apply: ${error.message}`;
+      } else {
+        success = false;
+        pendingMarkerWarning =
+          `Rollback is durable, but dependency-state invalidation-marker cleanup failed and re-apply remains blocked: ${(error as Error).message}`;
+      }
+    }
+  }
 
   return {
-    receiptId: receipt.id,
-    snapshotId: snapshot.id,
+    receiptId: chain.receipt.id,
+    snapshotId: chain.snapshot.id,
     rolledBackAt: new Date().toISOString(),
     success,
     fileResults,
     notes: [
-      "Rollback restores Gatefile-managed file operations from the pre-apply snapshot.",
-      "Command side effects are not automatically rollbackable in this MVP."
+      "Rollback verified authenticated receipt/snapshot state and post-apply file state before mutation.",
+      "Command side effects are not automatically rollbackable in this alpha.",
+      ...(finalizationWarning ? [finalizationWarning] : []),
+      ...(pendingMarkerWarning ? [pendingMarkerWarning] : [])
     ]
   };
 }
 
-export function clearStateForTesting(repoRoot: string | undefined): void {
-  const layout = getStateLayout(repoRoot);
-  if (existsSync(layout.gatefileRoot)) {
-    rmSync(layout.gatefileRoot, { recursive: true, force: true });
+export function clearStateForTesting(input: StateRuntimeInput = {}): void {
+  const layout = getStateLayout(input);
+  const repoStateRoot = dirname(layout.recordsRoot);
+  if (existsSync(repoStateRoot)) {
+    rmSync(repoStateRoot, { recursive: true, force: true });
   }
 }
