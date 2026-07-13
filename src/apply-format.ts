@@ -2,7 +2,10 @@ import { ApplyReport, DryRunReport, RecoveryOperationGuidance, RollbackReport } 
 
 function formatStep(step: RecoveryOperationGuidance): string {
   const target = step.path ? ` (${step.path})` : "";
-  return `  - [${step.status}] ${step.operationId}${target}: ${step.guidance}`;
+  const mutation = step.mutationStatus && step.mutationStatus !== "none"
+    ? `/${step.mutationStatus}`
+    : "";
+  return `  - [${step.status}${mutation}] ${step.operationId}${target}: ${step.guidance}`;
 }
 
 export function formatDryRunSummary(report: DryRunReport): string {
@@ -70,6 +73,9 @@ export function formatApplySummary(report: ApplyReport): string {
     lines.push(formatStep(step));
   }
   lines.push(`Notes: ${report.recovery.notes.join(" ")}`);
+  if (report.warnings && report.warnings.length > 0) {
+    lines.push(`Warnings: ${report.warnings.join(" ")}`);
+  }
   lines.push(`Rollback: ${report.rollbackCommand}`);
   lines.push("Tip: Omit --human to get machine-readable JSON output.");
 
@@ -86,7 +92,12 @@ export function formatRollbackSummary(report: RollbackReport): string {
   ];
 
   for (const result of report.fileResults) {
-    lines.push(`  - [${result.restored ? "ok" : "failed"}] ${result.path}: ${result.message}`);
+    const status = result.durabilityConfirmed === false
+      ? "undurable"
+      : result.restored
+        ? "ok"
+        : "failed";
+    lines.push(`  - [${status}] ${result.path}: ${result.message}`);
   }
 
   lines.push(`Notes: ${report.notes.join(" ")}`);

@@ -316,6 +316,56 @@ test('apply-plan --dry-run works on unapproved plans and reports not-ready verif
   assertNoSideEffects(createPath, markerPath);
 });
 
+test('apply-plan exits nonzero when secure file preflight denies the apply', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gatefile-apply-cli-denied-'));
+  t.after(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  const outsidePath = path.join(path.dirname(root), `${path.basename(root)}-outside.txt`);
+  t.after(() => fs.rmSync(outsidePath, { force: true }));
+  const plan = approvePlan(
+    createPlanFromDraft({
+      source: 'test-agent',
+      summary: 'Denied CLI apply exit status',
+      operations: [
+        {
+          id: 'op_denied',
+          type: 'file',
+          action: 'create',
+          path: outsidePath,
+          after: 'must not exist\n'
+        }
+      ],
+      preconditions: [],
+      execution: { filePolicy: { allowedRoots: [root] } }
+    }),
+    'ci-user'
+  );
+  const planPath = path.join(root, 'denied-plan.json');
+  fs.writeFileSync(planPath, JSON.stringify(plan, null, 2), 'utf8');
+
+  let failure;
+  try {
+    execFileSync(process.execPath, [CLI_PATH, 'apply-plan', planPath, '--yes'], {
+      encoding: 'utf8'
+    });
+    assert.fail('denied apply unexpectedly exited zero');
+  } catch (error) {
+    if (error && error.code === 'EPERM') {
+      t.skip('subprocess execution is blocked in this environment');
+      return;
+    }
+    failure = error;
+  }
+
+  assert.equal(failure.status, 1);
+  const report = JSON.parse(failure.stdout);
+  assert.equal(report.success, false);
+  assert.match(report.results[0].message, /denied by policy|secure preflight/i);
+  assert.equal(fs.existsSync(outsidePath), false);
+});
+
 test('applyPlan runs allowed command operations', (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gatefile-apply-command-allow-'));
   t.after(() => {

@@ -90,6 +90,18 @@ const TOOLS = [
         json: {
           type: "boolean",
           description: "Return machine-readable JSON instead of human summary (default: false)"
+        },
+        repo_root: {
+          type: "string",
+          description: "Repository root used for repository identity and dependency state"
+        },
+        repository_id: {
+          type: "string",
+          description: "Explicit repository identity override"
+        },
+        state_home: {
+          type: "string",
+          description: "Trusted external authenticated-state directory"
         }
       },
       required: ["path"]
@@ -110,6 +122,14 @@ const TOOLS = [
         out: {
           type: "string",
           description: "Path to write the created plan JSON file"
+        },
+        repo_root: {
+          type: "string",
+          description: "Repository root to bind into the new plan"
+        },
+        repository_id: {
+          type: "string",
+          description: "Explicit repository identity to bind into the new plan"
         }
       },
       required: ["draft", "out"]
@@ -152,6 +172,14 @@ const TOOLS = [
         path: {
           type: "string",
           description: "Path to the plan JSON file"
+        },
+        repo_root: {
+          type: "string",
+          description: "Repository root used to verify the plan context"
+        },
+        repository_id: {
+          type: "string",
+          description: "Explicit repository identity override"
         }
       },
       required: ["path"]
@@ -167,6 +195,18 @@ const TOOLS = [
         path: {
           type: "string",
           description: "Path to the plan JSON file"
+        },
+        repo_root: {
+          type: "string",
+          description: "Repository root used for verification and path resolution"
+        },
+        repository_id: {
+          type: "string",
+          description: "Explicit repository identity override"
+        },
+        state_home: {
+          type: "string",
+          description: "Trusted external authenticated-state directory"
         }
       },
       required: ["path"]
@@ -182,6 +222,18 @@ const TOOLS = [
         path: {
           type: "string",
           description: "Path to the plan JSON file"
+        },
+        repo_root: {
+          type: "string",
+          description: "Repository root used for verification and path resolution"
+        },
+        repository_id: {
+          type: "string",
+          description: "Explicit repository identity override"
+        },
+        state_home: {
+          type: "string",
+          description: "Trusted external authenticated-state directory"
         }
       },
       required: ["path"]
@@ -197,6 +249,18 @@ const TOOLS = [
         receipt_id: {
           type: "string",
           description: "Receipt ID from the apply report"
+        },
+        repo_root: {
+          type: "string",
+          description: "Repository root returned in the apply rollback context"
+        },
+        repository_id: {
+          type: "string",
+          description: "Repository identity returned in the apply rollback context"
+        },
+        state_home: {
+          type: "string",
+          description: "Authenticated-state directory returned in the apply rollback context"
         }
       },
       required: ["receipt_id"]
@@ -212,22 +276,49 @@ function toolResult(text: string, isError = false): { content: { type: string; t
   return { content: [{ type: "text", text }], isError };
 }
 
+function optionalStringArg(args: Record<string, unknown>, name: string): string | undefined {
+  const value = args[name];
+  return typeof value === "string" ? value : undefined;
+}
+
+function runtimeContext(args: Record<string, unknown>): {
+  repoRoot: string;
+  repositoryId?: string;
+  stateHome?: string;
+} {
+  return {
+    repoRoot: getRepoRoot(optionalStringArg(args, "repo_root")),
+    repositoryId: optionalStringArg(args, "repository_id"),
+    stateHome: optionalStringArg(args, "state_home")
+  };
+}
+
 function handleTool(name: string, args: Record<string, unknown>): { content: { type: string; text: string }[]; isError: boolean } {
   try {
     switch (name) {
       case "inspect_plan": {
         const plan = readPlan(args.path as string);
-        const report = buildInspectReport(plan, { repoRoot: getRepoRoot() });
+        const runtime = runtimeContext(args);
+        const report = buildInspectReport(plan, runtime);
         if (args.json) {
           return toolResult(JSON.stringify(report, null, 2));
         }
-        const config = loadGatefileConfig(getRepoRoot());
-        return toolResult(formatInspectSummary(plan, report, { config }));
+        const config = loadGatefileConfig(runtime.repoRoot);
+        return toolResult(formatInspectSummary(plan, report, {
+          config,
+          repoRoot: runtime.repoRoot,
+          repositoryId: runtime.repositoryId
+        }));
       }
 
       case "create_plan": {
         const draft = args.draft as PlanDraft;
-        const plan = createPlanFromDraft(draft, { repoRoot: getRepoRoot() });
+        const repoRoot = getRepoRoot(optionalStringArg(args, "repo_root"));
+        const repositoryId = optionalStringArg(args, "repository_id");
+        const plan = createPlanFromDraft(draft, {
+          repoRoot,
+          ...(repositoryId ? { context: { repositoryId } } : {})
+        });
         const outPath = args.out as string;
         writePlan(outPath, plan);
         return toolResult(
@@ -251,17 +342,22 @@ function handleTool(name: string, args: Record<string, unknown>): { content: { t
 
       case "verify_plan": {
         const plan = readPlan(args.path as string);
-        const config = loadGatefileConfig(getRepoRoot());
-        const report = verifyPlan(plan, { config });
+        const runtime = runtimeContext(args);
+        const config = loadGatefileConfig(runtime.repoRoot);
+        const report = verifyPlan(plan, {
+          config,
+          repoRoot: runtime.repoRoot,
+          repositoryId: runtime.repositoryId
+        });
         return toolResult(JSON.stringify(report, null, 2));
       }
 
       case "dry_run_plan": {
         const plan = readPlan(args.path as string);
-        const repoRoot = getRepoRoot();
-        const config = loadGatefileConfig(repoRoot);
+        const runtime = runtimeContext(args);
+        const config = loadGatefileConfig(runtime.repoRoot);
         const preview = previewPlan(plan, {
-          repoRoot,
+          ...runtime,
           planPath: resolve(args.path as string),
           config
         });
@@ -271,21 +367,19 @@ function handleTool(name: string, args: Record<string, unknown>): { content: { t
       case "apply_plan": {
         const planPath = args.path as string;
         const plan = readPlan(planPath);
-        const repoRoot = getRepoRoot();
-        const config = loadGatefileConfig(repoRoot);
+        const runtime = runtimeContext(args);
+        const config = loadGatefileConfig(runtime.repoRoot);
         const report = applyPlan(plan, {
-          repoRoot,
+          ...runtime,
           planPath: resolve(planPath),
           config
         });
-        return toolResult(JSON.stringify(report, null, 2));
+        return toolResult(JSON.stringify(report, null, 2), !report.success);
       }
 
       case "rollback_apply": {
-        const report = rollbackApply(args.receipt_id as string, {
-          repoRoot: getRepoRoot()
-        });
-        return toolResult(JSON.stringify(report, null, 2));
+        const report = rollbackApply(args.receipt_id as string, runtimeContext(args));
+        return toolResult(JSON.stringify(report, null, 2), !report.success);
       }
 
       default:
@@ -300,9 +394,11 @@ function handleTool(name: string, args: Record<string, unknown>): { content: { t
 /*  MCP protocol handler                                               */
 /* ------------------------------------------------------------------ */
 
+const PACKAGE_VERSION = (require("../package.json") as { version: string }).version;
+
 const SERVER_INFO = {
   name: "gatefile",
-  version: "0.1.1"
+  version: PACKAGE_VERSION
 };
 
 function handleMessage(req: JsonRpcRequest): JsonRpcResponse | null {

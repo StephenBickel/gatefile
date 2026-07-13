@@ -10,6 +10,13 @@ SAFE_PLAN="$DEMO_ROOT/safe-plan.json"
 UNSAFE_PLAN="$DEMO_ROOT/unsafe-plan.json"
 SAFE_DRAFT="examples/public-launch-safe-draft.json"
 UNSAFE_DRAFT="examples/public-launch-unsafe-draft.json"
+DEMO_STATE_HOME="$(mktemp -d "${TMPDIR:-/tmp}/gatefile-public-launch-state.XXXXXX")"
+export GATEFILE_STATE_HOME="$DEMO_STATE_HOME"
+
+cleanup() {
+  rm -rf -- "$DEMO_STATE_HOME"
+}
+trap cleanup EXIT
 
 run_step() {
   echo
@@ -19,6 +26,7 @@ run_step() {
 
 echo "Planfile Public-Launch End-to-End Demo"
 echo "Repo: $ROOT_DIR"
+echo "Disposable state: $DEMO_STATE_HOME"
 
 echo
 echo "Resetting demo workspace at $DEMO_ROOT"
@@ -37,9 +45,17 @@ run_step npm run cli -- approve-plan "$UNSAFE_PLAN" --by demo-reviewer
 run_step npm run cli -- verify-plan "$UNSAFE_PLAN"
 
 echo
-echo "==> npm run cli -- apply-plan $UNSAFE_PLAN --yes (expected report.success=false)"
-unsafe_report="$(npm run --silent cli -- apply-plan "$UNSAFE_PLAN" --yes)"
+echo "==> npm run cli -- apply-plan $UNSAFE_PLAN --yes (expected exit 1 and report.success=false)"
+if unsafe_report="$(npm run --silent cli -- apply-plan "$UNSAFE_PLAN" --yes)"; then
+  unsafe_status=0
+else
+  unsafe_status=$?
+fi
 echo "$unsafe_report"
+if [[ "$unsafe_status" -ne 1 ]]; then
+  echo "ERROR: unsafe apply exited $unsafe_status instead of 1" >&2
+  exit 1
+fi
 printf '%s' "$unsafe_report" | node -e '
 const fs = require("node:fs");
 const report = JSON.parse(fs.readFileSync(0, "utf8"));

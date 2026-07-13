@@ -1,12 +1,47 @@
 import type { PlanDraft } from "./planner";
-import { validateCommandOperationValue, validatePlanCommandContract } from "./command";
+import {
+  validateCommandOperationValue,
+  validatePlanCommandContract
+} from "./command";
 import {
   HASH_CANONICALIZER,
   HASH_ENVELOPE_VERSION,
   PLAN_VERSION,
+  CommandOperation,
   PlanFile,
   RiskProfile
 } from "./types";
+import { DEFAULT_MAX_PRIVATE_STATE_FILE_BYTES } from "./state-auth";
+import { unicodeScalarLength } from "./unicode";
+
+/** Limits shared by plan validation and the authenticated state-record contract. */
+export const STATE_RECORD_BOUND_ID_MAX_LENGTH = 1_024;
+export const STATE_RECORD_TEXT_MAX_LENGTH = 16_384;
+export const PLAN_RECEIPT_TEXT_MAX_LENGTH = 16_000;
+export const MAX_COMMAND_ARGUMENTS = 4_096;
+export const MAX_PLAN_OPERATIONS = 32;
+export const MAX_PLAN_DEPENDENCIES = 32;
+export const AUTHENTICATED_STATE_FILE_MAX_BYTES = DEFAULT_MAX_PRIVATE_STATE_FILE_BYTES;
+export const APPLY_RECEIPT_WORST_CASE_BUDGET_BYTES = 14 * 1024 * 1024;
+
+const MAX_JSON_STRING_BYTES_PER_SCALAR = 6;
+const RECEIPT_FIXED_WORST_CASE_BYTES = 1024 * 1024;
+const RECEIPT_RESULT_WORST_CASE_BYTES =
+  (STATE_RECORD_BOUND_ID_MAX_LENGTH + STATE_RECORD_TEXT_MAX_LENGTH) *
+    MAX_JSON_STRING_BYTES_PER_SCALAR +
+  512;
+const RECEIPT_ROLLBACK_ENTRY_WORST_CASE_BYTES =
+  (128 + STATE_RECORD_BOUND_ID_MAX_LENGTH + STATE_RECORD_TEXT_MAX_LENGTH * 3) *
+    MAX_JSON_STRING_BYTES_PER_SCALAR +
+  2_048;
+const RECEIPT_DEPENDENCY_WORST_CASE_BYTES =
+  STATE_RECORD_BOUND_ID_MAX_LENGTH * MAX_JSON_STRING_BYTES_PER_SCALAR * 2 + 128;
+
+export const MAX_WORST_CASE_APPLY_RECEIPT_BYTES =
+  RECEIPT_FIXED_WORST_CASE_BYTES +
+  MAX_PLAN_OPERATIONS *
+    (RECEIPT_RESULT_WORST_CASE_BYTES + RECEIPT_ROLLBACK_ENTRY_WORST_CASE_BYTES) +
+  MAX_PLAN_DEPENDENCIES * RECEIPT_DEPENDENCY_WORST_CASE_BYTES;
 
 export interface ValidationIssue {
   path: string;
@@ -57,6 +92,37 @@ function requireNonEmptyString(value: unknown, path: string, issues: ValidationI
     return false;
   }
   return true;
+}
+
+function requireBoundedNonEmptyString(
+  value: unknown,
+  path: string,
+  maximumLength: number,
+  issues: ValidationIssue[]
+): value is string {
+  if (!requireNonEmptyString(value, path, issues)) return false;
+  if (unicodeScalarLength(value) > maximumLength) {
+    issues.push({ path, message: `must be at most ${maximumLength} characters` });
+    return false;
+  }
+  return true;
+}
+
+function requireBoundId(value: unknown, path: string, issues: ValidationIssue[]): value is string {
+  return requireBoundedNonEmptyString(
+    value,
+    path,
+    STATE_RECORD_BOUND_ID_MAX_LENGTH,
+    issues
+  );
+}
+
+function requireReceiptTextInput(
+  value: unknown,
+  path: string,
+  issues: ValidationIssue[]
+): value is string {
+  return requireBoundedNonEmptyString(value, path, PLAN_RECEIPT_TEXT_MAX_LENGTH, issues);
 }
 
 function requireText(value: unknown, path: string, issues: ValidationIssue[]): value is string {
@@ -114,7 +180,13 @@ function validateStringArray(
   value: unknown,
   path: string,
   issues: ValidationIssue[],
-  options: { allowEmptyArray?: boolean; allowEmptyStrings?: boolean; unique?: boolean } = {}
+  options: {
+    allowEmptyArray?: boolean;
+    allowEmptyStrings?: boolean;
+    unique?: boolean;
+    maxItems?: number;
+    maxStringLength?: number;
+  } = {}
 ): void {
   if (!Array.isArray(value)) {
     issues.push({ path, message: "must be an array" });
@@ -122,6 +194,9 @@ function validateStringArray(
   }
   if (!options.allowEmptyArray && value.length === 0) {
     issues.push({ path, message: "must not be empty" });
+  }
+  if (options.maxItems !== undefined && value.length > options.maxItems) {
+    issues.push({ path, message: `must contain at most ${options.maxItems} items` });
   }
   const seen = new Set<string>();
   value.forEach((entry, index) => {
@@ -132,6 +207,15 @@ function validateStringArray(
     if (!options.allowEmptyStrings && entry.trim().length === 0) {
       issues.push({ path: `${path}[${index}]`, message: "must not be empty" });
     }
+    if (
+      options.maxStringLength !== undefined &&
+      unicodeScalarLength(entry) > options.maxStringLength
+    ) {
+      issues.push({
+        path: `${path}[${index}]`,
+        message: `must be at most ${options.maxStringLength} characters`
+      });
+    }
     if (options.unique && seen.has(entry)) {
       issues.push({ path: `${path}[${index}]`, message: `duplicate value: ${entry}` });
     }
@@ -141,8 +225,8 @@ function validateStringArray(
 
 function validateFileOperation(operation: JsonObject, path: string, issues: ValidationIssue[]): void {
   rejectUnknownKeys(operation, ["id", "type", "action", "path", "before", "after"], path, issues);
-  requireNonEmptyString(operation.id, `${path}.id`, issues);
-  requireNonEmptyString(operation.path, `${path}.path`, issues);
+  requireBoundId(operation.id, `${path}.id`, issues);
+  requireReceiptTextInput(operation.path, `${path}.path`, issues);
 
   const hasBefore = Object.prototype.hasOwnProperty.call(operation, "before");
   const hasAfter = Object.prototype.hasOwnProperty.call(operation, "after");
@@ -163,13 +247,69 @@ function validateFileOperation(operation: JsonObject, path: string, issues: Vali
   if (hasAfter) requireText(operation.after, `${path}.after`, issues);
 }
 
+function validateCommandReceiptBounds(
+  operation: Pick<CommandOperation, "id" | "executable" | "args" | "cwd">,
+  path: string,
+  issues: ValidationIssue[]
+): void {
+  requireBoundId(operation.id, `${path}.id`, issues);
+  requireReceiptTextInput(operation.executable, `${path}.executable`, issues);
+  if (operation.cwd !== undefined) {
+    requireReceiptTextInput(operation.cwd, `${path}.cwd`, issues);
+  }
+  if (operation.args.length > MAX_COMMAND_ARGUMENTS) {
+    issues.push({
+      path: `${path}.args`,
+      message: `must contain at most ${MAX_COMMAND_ARGUMENTS} arguments`
+    });
+  }
+  operation.args.forEach((arg, index) => {
+    if (unicodeScalarLength(arg) > PLAN_RECEIPT_TEXT_MAX_LENGTH) {
+      issues.push({
+        path: `${path}.args[${index}]`,
+        message: `must be at most ${PLAN_RECEIPT_TEXT_MAX_LENGTH} characters`
+      });
+    }
+  });
+}
+
+function worstCaseApplyReceiptBytes(operationCount: number, dependencyCount: number): number {
+  return (
+    RECEIPT_FIXED_WORST_CASE_BYTES +
+    operationCount *
+      (RECEIPT_RESULT_WORST_CASE_BYTES + RECEIPT_ROLLBACK_ENTRY_WORST_CASE_BYTES) +
+    dependencyCount * RECEIPT_DEPENDENCY_WORST_CASE_BYTES
+  );
+}
+
+function validateApplyReceiptBudget(
+  operations: unknown,
+  dependsOn: unknown,
+  issues: ValidationIssue[]
+): void {
+  if (!Array.isArray(operations)) return;
+  const dependencyCount = Array.isArray(dependsOn) ? dependsOn.length : 0;
+  const worstCaseBytes = worstCaseApplyReceiptBytes(operations.length, dependencyCount);
+  if (worstCaseBytes > APPLY_RECEIPT_WORST_CASE_BUDGET_BYTES) {
+    issues.push({
+      path: "operations",
+      message:
+        `operation count can produce a worst-case authenticated receipt of ${worstCaseBytes} bytes; ` +
+        `the pre-execution budget is ${APPLY_RECEIPT_WORST_CASE_BUDGET_BYTES} bytes`
+    });
+  }
+}
+
 function validateOperations(value: unknown, path: string, issues: ValidationIssue[]): void {
   if (!Array.isArray(value) || value.length === 0) {
     issues.push({ path, message: "must be a non-empty array" });
     return;
   }
+  if (value.length > MAX_PLAN_OPERATIONS) {
+    issues.push({ path, message: `must contain at most ${MAX_PLAN_OPERATIONS} operations` });
+  }
   const ids = new Set<string>();
-  value.forEach((entry, index) => {
+  value.slice(0, MAX_PLAN_OPERATIONS).forEach((entry, index) => {
     const operationPath = `${path}[${index}]`;
     const operation = objectAt(entry, operationPath, issues);
     if (!operation) return;
@@ -178,6 +318,7 @@ function validateOperations(value: unknown, path: string, issues: ValidationIssu
     } else if (operation.type === "command") {
       try {
         validateCommandOperationValue(operation, operationPath);
+        validateCommandReceiptBounds(operation, operationPath, issues);
       } catch (error) {
         issues.push({ path: operationPath, message: (error as Error).message });
       }
@@ -233,7 +374,10 @@ function validateExecution(value: unknown, path: string, issues: ValidationIssue
     const policy = objectAt(execution.filePolicy, policyPath, issues);
     if (policy) {
       rejectUnknownKeys(policy, ["allowedRoots"], policyPath, issues);
-      validateStringArray(policy.allowedRoots, `${policyPath}.allowedRoots`, issues, { unique: true });
+      validateStringArray(policy.allowedRoots, `${policyPath}.allowedRoots`, issues, {
+        unique: true,
+        maxStringLength: PLAN_RECEIPT_TEXT_MAX_LENGTH
+      });
     }
   }
 }
@@ -251,9 +395,14 @@ function validateDraftFields(draft: JsonObject, issues: ValidationIssue[]): void
   requireNonEmptyString(draft.source, "source", issues);
   requireNonEmptyString(draft.summary, "summary", issues);
   if (draft.dependsOn !== undefined) {
-    validateStringArray(draft.dependsOn, "dependsOn", issues, { unique: true });
+    validateStringArray(draft.dependsOn, "dependsOn", issues, {
+      unique: true,
+      maxItems: MAX_PLAN_DEPENDENCIES,
+      maxStringLength: STATE_RECORD_BOUND_ID_MAX_LENGTH
+    });
   }
   validateOperations(draft.operations, "operations", issues);
+  validateApplyReceiptBudget(draft.operations, draft.dependsOn, issues);
   if (draft.preconditions !== undefined) validatePreconditions(draft.preconditions, "preconditions", issues);
   if (draft.execution !== undefined) validateExecution(draft.execution, "execution", issues);
 }
@@ -270,7 +419,7 @@ function validateContext(value: unknown, path: string, issues: ValidationIssue[]
   const context = objectAt(value, path, issues);
   if (!context) return;
   rejectUnknownKeys(context, ["repositoryId"], path, issues);
-  requireNonEmptyString(context.repositoryId, `${path}.repositoryId`, issues);
+  requireReceiptTextInput(context.repositoryId, `${path}.repositoryId`, issues);
 }
 
 function validateRisk(value: unknown, path: string, issues: ValidationIssue[]): void {
@@ -331,7 +480,7 @@ function validateAttestation(value: unknown, path: string, issues: ValidationIss
   if (payload.type !== "gatefile-approval-v1") {
     issues.push({ path: `${payloadPath}.type`, message: "must be gatefile-approval-v1" });
   }
-  requireNonEmptyString(payload.planId, `${payloadPath}.planId`, issues);
+  requireBoundId(payload.planId, `${payloadPath}.planId`, issues);
   requireNonEmptyString(payload.approvedBy, `${payloadPath}.approvedBy`, issues);
   requireRfc3339DateTime(payload.approvedAt, `${payloadPath}.approvedAt`, issues);
   if (typeof payload.approvedPlanHash !== "string" || !/^[a-f0-9]{64}$/.test(payload.approvedPlanHash)) {
@@ -406,15 +555,20 @@ export function validatePlanFile(value: unknown): PlanFile {
     if (plan.version !== PLAN_VERSION) {
       issues.push({ path: "version", message: `unsupported plan version; expected v2 (${PLAN_VERSION})` });
     }
-    requireNonEmptyString(plan.id, "id", issues);
+    requireBoundId(plan.id, "id", issues);
     requireRfc3339DateTime(plan.createdAt, "createdAt", issues);
     requireNonEmptyString(plan.source, "source", issues);
     requireNonEmptyString(plan.summary, "summary", issues);
     validateContext(plan.context, "context", issues);
     if (plan.dependsOn !== undefined) {
-      validateStringArray(plan.dependsOn, "dependsOn", issues, { unique: true });
+      validateStringArray(plan.dependsOn, "dependsOn", issues, {
+        unique: true,
+        maxItems: MAX_PLAN_DEPENDENCIES,
+        maxStringLength: STATE_RECORD_BOUND_ID_MAX_LENGTH
+      });
     }
     validateOperations(plan.operations, "operations", issues);
+    validateApplyReceiptBudget(plan.operations, plan.dependsOn, issues);
     validatePreconditions(plan.preconditions, "preconditions", issues);
     if (plan.execution !== undefined) validateExecution(plan.execution, "execution", issues);
     validateRisk(plan.risk, "risk", issues);

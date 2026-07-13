@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { execFileSync } = require('node:child_process');
 const Ajv2020 = require('ajv/dist/2020').default;
 const addFormats = require('ajv-formats');
 
@@ -591,4 +592,80 @@ test('risk scoring recognizes structured destructive executables and split flags
   assert.match(rmRisk.reasons.join('\n'), /Potentially destructive/);
   assert.equal(sudoRisk.level, 'medium');
   assert.match(sudoRisk.reasons.join('\n'), /Potentially destructive/);
+});
+
+test('all command policies are preflighted before an earlier file mutation', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gatefile-policy-preflight-'));
+  try {
+    const created = path.join(root, 'must-not-exist.txt');
+    const denied = {
+      id: 'denied-later',
+      type: 'command',
+      executable: process.execPath,
+      args: ['-e', 'process.exit(0)']
+    };
+    const plan = approvePlan(createPlanFromDraft({
+      source: 'structured-command-test',
+      summary: 'Deny the whole apply before its first side effect',
+      operations: [
+        { id: 'file-first', type: 'file', action: 'create', path: created, after: 'bad\n' },
+        denied
+      ],
+      preconditions: [],
+      execution: {
+        filePolicy: { allowedRoots: [root] },
+        commandPolicy: {
+          mode: 'deny',
+          rules: [{ executable: denied.executable, args: denied.args }]
+        }
+      }
+    }, { repoRoot: root }), 'reviewer');
+
+    const report = applyPlan(plan, { repoRoot: root });
+    assert.equal(report.success, false);
+    assert.equal(report.results[0].operationId, 'denied-later');
+    assert.match(report.results[0].message, /deny mode/);
+    assert.equal(fs.existsSync(created), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('git top-level is the stable base for relative files and command cwd', () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'gatefile-execution-base-'));
+  const root = path.join(base, 'repo');
+  const subdir = path.join(root, 'nested');
+  try {
+    fs.mkdirSync(subdir, { recursive: true });
+    execFileSync('git', ['init', '-q', root]);
+    const plan = approvePlan(createPlanFromDraft({
+      source: 'structured-command-test',
+      summary: 'Bind relative execution to the repository top-level',
+      operations: [
+        {
+          id: 'relative-file',
+          type: 'file',
+          action: 'create',
+          path: 'file-at-root.txt',
+          after: 'root\n'
+        },
+        {
+          id: 'default-command-cwd',
+          type: 'command',
+          executable: process.execPath,
+          args: ['-e', 'require("node:fs").writeFileSync("command-at-root.txt", process.cwd())']
+        }
+      ],
+      preconditions: []
+    }, { repoRoot: root }), 'reviewer');
+
+    const report = applyPlan(plan, { repoRoot: subdir });
+    assert.equal(report.success, true);
+    assert.equal(fs.readFileSync(path.join(root, 'file-at-root.txt'), 'utf8'), 'root\n');
+    assert.equal(fs.readFileSync(path.join(root, 'command-at-root.txt'), 'utf8'), fs.realpathSync(root));
+    assert.equal(fs.existsSync(path.join(subdir, 'file-at-root.txt')), false);
+    assert.equal(fs.existsSync(path.join(subdir, 'command-at-root.txt')), false);
+  } finally {
+    fs.rmSync(base, { recursive: true, force: true });
+  }
 });

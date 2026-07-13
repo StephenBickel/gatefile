@@ -34,12 +34,19 @@ Enforcement:
 1. Generate signer keypair:
 
 ```bash
+install -d -m 700 "$HOME/.config/gatefile"
 gatefile generate-attestation-key \
-  --out-private .gatefile/approver.pem \
+  --out-private "$HOME/.config/gatefile/approver.pem" \
   --out-public .gatefile/approver.pub.pem
 ```
 
-2. Keep private key out of git and out of plaintext logs.
+Each file publication is made crash-durable, but the private and public files
+are published separately rather than as one cross-directory transaction. If
+generation reports a failure, inspect and remove any newly created member of
+the pair before retrying.
+
+2. Keep the private key outside the repository, out of git, and out of
+   plaintext logs. Restrict it to the signing user.
 3. Distribute public identity to repo operators:
   - key ID printed by `generate-attestation-key`, and/or
   - public key PEM
@@ -69,7 +76,7 @@ gatefile lint-config
 ```bash
 gatefile approve-plan .plan/plan.json \
   --by steve \
-  --signing-key .gatefile/approver.pem
+  --signing-key "$HOME/.config/gatefile/approver.pem"
 ```
 
 7. Verify trust state:

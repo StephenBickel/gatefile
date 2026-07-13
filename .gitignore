@@ -6,3 +6,5 @@ dist/
 demo/output/
 
 .gatefile/state/
+.gatefile/*.pem
+!.gatefile/*.pub.pem

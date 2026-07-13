@@ -81,6 +81,7 @@ test('canonical public-launch flow: verify -> approve -> dry-run -> unsafe denie
 
   try {
     const safe = makeSafeDraft(root);
+    fs.mkdirSync(safe.allowedRoot, { recursive: true });
     const safePlanPending = createPlanFromDraft(safe.draft);
 
     const pendingVerification = verifyPlan(safePlanPending);
