@@ -102,11 +102,16 @@ async function main(): Promise<void> {
     if (!from || !out) throw new Error("create-plan requires --from and --out");
 
     const draft = readJson<PlanDraft>(from);
-    const engine = new GatefileEngine({ repoRoot: getRepoRoot() });
+    const repoRoot = getRepoRoot();
+    const config = loadGatefileConfig(repoRoot);
+    const engine = new GatefileEngine({ repoRoot, config });
     const plan = engine.createPlan(draft);
     writeJson(out, plan);
     console.log(`Plan created: ${out}`);
-    await fireOnPlanCreated(plan, { repoRoot: engine.context.repoRoot });
+    await fireOnPlanCreated(plan, {
+      repoRoot: engine.context.repoRoot,
+      config
+    });
     return;
   }
 
@@ -171,7 +176,9 @@ async function main(): Promise<void> {
 
     const plan = readJson<PlanFile>(planPath);
     validatePlanFile(plan);
-    const engine = new GatefileEngine({ repoRoot: getRepoRoot() });
+    const repoRoot = getRepoRoot();
+    const config = loadGatefileConfig(repoRoot);
+    const engine = new GatefileEngine({ repoRoot, config });
     const signingPrivateKeyPem = signingKeyPath
       ? readFileSync(resolve(signingKeyPath), "utf-8")
       : undefined;
@@ -182,7 +189,10 @@ async function main(): Promise<void> {
     });
     writeJson(planPath, next);
     console.log(`Plan approved by ${by}: ${planPath}`);
-    await fireOnPlanApproved(next, { repoRoot: engine.context.repoRoot });
+    await fireOnPlanApproved(next, {
+      repoRoot: engine.context.repoRoot,
+      config
+    });
     return;
   }
 

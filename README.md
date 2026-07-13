@@ -224,7 +224,11 @@ dependencies or be used for authenticated rollback.
 
 ## MCP Server
 
-gatefile ships an [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server so any MCP-compatible host (Claude Desktop, Claude Code, Cursor, etc.) can inspect, verify, approve, and apply plans directly.
+gatefile ships an [MCP (Model Context Protocol)](https://modelcontextprotocol.io/)
+server. The packaged `gatefile-mcp` and `gatefile mcp` entrypoints intentionally
+start with one repository context pinned from their process working directory
+and expose only non-executing plan creation, inspection, verification, and
+preview tools. They do not expose approve, apply, or rollback.
 
 ### Configure in Claude Desktop
 
@@ -235,25 +239,57 @@ Add to your `claude_desktop_config.json`:
   "mcpServers": {
     "gatefile": {
       "command": "npx",
-      "args": ["--yes", "--package", "gatefile", "gatefile-mcp"]
+      "args": ["--yes", "--package", "gatefile@0.3.0-alpha.0", "gatefile-mcp"]
     }
   }
 }
 ```
 
-### Tools Exposed
+Configure the MCP host or a small trusted wrapper so its process working
+directory is the intended repository. Requests cannot replace the server's
+repository, state home, signer, or policy authority.
+
+### Default packaged tools
 
 | Tool | Description |
 |------|------------|
 | `inspect_plan` | Inspect a plan — returns operations, risk level, integrity, approval, and dependency state |
 | `create_plan` | Create a hash-bound plan from a draft and write it to disk |
-| `approve_plan` | Approve a plan and optionally attach an Ed25519 attestation |
 | `verify_plan` | Verify integrity, approval binding, signer trust, and repository context |
 | `dry_run_plan` | Preview operations without executing them |
-| `apply_plan` | Execute an approved plan and return authenticated rollback context |
-| `rollback_apply` | Restore file operations from an authenticated apply receipt |
 
-`apply_plan` performs a real apply. Use `dry_run_plan` when the caller must remain side-effect free.
+`create_plan` uses create-only, repository-confined output; it cannot replace an
+existing file. The other default tools are read-only.
+
+### Privileged programmatic embedding
+
+A trusted operator-owned launcher can import `startMcpServer` and opt into
+privileged tools at startup:
+
+```typescript
+import { readFileSync } from "node:fs";
+import { startMcpServer } from "gatefile";
+
+const trustedConfig = JSON.parse(
+  readFileSync("/etc/gatefile/gatefile.config.json", "utf8")
+);
+
+startMcpServer({
+  repoRoot: "/srv/reviewed-repository",
+  stateHome: "/srv/gatefile-state",
+  config: trustedConfig,
+  capabilities: { approve: true, apply: true, rollback: true },
+  approval: {
+    approvedBy: "trusted-mcp-operator",
+    signingPrivateKeyPem: readFileSync("/run/secrets/gatefile-signing-key", "utf8")
+  }
+});
+```
+
+With those startup capabilities, `approve_plan`, `apply_plan`, and
+`rollback_apply` are added. Approval identity and signing material still come
+only from the trusted launcher; tool requests cannot provide them. The packaged
+CLI/bin has no flag or environment escape hatch for enabling these mutations.
 
 ## Programmatic API
 
@@ -338,7 +374,7 @@ process that was already started on the worker.
 
 See [docs/github-pr-gate-example.md](docs/github-pr-gate-example.md) for full workflow examples, including the [fork-safe signed-approval artifact flow](docs/examples/github-native-signed-approval-fork-request.yml).
 
-## Config + Hooks
+## Config, Policy Hooks, and Notifications
 
 Use `gatefile.config.json` to enforce policy hooks and signer trust:
 
@@ -359,20 +395,22 @@ Policy hooks run operator-defined commands synchronously; a non-zero exit blocks
 the action. This alpha does not yet define a structured stdin/environment payload
 contract for policy hooks. Validate configuration anytime with `gatefile lint-config`.
 
-## Hooks
+## Notifications
 
-gatefile can fire webhooks and shell commands on lifecycle events. Add a `gatefile.config.json` to your project root:
+gatefile can deliver best-effort webhooks and shell commands after durable
+lifecycle events. Add the canonical `notifications` object to
+`gatefile.config.json`:
 
 ```json
 {
-  "hooks": {
+  "notifications": {
     "onPlanCreated": {
       "webhook": "https://hooks.slack.com/services/T.../B.../xxx",
       "shell": "echo plan ready"
     },
-    "onApprovalNeeded": {
+    "onPlanApproved": {
       "webhook": "https://example.com/approval-webhook",
-      "shell": "notify-send 'approval needed'"
+      "shell": "notify-send 'plan approved'"
     }
   }
 }
@@ -381,9 +419,14 @@ gatefile can fire webhooks and shell commands on lifecycle events. Add a `gatefi
 | Event | Fires when | Payload |
 |-------|-----------|---------|
 | `onPlanCreated` | After `create-plan` completes | Plan summary JSON |
-| `onApprovalNeeded` | After `approve-plan` completes | Plan summary JSON (with approval) |
+| `onPlanApproved` | After `approve-plan` durably writes the approval | Plan summary JSON (with approval) |
 
-Both `webhook` and `shell` are optional — use one or both. Webhook sends a `POST` with `Content-Type: application/json`. Errors in hooks warn to stderr but never fail the main operation.
+Configure at least one of `webhook` or `shell`; both may be used. Webhooks send
+a `POST` with `Content-Type: application/json`. Delivery errors warn to stderr
+but never change the completed lifecycle operation. Deprecated
+`hooks.onPlanCreated` and `hooks.onApprovalNeeded` inputs migrate to these
+canonical events when no canonical duplicate is present; new configurations
+should not use them.
 
 See [schema/gatefile.config.schema.json](schema/gatefile.config.schema.json) for the full config schema.
 
@@ -421,7 +464,7 @@ See the [Product Roadmap](docs/product-roadmap.md) for the deferred feature road
 - [x] Dry-run preview mode
 - [x] GitHub PR gate action
 - [x] Recovery guidance in apply reports
-- [x] Webhook/notification hooks (`onPlanCreated`, `onApprovalNeeded`)
+- [x] Webhook/notification actions (`notifications.onPlanCreated`, `notifications.onPlanApproved`)
 - [x] Signing/attestation workflows (Ed25519)
 - [x] MCP server for agent integrations
 

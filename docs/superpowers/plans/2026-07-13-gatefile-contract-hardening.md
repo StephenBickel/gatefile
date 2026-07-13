@@ -34,7 +34,10 @@
 
 **Interfaces:**
 - Produces: canonical `GatefileConfig` with `signers`, policy `hooks`, and `notifications`; `loadGatefileConfig(repoRoot)`; `fireOnPlanCreated` and `fireOnPlanApproved` with pinned context.
-- Compatibility: legacy `hooks.onPlanCreated` and `hooks.onApprovalNeeded` normalize into canonical notifications; `fireOnApprovalNeeded` delegates to `fireOnPlanApproved`.
+- Compatibility: legacy `hooks.onPlanCreated` and `hooks.onApprovalNeeded`
+  normalize into canonical notifications; `fireOnApprovalNeeded` uses the
+  canonical approved-plan action while preserving its legacy
+  `approval_needed` webhook event identifier.
 
 - [ ] **Step 1: Write failing runtime/schema parity tests**
 

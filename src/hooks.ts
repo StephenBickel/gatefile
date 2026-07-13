@@ -226,7 +226,19 @@ export async function fireOnApprovalNeeded(
   plan: PlanFile,
   context: NotificationDispatchContext = {}
 ): Promise<void> {
-  return fireOnPlanApproved(plan, context);
+  try {
+    const resolved = resolveNotificationContext(context);
+    const action = resolved.hooks?.onApprovalNeeded ?? resolved.hooks?.onPlanApproved;
+    if (!action) return;
+    await executeHookAction(
+      action,
+      plan,
+      "approval_needed",
+      resolved.repoRoot
+    );
+  } catch (err) {
+    console.warn(`[gatefile hooks] onApprovalNeeded error: ${(err as Error).message}`);
+  }
 }
 
 // Policy hook runner — called by applier/cli for beforeApply / beforeApprove hooks.

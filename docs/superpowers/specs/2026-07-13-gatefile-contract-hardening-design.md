@@ -54,7 +54,9 @@ be combined with their canonical replacements. Normalization validates and
 defensively copies the complete object. CLI adapters pass their engine-pinned
 repository root and normalized snapshot to notifications; notification helpers
 do not reread ambient CWD config. Existing notification helper names remain as
-deprecated compatibility aliases.
+deprecated compatibility aliases. The `fireOnApprovalNeeded` alias reuses the
+canonical approved-plan action but preserves its legacy `approval_needed`
+webhook event identifier.
 
 ## Inspect, preview, and pipeline reports
 
