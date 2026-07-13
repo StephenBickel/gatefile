@@ -1,5 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 
@@ -10,6 +11,12 @@ const forkSigningWorkflow = path.join(
   root,
   'docs/examples/github-native-signed-approval-fork-sign.yml'
 );
+const failClosedWorkflowError = /reviewed workflow contract/;
+// This workflow runs with the signing secret, so every content change must fail closed.
+// After a conscious security re-review, recompute and deliberately repin this digest;
+// never derive or update the expected value automatically from the workflow under test.
+const reviewedForkSigningWorkflowSha256 =
+  '6a8fa0eb73d6dbd101e5b700c4875fe5e39f4603ffa4b301ca9bf98ff6e567ec';
 
 function documentationFiles(directory) {
   return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
@@ -47,7 +54,18 @@ function workflowRunScripts(workflow) {
   return scripts.join('\n');
 }
 
+function normalizedWorkflowSha256(workflow) {
+  const normalized = `${workflow.replace(/\r\n?/g, '\n').replace(/\n+$/, '')}\n`;
+  return crypto.createHash('sha256').update(normalized, 'utf8').digest('hex');
+}
+
 function assertForkSigningWorkflowSafe(workflow) {
+  assert.equal(
+    normalizedWorkflowSha256(workflow),
+    reviewedForkSigningWorkflowSha256,
+    'privileged signing workflow no longer matches the reviewed workflow contract; security re-review and conscious digest repin are required'
+  );
+
   const runScripts = workflowRunScripts(workflow);
   const checkoutUses = workflow.match(
     /^[ \t]*uses:[ \t]*actions\/checkout@[^\s#]+[ \t]*$/gm
@@ -196,7 +214,7 @@ test('workflow safety assertion rejects a later checkout of PR code', () => {
 
   assert.throws(
     () => assertForkSigningWorkflowSafe(maliciousWorkflow),
-    /exactly one checkout/,
+    failClosedWorkflowError,
     'the safety assertion accepted a later PR checkout'
   );
 });
@@ -210,7 +228,7 @@ test('workflow safety assertion rejects a shell checkout of a PR ref', () => {
 
   assert.throws(
     () => assertForkSigningWorkflowSafe(maliciousWorkflow),
-    /checkout PR or head refs/,
+    failClosedWorkflowError,
     'the safety assertion accepted a shell checkout of a PR ref'
   );
 });
@@ -224,7 +242,7 @@ test('workflow safety assertion rejects executing a script from the PR artifact'
 
   assert.throws(
     () => assertForkSigningWorkflowSafe(maliciousWorkflow),
-    /execute files from the PR artifact/,
+    failClosedWorkflowError,
     'the safety assertion accepted executable PR artifact content'
   );
 });
@@ -238,7 +256,67 @@ test('workflow safety assertion rejects PR-supplied config or hooks', () => {
 
   assert.throws(
     () => assertForkSigningWorkflowSafe(maliciousWorkflow),
-    /load config or hooks from the PR artifact/,
+    failClosedWorkflowError,
     'the safety assertion accepted PR-supplied config and hooks'
+  );
+});
+
+test('workflow safety assertion rejects a quoted checkout with an input-controlled ref', () => {
+  const workflow = fs.readFileSync(forkSigningWorkflow, 'utf8');
+  const maliciousWorkflow = appendWorkflowSteps(workflow, [
+    '      - name: Quoted attacker checkout',
+    '        uses: "actions/checkout@v5"',
+    '        with:',
+    '          ref: ${{ inputs.checkout_ref }}'
+  ]);
+
+  assert.throws(
+    () => assertForkSigningWorkflowSafe(maliciousWorkflow),
+    failClosedWorkflowError,
+    'the safety assertion accepted a quoted checkout with an input-controlled ref'
+  );
+});
+
+test('workflow safety assertion rejects git checkout with global options', () => {
+  const workflow = fs.readFileSync(forkSigningWorkflow, 'utf8');
+  const maliciousWorkflow = appendWorkflowSteps(workflow, [
+    '      - name: Checkout attacker PR through git global options',
+    '        run: git -C . checkout refs/pull/123/head'
+  ]);
+
+  assert.throws(
+    () => assertForkSigningWorkflowSafe(maliciousWorkflow),
+    failClosedWorkflowError,
+    'the safety assertion accepted git -C checkout of a PR ref'
+  );
+});
+
+test('workflow safety assertion rejects artifact execution through env', () => {
+  const workflow = fs.readFileSync(forkSigningWorkflow, 'utf8');
+  const maliciousWorkflow = appendWorkflowSteps(workflow, [
+    '      - name: Execute attacker artifact through env',
+    '        run: env node .gatefile-artifacts/input/attacker.js'
+  ]);
+
+  assert.throws(
+    () => assertForkSigningWorkflowSafe(maliciousWorkflow),
+    failClosedWorkflowError,
+    'the safety assertion accepted env-wrapped artifact execution'
+  );
+});
+
+test('workflow safety assertion rejects copying artifact config into the trusted checkout', () => {
+  const workflow = fs.readFileSync(forkSigningWorkflow, 'utf8');
+  const maliciousWorkflow = appendWorkflowSteps(workflow, [
+    '      - name: Install attacker config before signing',
+    '        run: |',
+    '          cp .gatefile-artifacts/input/config.json gatefile.config.json',
+    '          node dist/cli.js approve-plan .gatefile-artifacts/input/plan.json'
+  ]);
+
+  assert.throws(
+    () => assertForkSigningWorkflowSafe(maliciousWorkflow),
+    failClosedWorkflowError,
+    'the safety assertion accepted artifact config copied into the trusted checkout'
   );
 });
