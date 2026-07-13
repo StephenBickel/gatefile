@@ -1,6 +1,7 @@
-import { CommandOperation, ExecutionConfig, FileAction, FileOperation, Precondition } from "./types";
+import { CommandOperation, ExecutionConfig, FileAction, FileOperation, PLAN_VERSION, Precondition } from "./types";
 import { PlanDraft } from "./planner";
 import { validateCommandOperationValue } from "./command";
+import { validatePlanDraft } from "./validation";
 
 export interface AdapterFileChange {
   id?: string;
@@ -55,14 +56,28 @@ export function adaptAgentInputToDraft(input: AgentAdapterInput): PlanDraft {
     throw new Error("Adapter input must include a non-empty proposal summary");
   }
 
-  const fileOperations: FileOperation[] = (proposal.fileChanges ?? []).map((change, idx) => ({
-    id: change.id ?? `op_file_${idx + 1}`,
-    type: "file",
-    action: change.action,
-    path: change.path,
-    before: change.before,
-    after: change.after
-  }));
+  const fileOperations: FileOperation[] = (proposal.fileChanges ?? []).map((change, idx) => {
+    const base = {
+      id: change.id ?? `op_file_${idx + 1}`,
+      type: "file" as const,
+      path: change.path
+    };
+    if (change.action === "create") {
+      return { ...base, action: "create", after: change.after as string };
+    }
+    if (change.action === "update") {
+      return {
+        ...base,
+        action: "update",
+        before: change.before as string,
+        after: change.after as string
+      };
+    }
+    if (change.action === "delete") {
+      return { ...base, action: "delete", before: change.before as string };
+    }
+    throw new Error(`Unsupported adapter file action: ${String(change.action)}`);
+  });
 
   const commandOperations: CommandOperation[] = (proposal.commands ?? []).map((command, idx) => {
     const operation = {
@@ -85,12 +100,12 @@ export function adaptAgentInputToDraft(input: AgentAdapterInput): PlanDraft {
 
   const fallbackSource = envelope?.agent?.name ? `agent:${envelope.agent.name}` : "agent-adapter";
 
-  return {
-    version: "0.1",
+  return validatePlanDraft({
+    version: PLAN_VERSION,
     source: proposal.source ?? fallbackSource,
     summary: proposal.summary,
     operations,
     preconditions: proposal.preconditions ?? [],
     execution: proposal.execution
-  };
+  });
 }

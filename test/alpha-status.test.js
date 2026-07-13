@@ -97,9 +97,9 @@ test('freeze language uses the exact release stabilization category', () => {
   }
 });
 
-test('package prerelease does not change schema or protocol versions', () => {
-  assert.match(read('src/planner.ts'), /draft\.version \?\? "0\.1"/);
-  assert.match(read('src/adapter.ts'), /version: "0\.1"/);
-  assert.match(read('docs/changeset-spec.md'), /"version": "0\.1"/);
+test('alpha uses the intentional v2 plan contract without changing the MCP protocol version', () => {
+  assert.match(read('src/types.ts'), /PLAN_VERSION = "2"/);
+  assert.match(read('src/adapter.ts'), /version: PLAN_VERSION/);
+  assert.match(read('docs/changeset-spec.md'), /"version": "2"/);
   assert.match(read('src/mcp.ts'), /protocolVersion: "2024-11-05"/);
 });

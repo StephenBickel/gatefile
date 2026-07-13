@@ -1,15 +1,39 @@
 export type RiskLevel = "low" | "medium" | "high";
 
+export const PLAN_VERSION = "2" as const;
+export const HASH_CANONICALIZER = "gatefile-v2" as const;
+export const HASH_ENVELOPE_VERSION = 2 as const;
+
 export type FileAction = "create" | "update" | "delete";
 
-export interface FileOperation {
+export interface FileCreateOperation {
   id: string;
   type: "file";
-  action: FileAction;
+  action: "create";
   path: string;
-  before?: string;
-  after?: string;
+  before?: never;
+  after: string;
 }
+
+export interface FileUpdateOperation {
+  id: string;
+  type: "file";
+  action: "update";
+  path: string;
+  before: string;
+  after: string;
+}
+
+export interface FileDeleteOperation {
+  id: string;
+  type: "file";
+  action: "delete";
+  path: string;
+  before: string;
+  after?: never;
+}
+
+export type FileOperation = FileCreateOperation | FileUpdateOperation | FileDeleteOperation;
 
 export interface CommandOperation {
   id: string;
@@ -85,16 +109,22 @@ export interface ApprovalAttestation {
 
 export interface PlanIntegrity {
   algorithm: "sha256";
-  canonicalizer: "gatefile-v1";
+  canonicalizer: typeof HASH_CANONICALIZER;
+  envelopeVersion: typeof HASH_ENVELOPE_VERSION;
   planHash: string;
 }
 
+export interface PlanContext {
+  repositoryId: string;
+}
+
 export interface PlanFile {
-  version: string;
+  version: typeof PLAN_VERSION;
   id: string;
   createdAt: string;
   source: string;
   summary: string;
+  context: PlanContext;
   dependsOn?: string[];
   operations: Operation[];
   preconditions: Precondition[];
@@ -102,6 +132,14 @@ export interface PlanFile {
   risk: RiskProfile;
   integrity: PlanIntegrity;
   approval: Approval;
+}
+
+export type HashablePlanV2 = Omit<PlanFile, "integrity" | "approval">;
+
+export interface HashEnvelopeV2 {
+  type: "gatefile-plan-hash";
+  envelopeVersion: typeof HASH_ENVELOPE_VERSION;
+  plan: HashablePlanV2;
 }
 
 export interface ApplyOperationResult {
@@ -275,9 +313,12 @@ export interface VerifyPlanReport {
     approvedPlanHash: string | null;
   };
   checks: {
+    planVersionSupported: boolean;
     integrityMetadataExists: boolean;
     recordedHashMatchesCurrent: boolean;
     approvalBoundToCurrentHash: boolean;
+    riskMatchesRecomputed: boolean;
+    repositoryContextMatches: boolean;
     approvalAttestationPresent: boolean;
     approvalAttestationValid: boolean | null;
     approvalAttestationKeyIdMatches: boolean | null;

@@ -11,10 +11,13 @@ import { PlanFile, ApplyReport, DryRunReport, VerifyPlanReport } from "./types";
 export interface CreateOptions {
   /** Output path for the plan JSON. If omitted the plan is returned but not written. */
   outPath?: string;
+  /** Repository root used to bind the plan to its intended repository. */
+  repoRoot?: string;
 }
 
 export interface InspectOptions {
-  /** Unused today — reserved for future filtering. */
+  /** Repository root used to resolve dependency state. */
+  repoRoot?: string;
 }
 
 export interface ApproveOptions {
@@ -25,6 +28,17 @@ export interface ApproveOptions {
 export interface ApplyOptions {
   /** If true, preview only — no side effects (default: false). */
   dryRun?: boolean;
+  /** Repository root whose identity must match the plan context. */
+  repoRoot?: string;
+  /** Explicit repository identity override for non-filesystem integrations. */
+  repositoryId?: string;
+}
+
+export interface VerifyOptions {
+  /** Repository root whose identity must match the plan context. */
+  repoRoot?: string;
+  /** Explicit repository identity override for non-filesystem integrations. */
+  repositoryId?: string;
 }
 
 // ── Result types ──────────────────────────────────────────────
@@ -59,7 +73,7 @@ export async function createPlan(
   draft: PlanDraft,
   options?: CreateOptions
 ): Promise<PlanFile> {
-  const plan = createPlanFromDraft(draft);
+  const plan = createPlanFromDraft(draft, { repoRoot: options?.repoRoot });
   if (options?.outPath) {
     writePlan(options.outPath, plan);
   }
@@ -71,10 +85,10 @@ export async function createPlan(
  */
 export async function inspectPlan(
   planPath: string,
-  _options?: InspectOptions
+  options?: InspectOptions
 ): Promise<InspectResult> {
   const plan = readPlan(planPath);
-  return buildInspectReport(plan);
+  return buildInspectReport(plan, { repoRoot: options?.repoRoot });
 }
 
 /**
@@ -97,10 +111,14 @@ export async function approvePlan(
  * Verify plan integrity and approval binding.
  */
 export async function verifyPlan(
-  planPath: string
+  planPath: string,
+  options?: VerifyOptions
 ): Promise<VerifyResult> {
   const plan = readPlan(planPath);
-  return verifyInMemory(plan);
+  return verifyInMemory(plan, {
+    repoRoot: options?.repoRoot,
+    repositoryId: options?.repositoryId
+  });
 }
 
 /**
@@ -112,7 +130,13 @@ export async function applyPlan(
 ): Promise<ApplyReport | DryRunReport> {
   const plan = readPlan(planPath);
   if (options?.dryRun) {
-    return previewPlan(plan);
+    return previewPlan(plan, {
+      repoRoot: options.repoRoot,
+      repositoryId: options.repositoryId
+    });
   }
-  return applyInMemory(plan);
+  return applyInMemory(plan, {
+    repoRoot: options?.repoRoot,
+    repositoryId: options?.repositoryId
+  });
 }

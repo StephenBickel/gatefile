@@ -227,7 +227,7 @@ function handleTool(name: string, args: Record<string, unknown>): { content: { t
 
       case "create_plan": {
         const draft = args.draft as PlanDraft;
-        const plan = createPlanFromDraft(draft);
+        const plan = createPlanFromDraft(draft, { repoRoot: getRepoRoot() });
         const outPath = args.out as string;
         writePlan(outPath, plan);
         return toolResult(

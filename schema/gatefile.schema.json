@@ -1,14 +1,16 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://example.com/planfile.schema.json",
-  "title": "planfile MVP plan artifact",
+  "$id": "https://github.com/StephenBickel/gatefile/blob/main/schema/gatefile.schema.json",
+  "title": "Gatefile v2 plan artifact",
   "type": "object",
+  "additionalProperties": false,
   "required": [
     "version",
     "id",
     "createdAt",
     "source",
     "summary",
+    "context",
     "operations",
     "preconditions",
     "risk",
@@ -16,14 +18,17 @@
     "approval"
   ],
   "properties": {
-    "version": { "type": "string" },
-    "id": { "type": "string" },
-    "createdAt": { "type": "string", "format": "date-time" },
-    "source": { "type": "string" },
-    "summary": { "type": "string" },
+    "version": { "const": "2" },
+    "id": { "$ref": "#/$defs/nonEmptyString" },
+    "createdAt": { "$ref": "#/$defs/dateTime" },
+    "source": { "$ref": "#/$defs/nonEmptyString" },
+    "summary": { "$ref": "#/$defs/nonEmptyString" },
+    "context": { "$ref": "#/$defs/context" },
     "dependsOn": {
       "type": "array",
-      "items": { "type": "string" }
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/nonEmptyString" }
     },
     "operations": {
       "type": "array",
@@ -34,126 +39,109 @@
       "type": "array",
       "items": { "$ref": "#/$defs/precondition" }
     },
-    "execution": {
-      "type": "object",
-      "properties": {
-        "commandTimeoutMs": { "type": "integer", "minimum": 1, "maximum": 2147483647 },
-        "commandPolicy": { "$ref": "#/$defs/commandPolicy" },
-        "filePolicy": { "$ref": "#/$defs/filePolicy" }
-      }
-    },
-    "risk": {
-      "type": "object",
-      "required": ["score", "level", "reasons"],
-      "properties": {
-        "score": { "type": "number" },
-        "level": { "type": "string", "enum": ["low", "medium", "high"] },
-        "reasons": {
-          "type": "array",
-          "items": { "type": "string" }
-        }
-      }
-    },
-    "integrity": {
-      "type": "object",
-      "required": ["algorithm", "canonicalizer", "planHash"],
-      "properties": {
-        "algorithm": { "type": "string", "const": "sha256" },
-        "canonicalizer": { "type": "string", "const": "gatefile-v1" },
-        "planHash": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
-        }
-      }
-    },
-    "approval": {
-      "type": "object",
-      "required": ["status"],
-      "properties": {
-        "status": {
-          "type": "string",
-          "enum": ["pending", "approved", "rejected"]
-        },
-        "approvedBy": { "type": "string" },
-        "approvedAt": { "type": "string", "format": "date-time" },
-        "approvedPlanHash": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
-        },
-        "attestation": { "$ref": "#/$defs/approvalAttestation" }
-      },
-      "allOf": [
-        {
-          "if": {
-            "properties": {
-              "status": { "const": "approved" }
-            }
-          },
-          "then": {
-            "required": ["approvedBy", "approvedAt", "approvedPlanHash"]
-          }
-        }
-      ]
-    }
+    "execution": { "$ref": "#/$defs/execution" },
+    "risk": { "$ref": "#/$defs/risk" },
+    "integrity": { "$ref": "#/$defs/integrity" },
+    "approval": { "$ref": "#/$defs/approval" }
   },
   "$defs": {
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?=[\\s\\S]*\\S)[^\\u0000]+$"
+    },
+    "text": {
+      "type": "string",
+      "pattern": "^[^\\u0000]*$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "dateTime": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-([0-2][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]+)?(Z|[+-]([01][0-9]|2[0-3]):[0-5][0-9])$"
+    },
+    "context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repositoryId"],
+      "properties": {
+        "repositoryId": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
     "operation": {
       "oneOf": [
-        {
-          "type": "object",
-          "required": ["id", "type", "action", "path"],
-          "properties": {
-            "id": { "type": "string" },
-            "type": { "type": "string", "const": "file" },
-            "action": {
-              "type": "string",
-              "enum": ["create", "update", "delete"]
-            },
-            "path": { "type": "string" },
-            "before": { "type": "string" },
-            "after": { "type": "string" }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["id", "type", "executable", "args"],
-          "properties": {
-            "id": { "type": "string" },
-            "type": { "type": "string", "const": "command" },
-            "executable": {
-              "type": "string",
-              "minLength": 1,
-              "pattern": "^(?=.*\\S)[^\\u0000]+$"
-            },
-            "args": {
-              "type": "array",
-              "items": { "type": "string", "pattern": "^[^\\u0000]*$" }
-            },
-            "cwd": {
-              "type": "string",
-              "minLength": 1,
-              "pattern": "^(?=.*\\S)[^\\u0000]+$"
-            },
-            "timeoutMs": { "type": "integer", "minimum": 1, "maximum": 2147483647 },
-            "allowFailure": { "type": "boolean" }
-          }
-        }
+        { "$ref": "#/$defs/fileCreate" },
+        { "$ref": "#/$defs/fileUpdate" },
+        { "$ref": "#/$defs/fileDelete" },
+        { "$ref": "#/$defs/command" }
       ]
+    },
+    "fileCreate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "type", "action", "path", "after"],
+      "properties": {
+        "id": { "$ref": "#/$defs/nonEmptyString" },
+        "type": { "const": "file" },
+        "action": { "const": "create" },
+        "path": { "$ref": "#/$defs/nonEmptyString" },
+        "after": { "$ref": "#/$defs/text" }
+      }
+    },
+    "fileUpdate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "type", "action", "path", "before", "after"],
+      "properties": {
+        "id": { "$ref": "#/$defs/nonEmptyString" },
+        "type": { "const": "file" },
+        "action": { "const": "update" },
+        "path": { "$ref": "#/$defs/nonEmptyString" },
+        "before": { "$ref": "#/$defs/text" },
+        "after": { "$ref": "#/$defs/text" }
+      }
+    },
+    "fileDelete": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "type", "action", "path", "before"],
+      "properties": {
+        "id": { "$ref": "#/$defs/nonEmptyString" },
+        "type": { "const": "file" },
+        "action": { "const": "delete" },
+        "path": { "$ref": "#/$defs/nonEmptyString" },
+        "before": { "$ref": "#/$defs/text" }
+      }
+    },
+    "command": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "type", "executable", "args"],
+      "properties": {
+        "id": { "$ref": "#/$defs/nonEmptyString" },
+        "type": { "const": "command" },
+        "executable": { "$ref": "#/$defs/nonEmptyString" },
+        "args": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/text" }
+        },
+        "cwd": { "$ref": "#/$defs/nonEmptyString" },
+        "timeoutMs": { "type": "integer", "minimum": 1, "maximum": 2147483647 },
+        "allowFailure": { "type": "boolean" }
+      }
     },
     "commandPolicyRule": {
       "type": "object",
       "additionalProperties": false,
       "required": ["executable", "args"],
       "properties": {
-        "executable": {
-          "type": "string",
-          "minLength": 1,
-          "pattern": "^(?=.*\\S)[^\\u0000]+$"
-        },
+        "executable": { "$ref": "#/$defs/nonEmptyString" },
         "args": {
           "type": "array",
-          "items": { "type": "string", "pattern": "^[^\\u0000]*$" }
+          "items": { "$ref": "#/$defs/text" }
         }
       }
     },
@@ -172,46 +160,103 @@
     },
     "filePolicy": {
       "type": "object",
+      "additionalProperties": false,
       "required": ["allowedRoots"],
       "properties": {
         "allowedRoots": {
           "type": "array",
-          "items": { "type": "string" }
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/nonEmptyString" }
         }
+      }
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "commandTimeoutMs": { "type": "integer", "minimum": 1, "maximum": 2147483647 },
+        "commandPolicy": { "$ref": "#/$defs/commandPolicy" },
+        "filePolicy": { "$ref": "#/$defs/filePolicy" }
       }
     },
     "precondition": {
       "type": "object",
+      "additionalProperties": false,
       "required": ["kind"],
       "properties": {
-        "kind": {
-          "type": "string",
-          "enum": ["git_clean", "branch_is", "env_present"]
-        },
-        "value": { "type": "string" },
-        "description": { "type": "string" }
+        "kind": { "type": "string", "enum": ["git_clean", "branch_is", "env_present"] },
+        "value": { "$ref": "#/$defs/nonEmptyString" },
+        "description": { "$ref": "#/$defs/nonEmptyString" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "enum": ["branch_is", "env_present"] } } },
+          "then": { "required": ["value"] }
+        }
+      ]
+    },
+    "risk": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["score", "level", "reasons"],
+      "properties": {
+        "score": { "type": "number", "minimum": 0 },
+        "level": { "type": "string", "enum": ["low", "medium", "high"] },
+        "reasons": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        }
       }
+    },
+    "integrity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "canonicalizer", "envelopeVersion", "planHash"],
+      "properties": {
+        "algorithm": { "const": "sha256" },
+        "canonicalizer": { "const": "gatefile-v2" },
+        "envelopeVersion": { "const": 2 },
+        "planHash": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "approval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status"],
+      "properties": {
+        "status": { "type": "string", "enum": ["pending", "approved", "rejected"] },
+        "approvedBy": { "$ref": "#/$defs/nonEmptyString" },
+        "approvedAt": { "$ref": "#/$defs/dateTime" },
+        "approvedPlanHash": { "$ref": "#/$defs/sha256" },
+        "attestation": { "$ref": "#/$defs/approvalAttestation" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "approved" } } },
+          "then": { "required": ["approvedBy", "approvedAt", "approvedPlanHash"] }
+        }
+      ]
     },
     "approvalAttestation": {
       "type": "object",
+      "additionalProperties": false,
       "required": ["scheme", "keyId", "publicKeyPem", "payload", "signature"],
       "properties": {
-        "scheme": { "type": "string", "const": "ed25519-sha256" },
-        "keyId": { "type": "string", "minLength": 8 },
-        "publicKeyPem": { "type": "string", "minLength": 32 },
-        "signature": { "type": "string", "minLength": 32 },
+        "scheme": { "const": "ed25519-sha256" },
+        "keyId": { "$ref": "#/$defs/nonEmptyString" },
+        "publicKeyPem": { "$ref": "#/$defs/nonEmptyString" },
+        "signature": { "$ref": "#/$defs/nonEmptyString" },
         "payload": {
           "type": "object",
+          "additionalProperties": false,
           "required": ["type", "planId", "approvedBy", "approvedAt", "approvedPlanHash"],
           "properties": {
-            "type": { "type": "string", "const": "gatefile-approval-v1" },
-            "planId": { "type": "string" },
-            "approvedBy": { "type": "string" },
-            "approvedAt": { "type": "string", "format": "date-time" },
-            "approvedPlanHash": {
-              "type": "string",
-              "pattern": "^[a-f0-9]{64}$"
-            }
+            "type": { "const": "gatefile-approval-v1" },
+            "planId": { "$ref": "#/$defs/nonEmptyString" },
+            "approvedBy": { "$ref": "#/$defs/nonEmptyString" },
+            "approvedAt": { "$ref": "#/$defs/dateTime" },
+            "approvedPlanHash": { "$ref": "#/$defs/sha256" }
           }
         }
       }

@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import {
   ApplyOperationResult,
@@ -30,6 +30,7 @@ import {
   formatCommandInvocation,
   validatePlanCommandContract
 } from "./command";
+import { validatePlanFile } from "./validation";
 
 const DEFAULT_COMMAND_TIMEOUT_MS = 10_000;
 
@@ -42,6 +43,7 @@ interface FilePathSafetyResult {
 
 export interface PlanRuntimeOptions {
   repoRoot?: string;
+  repositoryId?: string;
   planPath?: string;
   config?: GatefileConfig;
 }
@@ -104,19 +106,44 @@ function applyFileOperation(
   }
 
   try {
-    if (op.action === "create" || op.action === "update") {
+    if (op.action === "create") {
       mkdirSync(dirname(pathSafety.resolvedPath), { recursive: true });
-      writeFileSync(pathSafety.resolvedPath, op.after ?? "", "utf-8");
-      return { operationId: op.id, success: true, message: `${op.action} ${op.path}` };
+      writeFileSync(pathSafety.resolvedPath, op.after, { encoding: "utf-8", flag: "wx" });
+      return { operationId: op.id, success: true, message: `create ${op.path}` };
+    }
+
+    if (op.action === "update") {
+      const stat = lstatSync(pathSafety.resolvedPath);
+      if (!stat.isFile()) {
+        throw new Error("update destination is not a regular file");
+      }
+      const current = readFileSync(pathSafety.resolvedPath);
+      if (!current.equals(Buffer.from(op.before, "utf-8"))) {
+        throw new Error("update destination no longer matches reviewed before content");
+      }
+      writeFileSync(pathSafety.resolvedPath, op.after, "utf-8");
+      return { operationId: op.id, success: true, message: `update ${op.path}` };
     }
 
     if (op.action === "delete") {
-      readFileSync(pathSafety.resolvedPath, "utf-8");
-      rmSync(pathSafety.resolvedPath);
+      const stat = lstatSync(pathSafety.resolvedPath);
+      if (!stat.isFile()) {
+        throw new Error("delete destination is not a regular file");
+      }
+      const current = readFileSync(pathSafety.resolvedPath);
+      if (!current.equals(Buffer.from(op.before, "utf-8"))) {
+        throw new Error("delete destination no longer matches reviewed before content");
+      }
+      unlinkSync(pathSafety.resolvedPath);
       return { operationId: op.id, success: true, message: `delete ${op.path}` };
     }
 
-    return { operationId: op.id, success: false, message: "Unsupported file action" };
+    const unsupported = op as unknown as { id?: unknown; action?: unknown };
+    return {
+      operationId: typeof unsupported.id === "string" ? unsupported.id : "unknown-operation",
+      success: false,
+      message: `Unsupported file action: ${String(unsupported.action)}`
+    };
   } catch (error) {
     return {
       operationId: op.id,
@@ -301,13 +328,9 @@ function operationGuidance(op: PlanFile["operations"][number]): string {
       return `If applied, remove ${op.path} to undo the created file.`;
     }
     if (op.action === "update") {
-      return op.before == null
-        ? `If applied, restore ${op.path} from git/history; no inline before content was provided.`
-        : `If applied, restore ${op.path} using the operation's before content.`;
+      return `If applied, restore ${op.path} using the operation's before content.`;
     }
-    return op.before == null
-      ? `If applied, recreate ${op.path} from git/history; no inline before content was provided.`
-      : `If applied, recreate ${op.path} using the operation's before content.`;
+    return `If applied, recreate ${op.path} using the operation's before content.`;
   }
 
   return "Command effects are not auto-reverted; run explicit inverse commands or restore from snapshots.";
@@ -401,8 +424,26 @@ function createPreApplySnapshot(plan: PlanFile, repoRoot: string, snapshotId: st
     }
 
     seen.add(pathSafety.resolvedPath);
-    const existedBefore = existsSync(pathSafety.resolvedPath);
-    const contentBefore = existedBefore ? readFileSync(pathSafety.resolvedPath, "utf8") : undefined;
+    let existedBefore = false;
+    let contentBefore: string | undefined;
+    try {
+      const stat = lstatSync(pathSafety.resolvedPath);
+      if (op.action === "create") {
+        // Exclusive create will reject this destination without changing it,
+        // so no rollback entry should ever rewrite its pre-existing contents.
+        continue;
+      }
+      if (!stat.isFile()) {
+        // The operation itself will reject non-regular destinations. Do not follow
+        // symlinks or read directories while preparing rollback state.
+        continue;
+      }
+      existedBefore = true;
+      contentBefore = readFileSync(pathSafety.resolvedPath, "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      if (op.action !== "create") continue;
+    }
     files.push({
       operationId: op.id,
       path: op.path,
@@ -530,7 +571,11 @@ function applyCore(plan: PlanFile, options: PlanRuntimeOptions): ApplyReport {
 
 export function previewPlan(plan: PlanFile, options: PlanRuntimeOptions = {}): DryRunReport {
   validatePlanCommandContract(plan);
-  const verification = verifyPlan(plan, { config: options.config });
+  const verification = verifyPlan(plan, {
+    config: options.config,
+    repositoryId: options.repositoryId,
+    repoRoot: options.repoRoot
+  });
   const dependencies = dependencyStatus(plan, options.repoRoot);
 
   const results = plan.operations.map((op) =>
@@ -556,8 +601,12 @@ export function previewPlan(plan: PlanFile, options: PlanRuntimeOptions = {}): D
 }
 
 export function applyPlan(plan: PlanFile, options: PlanRuntimeOptions = {}): ApplyReport {
-  validatePlanCommandContract(plan);
-  const verification = verifyPlan(plan, { config: options.config });
+  validatePlanFile(plan);
+  const verification = verifyPlan(plan, {
+    config: options.config,
+    repositoryId: options.repositoryId,
+    repoRoot: options.repoRoot
+  });
   if (!verification.readyToApplyFromIntegrityApproval) {
     throw new Error(`Plan failed verification: ${verification.blockers.join("; ")}`);
   }

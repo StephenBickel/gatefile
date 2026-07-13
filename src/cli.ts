@@ -17,6 +17,7 @@ import { configPath, loadGatefileConfig } from "./config";
 import { getRepoRoot } from "./state";
 import { generateApprovalAttestationKeyPair } from "./attestation";
 import { startMcpServer } from "./mcp";
+import { validatePlanFile } from "./validation";
 
 function readJson<T>(path: string): T {
   const full = resolve(path);
@@ -95,7 +96,7 @@ async function main(): Promise<void> {
     if (!from || !out) throw new Error("create-plan requires --from and --out");
 
     const draft = readJson<PlanDraft>(from);
-    const plan = createPlanFromDraft(draft);
+    const plan = createPlanFromDraft(draft, { repoRoot: getRepoRoot() });
     writeJson(out, plan);
     console.log(`Plan created: ${out}`);
     await fireOnPlanCreated(plan);
@@ -160,6 +161,7 @@ async function main(): Promise<void> {
     }
 
     const plan = readJson<PlanFile>(planPath);
+    validatePlanFile(plan);
     const config = loadGatefileConfig(getRepoRoot());
     runPolicyHook(config, "beforeApprove", plan, {
       repoRoot: getRepoRoot(),
@@ -295,7 +297,8 @@ async function main(): Promise<void> {
 
     const result = runPipeline(dir, {
       dryRun: hasFlag(args, "--dry-run"),
-      continueOnError: hasFlag(args, "--continue-on-error")
+      continueOnError: hasFlag(args, "--continue-on-error"),
+      repoRoot: getRepoRoot()
     });
 
     if (hasFlag(args, "--json")) {

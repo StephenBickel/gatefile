@@ -9,6 +9,7 @@ import { verifyPlan } from "./verify";
 export interface PipelineOptions {
   dryRun?: boolean;
   continueOnError?: boolean;
+  repoRoot?: string;
 }
 
 export type PipelinePlanStatus = "passed" | "failed" | "skipped";
@@ -122,7 +123,7 @@ export function runPipeline(dir: string, options?: PipelineOptions): PipelineRes
 
     if (options?.dryRun) {
       try {
-        previewPlan(entry.plan);
+        previewPlan(entry.plan, { repoRoot: options?.repoRoot });
         results.push({
           planId: entry.plan.id,
           file: entry.file,
@@ -143,7 +144,7 @@ export function runPipeline(dir: string, options?: PipelineOptions): PipelineRes
 
     // Real execution
     try {
-      const verification = verifyPlan(entry.plan);
+      const verification = verifyPlan(entry.plan, { repoRoot: options?.repoRoot });
       if (!verification.readyToApplyFromIntegrityApproval) {
         failed = true;
         results.push({
@@ -155,7 +156,7 @@ export function runPipeline(dir: string, options?: PipelineOptions): PipelineRes
         continue;
       }
 
-      const report = applyPlan(entry.plan);
+      const report = applyPlan(entry.plan, { repoRoot: options?.repoRoot });
       if (report.success) {
         results.push({
           planId: entry.plan.id,

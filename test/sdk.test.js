@@ -24,7 +24,7 @@ const baseDraft = {
       id: 'op1',
       type: 'file',
       action: 'create',
-      path: '', // will be set per-test
+      path: 'sdk-placeholder.txt',
       after: 'hello from sdk'
     }
   ],
@@ -104,10 +104,15 @@ test('applyPlanFile executes file operations', async () => {
   };
 
   const outPath = path.join(dir, 'plan.json');
-  await createPlan(draft, { outPath });
+  await createPlan(draft, { outPath, repoRoot: dir });
   await approvePlanFile(outPath, { approvedBy: 'tester' });
 
-  const report = await applyPlanFile(outPath);
+  const wrongContext = await verifyPlanFile(outPath);
+  assert.equal(wrongContext.status, 'not-ready');
+  const correctContext = await verifyPlanFile(outPath, { repoRoot: dir });
+  assert.equal(correctContext.status, 'ready');
+
+  const report = await applyPlanFile(outPath, { repoRoot: dir });
   assert.equal(report.success, true);
   assert.equal(fs.readFileSync(targetFile, 'utf-8'), 'created by sdk');
 });

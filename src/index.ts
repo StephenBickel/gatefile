@@ -7,6 +7,7 @@ export * from "./risk";
 export * from "./preconditions";
 export * from "./hash";
 export * from "./verify";
+export * from "./validation";
 export * from "./inspect";
 export * from "./pr-review";
 export * from "./pipeline";
@@ -27,10 +28,12 @@ export type {
   InspectOptions,
   ApproveOptions,
   ApplyOptions,
+  VerifyOptions,
   ApprovalResult,
   InspectResult,
   VerifyResult
 } from "./sdk";
 export { generateApprovalAttestationKeyPair, createApprovalAttestation, verifyApprovalAttestation } from "./attestation";
 export { normalizeGatefileConfig } from "./config";
+export { repositoryIdForRoot } from "./state";
 export { startMcpServer } from "./mcp";
